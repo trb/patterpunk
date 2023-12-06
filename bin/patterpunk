@@ -1,0 +1,53 @@
+#!/bin/bash
+
+script_path="$(dirname "$(readlink -f "$0")")"
+src_path="${script_path}/../"
+test_path="${script_path}/../../patterpunk-test"
+dockerfile_path="${script_path}/../"
+env_path="${script_path}/../.env"
+image_name="patterpunk"
+
+build_image() {
+  docker build --no-cache -t ${image_name} ${dockerfile_path}
+}
+
+run_container() {
+  docker run -it --rm \
+    --name "${image_name}" \
+    --env-file "${env_path}" \
+    -v "${src_path}:/app/patterpunk" \
+    -v "${test_path}:/app/test" \
+    ${image_name}
+}
+
+# Get the current user
+current_user=$(whoami)
+
+# Check if docker-user exists
+if id "docker-user" &>/dev/null; then
+    # If the current user is not docker-user, re-run the script as docker-user
+    if [[ "$current_user" != "docker-user" ]]; then
+        sudo -u docker-user "$0" "$@"
+        exit $?
+    fi
+fi
+
+case $1 in
+  "build")
+    build_image
+    ;;
+  "run")
+    run_container
+    ;;
+  "")
+    build_image
+    run_container
+    ;;
+  *)
+    echo "Options:"
+    echo "patterpunk build  - builds docker image"
+    echo "patterpunk run    - runs docker image and maps volumes"
+    echo "patterpunk help   - this help screen"
+    echo "patterpunk        - builds and runs the image, maps volumes"
+    ;;
+esac

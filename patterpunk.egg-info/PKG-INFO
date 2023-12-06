@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Name: patterpunk
+Version: 0.0.1
+Summary: An easy way to deal with LLMs, supporting chain-of-thought prompting and parameter tuning
+Author-email: Thomas Rubbert <thomas.rubbert@yahoo.de>
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.10
+Requires-Dist: black<23.10,>=23.9
+Requires-Dist: openai<0.29,>=0.28
+Requires-Dist: pydantic<2.5,>=2.4
