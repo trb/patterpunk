@@ -1,0 +1,13 @@
+import os
+
+from openai import OpenAI
+
+DEFAULT_MODEL = os.getenv("PP_DEFAULT_MODEL") or "gpt-3.5-turbo"
+DEFAULT_TEMPERATURE = os.getenv("PP_DEFAULT_TEMPERATURE") or 1.0
+DEFAULT_TOP_P = os.getenv("PP_DEFAULT_TOP_P") or 1.0
+DEFAULT_FREQUENCY_PENALTY = os.getenv("PP_DEFAULT_FREQUENCY_PENALTY") or 0.0
+DEFAULT_PRESENCE_PENALTY = os.getenv("PP_DEFAULT_PRESENCE_PENALTY") or 0.0
+MAX_RETRIES = os.getenv('PP_MAX_RETRIES') or 6
+OPENAI_MAX_RETRIES = os.getenv("PP_OPENAI_MAX_RETRIES") or MAX_RETRIES
+
+openai = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))

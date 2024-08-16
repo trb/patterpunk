@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# Define the file to update
+FILE="/app/setup.py"
+
+# Extract the current version string from the file
+VERSION_LINE=$(grep -Eo "VERSION = \"[0-9]+\.[0-9]+\.[0-9]+\"" $FILE)
+
+# Extract the version numbers
+VERSION_NUMBERS=$(echo $VERSION_LINE | grep -Eo "[0-9]+\.[0-9]+\.[0-9]+")
+MAJOR=$(echo $VERSION_NUMBERS | cut -d. -f1)
+MINOR=$(echo $VERSION_NUMBERS | cut -d. -f2)
+PATCH=$(echo $VERSION_NUMBERS | cut -d. -f3)
+
+NEW_PATCH=$((PATCH+1))
+
+# Construct the new version string
+NEW_VERSION="VERSION = \"$MAJOR.$MINOR.$NEW_PATCH\""
+
+# Use sed to replace the old version with the new version in the file
+sed -i -E "s/$VERSION_LINE/$NEW_VERSION/" $FILE
+
+./build
+./clean

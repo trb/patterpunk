@@ -1,0 +1,60 @@
+#!/bin/bash
+
+PROJECT_NAME="pp"
+
+# Ensure the script is executed as 'docker-user'. If not, re-execute with 'sudo'.
+if [ "$(whoami)" != "docker-user" ]; then
+  sudo -u docker-user "$0" "$@"
+  exit $?
+fi
+
+# Define the base directory for the cml commands
+COMMANDS_DIR="$(dirname "$0")/commands"
+
+# Function to display the help text for the cml command
+show_help() {
+  echo "Usage: ${PROJECT_NAME} <command> [parameters]"
+  echo ""
+  echo "Available commands:"
+  # List directory commands in the cml commands directory
+  for cmd in "$COMMANDS_DIR"/*; do
+    if [[ -d "$cmd" && -x "$cmd/$(basename "$cmd")" ]]; then
+      echo "${PROJECT_NAME} $(basename "$cmd")"
+    fi
+  done
+  # List file commands in the cml commands directory
+  for cmd in "$COMMANDS_DIR"/*; do
+    if [[ -f "$cmd" && -x "$cmd" ]]; then
+      echo "${PROJECT_NAME} $(basename "$cmd")"
+    fi
+  done
+  # Dynamically list commands from project subdirectories only if a bin/help.txt file exists
+  for subdir in */; do
+    if [[ -d "${subdir}bin" && -x "${subdir}bin/$(basename "${subdir%/}")" ]]; then
+      echo "${PROJECT_NAME} $(basename "${subdir%/}")"
+    fi
+  done
+}
+
+# Check if no command was provided
+if [ $# -eq 0 ]; then
+  show_help
+  exit 1
+fi
+
+# The first argument is the command
+COMMAND=$1
+shift
+
+# Check if the command is a cml command
+if [[ -x "$COMMANDS_DIR/$COMMAND" ]]; then
+  # Delegate to the cml command script, whether it's a file or directory
+  "$COMMANDS_DIR/$COMMAND" "$@"
+elif [[ -x "*/bin/$COMMAND" && -f "*/bin/help.txt" ]]; then
+  # Delegate to the project subdirectory command script
+  "*/bin/$COMMAND" "$@"
+else
+  echo "Error: '$COMMAND' is not a valid cml command."
+  show_help
+  exit 1
+fi

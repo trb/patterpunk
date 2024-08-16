@@ -1,0 +1,5 @@
+#!/bin/bash
+
+FILE="/app/setup.py"
+
+python $FILE bdist_wheel

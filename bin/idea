@@ -1,0 +1,4 @@
+#!/bin/bash
+
+xhost +SI:localuser:docker-user
+export DISPLAY=":0"; su docker-user -c '/home/thomas/Applications/Idea/bin/idea.sh > /dev/null 2>&1 &'

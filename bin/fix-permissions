@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# Get the absolute path of the current script
+script_path="$(dirname "$(readlink -f "$0")")"
+project_path="$(realpath "$script_path/../")"
+
+sudo chown -R thomas.docker-user "$project_path"
+sudo chmod g+w -R "$project_path"
