@@ -9,6 +9,7 @@ from patterpunk.logger import logger
 class BadParameterError(Exception):
     pass
 
+
 class UnexpectedFunctionCallError(Exception):
     pass
 
@@ -73,11 +74,15 @@ class Message:
     def model(self):
         return self._model
 
-    def __repr__(self, truncate = True):
+    def __repr__(self, truncate=True):
         if self.content:
-            content = self.content if len(self.content) < 50 or truncate is False else f"{self.content[:50]}..."
+            content = (
+                self.content
+                if len(self.content) < 50 or truncate is False
+                else f"{self.content[:50]}..."
+            )
         else:
-            content = 'null'
+            content = "null"
         return f'{self.role.capitalize()}Message("{content}")'
 
     def copy(self):
@@ -114,18 +119,30 @@ class FunctionCallMessage(Message):
         self.available_functions = available_functions
 
     def to_dict(self):
-        return {'role': 'function', 'content': self.function_call['arguments'], 'name': self.function_call['name']}
+        return {
+            "role": "function",
+            "content": self.function_call["arguments"],
+            "name": self.function_call["name"],
+        }
 
     def execute_function_call(self):
-        name = self._function_call['name']
+        name = self._function_call["name"]
         if name not in self.available_functions:
-            raise UnexpectedFunctionCallError(f'Model indicated call to {name}, but no such function exists: {self.available_functions}')
+            raise UnexpectedFunctionCallError(
+                f"Model indicated call to {name}, but no such function exists: {self.available_functions}"
+            )
 
-        return self.available_functions[name](**json.loads(self._function_call['arguments']))
+        return self.available_functions[name](
+            **json.loads(self._function_call["arguments"])
+        )
 
-    def __repr__(self, truncate = True):
+    def __repr__(self, truncate=True):
         if self.content:
-            content = self.content if len(self.content) < 50 or truncate is False else f"{self.content[:50]}..."
+            content = (
+                self.content
+                if len(self.content) < 50 or truncate is False
+                else f"{self.content[:50]}..."
+            )
         else:
-            content = 'null'
+            content = "null"
         return f'FunctionCallMessage("{content}", "{self._function_call}")'

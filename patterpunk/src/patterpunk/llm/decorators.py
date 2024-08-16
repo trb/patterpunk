@@ -38,6 +38,7 @@ from pydantic import BaseModel, ValidationError
 class BadJsonResponseError(Exception):
     pass
 
+
 class UnexpectedFunctionCallError(Exception):
     pass
 
@@ -55,6 +56,7 @@ def get_json_system_message(model: BaseModel):
                 Generate JSON that is valid for this json schema:
                 {model.model_json_schema()}"""
     )
+
 
 def extract_json_gpt_35(return_type: BaseModel, chat: Chat):
     gpt35_system_message = get_json_system_message(return_type).set_model(
@@ -93,7 +95,12 @@ def extract_json_gpt_4(return_type: BaseModel, chat: Chat):
         return None
 
 
-def chatcomplete(*original_messages, model: Model = None, infix_processor = None, functions: List[Callable] = None):
+def chatcomplete(
+    *original_messages,
+    model: Model = None,
+    infix_processor=None,
+    functions: List[Callable] = None,
+):
     """
     Turns a python function into an LLM call.
 
@@ -102,6 +109,7 @@ def chatcomplete(*original_messages, model: Model = None, infix_processor = None
     :param infix_processor: Optional: Function that receives a chat object and returns chat object. Runs after original messages are processed by LLM but before JSON conversion is attempted
     :return:
     """
+
     def create_chat_completion(chat_completion_request):
         signature = inspect.signature(chat_completion_request)
 
@@ -116,7 +124,9 @@ def chatcomplete(*original_messages, model: Model = None, infix_processor = None
 
             parameters.update(kwargs)
             if hasattr(signature.return_annotation, "model_json_schema"):
-                parameters['return_type'] = signature.return_annotation.model_json_schema()
+                parameters["return_type"] = (
+                    signature.return_annotation.model_json_schema()
+                )
 
             messages = [message.prepare(parameters) for message in original_messages]
 
@@ -127,39 +137,54 @@ def chatcomplete(*original_messages, model: Model = None, infix_processor = None
                 logger.debug("Running infix processor")
                 chat = infix_processor(chat)
                 if not isinstance(chat, Chat):
-                    logger.debug('Infix function did not return a Chat object, indicating that no postprocessing should happen')
+                    logger.debug(
+                        "Infix function did not return a Chat object, indicating that no postprocessing should happen"
+                    )
                     return chat
 
             if chat.is_latest_message_function_call:
                 if not functions:
-                    raise UnexpectedFunctionCallError(f"Unexpected function call received from api: {chat.latest_message}")
-                print('should call f')
+                    raise UnexpectedFunctionCallError(
+                        f"Unexpected function call received from api: {chat.latest_message}"
+                    )
+                print("should call f")
                 print(chat.latest_message)
                 print()
-                return 'f call'
+                return "f call"
             else:
                 if hasattr(signature.return_annotation, "model_json_schema"):
-                    logger.debug('Looking for JSON documents in chat history, will attempt to deserialize into return type')
+                    logger.debug(
+                        "Looking for JSON documents in chat history, will attempt to deserialize into return type"
+                    )
                     json_objects = chat.extract_json()
                     if json_objects:
                         for json_object in json_objects[::-1]:
                             try:
-                                print('obj====================')
+                                print("obj====================")
                                 print()
                                 print(json_object)
-                                print('-==------------')
+                                print("-==------------")
                                 print()
-                                return signature.return_annotation.model_validate_json(json_object)
+                                return signature.return_annotation.model_validate_json(
+                                    json_object
+                                )
                             except ValidationError as error:
-                                logger.debug(f'Found json in chat, but it did not conform to the return type. json: {json_object}\nReturn type: {signature.return_annotation}', exc_info=error)
+                                logger.debug(
+                                    f"Found json in chat, but it did not conform to the return type. json: {json_object}\nReturn type: {signature.return_annotation}",
+                                    exc_info=error,
+                                )
 
-                    logger.debug("No valid JSON found in chat, trying to generate valid JSON for return type with an additional message")
+                    logger.debug(
+                        "No valid JSON found in chat, trying to generate valid JSON for return type with an additional message"
+                    )
                     data = extract_json_gpt_35(signature.return_annotation, chat)
                     if not data:
                         data = extract_json_gpt_4(signature.return_annotation, chat)
                         if not data:
                             raise BadJsonResponseError("Failed to parse response JSON")
-                    logger.debug("Successfully generated json that matches pydantic output type")
+                    logger.debug(
+                        "Successfully generated json that matches pydantic output type"
+                    )
                     return data
                 else:
                     return messages[-1].content

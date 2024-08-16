@@ -54,7 +54,7 @@ elif [[ -x "*/bin/$COMMAND" && -f "*/bin/help.txt" ]]; then
   # Delegate to the project subdirectory command script
   "*/bin/$COMMAND" "$@"
 else
-  echo "Error: '$COMMAND' is not a valid cml command."
+  echo "Error: '$COMMAND' is not a valid pp command."
   show_help
   exit 1
 fi
