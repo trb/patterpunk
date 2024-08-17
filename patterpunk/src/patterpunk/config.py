@@ -2,7 +2,7 @@ import os
 
 from openai import OpenAI
 
-DEFAULT_MODEL = os.getenv("PP_DEFAULT_MODEL") or "gpt-3.5-turbo"
+DEFAULT_MODEL = os.getenv("PP_DEFAULT_MODEL") or "gpt-4o-mini"
 DEFAULT_TEMPERATURE = os.getenv("PP_DEFAULT_TEMPERATURE") or 1.0
 DEFAULT_TOP_P = os.getenv("PP_DEFAULT_TOP_P") or 1.0
 DEFAULT_FREQUENCY_PENALTY = os.getenv("PP_DEFAULT_FREQUENCY_PENALTY") or 0.0
