@@ -10,4 +10,10 @@ DEFAULT_PRESENCE_PENALTY = os.getenv("PP_DEFAULT_PRESENCE_PENALTY") or 0.0
 MAX_RETRIES = os.getenv("PP_MAX_RETRIES") or 6
 OPENAI_MAX_RETRIES = os.getenv("PP_OPENAI_MAX_RETRIES") or MAX_RETRIES
 
-openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+AWS_REGION = os.getenv("PP_AWS_REGION", "us-east-1")
+AWS_ACCESS_KEY_ID = os.getenv("PP_AWS_ACCESS_KEY_ID", None)
+AWS_SECRET_ACCESS_KEY = os.getenv("PP_AWS_SECRET_ACCESS_KEY", None)
+
+OPENAI_API_KEY = os.getenv("PP_OPENAI_API_KEY", None)
+if OPENAI_API_KEY:
+    openai = OpenAI(api_key=OPENAI_API_KEY)

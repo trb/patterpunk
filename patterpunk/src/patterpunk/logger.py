@@ -11,3 +11,5 @@ logger.addHandler(logger_handler)
 
 logger_llm_handler = logging.StreamHandler()
 logger_llm.addHandler(logger_llm_handler)
+
+logger_llm.propagate = False

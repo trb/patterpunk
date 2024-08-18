@@ -6,6 +6,12 @@ from jinja2 import Template
 from patterpunk.logger import logger
 
 
+ROLE_SYSTEM = "system"
+ROLE_USER = "user"
+ROLE_ASSISTANT = "assistant"
+ROLE_FUNCTION_CALL = "function_call"
+
+
 class BadParameterError(Exception):
     pass
 
@@ -15,7 +21,7 @@ class UnexpectedFunctionCallError(Exception):
 
 
 class Message:
-    def __init__(self, content: str, role: str = "user"):
+    def __init__(self, content: str, role: str = ROLE_USER):
         self.content = content
         self.role = role
         self._model = None
@@ -91,22 +97,22 @@ class Message:
 
 class SystemMessage(Message):
     def __init__(self, content: str):
-        super().__init__(content, "system")
+        super().__init__(content, ROLE_SYSTEM)
 
 
 class UserMessage(Message):
     def __init__(self, content: str):
-        super().__init__(content, "user")
+        super().__init__(content, ROLE_USER)
 
 
 class AssistantMessage(Message):
     def __init__(self, content: str):
-        super().__init__(content, "assistant")
+        super().__init__(content, ROLE_ASSISTANT)
 
 
 class FunctionCallMessage(Message):
     def __init__(self, content, function_call):
-        super().__init__(content, "function_call")
+        super().__init__(content, ROLE_FUNCTION_CALL)
         self._function_call = function_call
         self.available_functions: Dict[str, callable] = {}
         self.is_function_call = True
