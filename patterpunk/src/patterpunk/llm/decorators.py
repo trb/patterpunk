@@ -4,7 +4,7 @@ from typing import Callable, List
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.defaults import default_model
 from patterpunk.llm.messages import SystemMessage
-from patterpunk.llm.openai import Model, OpenAiModel
+from patterpunk.llm.models.openai import Model, OpenAiModel
 from patterpunk.logger import logger
 from pydantic import BaseModel, ValidationError
 

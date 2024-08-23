@@ -11,3 +11,23 @@ services:
       PP_AWS_REGION: "${AWS_REGION}"
       PP_AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
       PP_AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      PP_OLLAMA_API_ENDPOINT: "http://ollama:11434"
+      PP_ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - /docker/llama-models/ollama:/root/.ollama/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]

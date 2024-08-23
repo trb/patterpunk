@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, _GenericAlias
 
 from patterpunk.llm.defaults import default_model
 from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
-from patterpunk.llm.openai import Model
+from patterpunk.llm.models.openai import Model
 from patterpunk.logger import logger
 
 

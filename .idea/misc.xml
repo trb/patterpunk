@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="Black">
+    <option name="enabledOnReformat" value="true" />
+    <option name="enabledOnSave" value="true" />
+    <option name="executionMode" value="BINARY" />
+    <option name="pathToExecutable" value="/usr/bin/black" />
     <option name="sdkName" value="Remote Python 3.12.3 Docker Compose (patterpunk at [/home/thomas/Code/Patterpunk/docker-compose.yml])" />
   </component>
   <component name="ProjectRootManager" version="2" languageLevel="JDK_22" project-jdk-name="Remote Python 3.12.3 Docker Compose (patterpunk at [/home/thomas/Code/Patterpunk/docker-compose.yml])" project-jdk-type="Python SDK">

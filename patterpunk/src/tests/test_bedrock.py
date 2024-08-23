@@ -1,8 +1,8 @@
 import pytest
 
-from patterpunk.llm.bedrock import BedrockModel
+from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import SystemMessage, UserMessage
+from patterpunk.llm.messages import UserMessage
 
 
 @pytest.mark.parametrize(
@@ -21,6 +21,11 @@ from patterpunk.llm.messages import SystemMessage, UserMessage
 )
 def test_simple_bedrock(model_id):
     bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
+
+    print()
+    print("Bedrock Models")
+    print(BedrockModel.get_available_models())
+    print()
 
     chat = Chat(model=bedrock)
 

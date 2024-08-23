@@ -1,15 +1,15 @@
+from abc import ABC
 from typing import List, Optional
-
-import boto3
-from botocore.exceptions import ClientError
 
 from patterpunk.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
-    AWS_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY,
-    AWS_REGION,
+    boto3,
+    get_bedrock_client_by_region,
 )
+
+if boto3:
+    from botocore.exceptions import ClientError
 from patterpunk.llm.messages import (
     Message,
     AssistantMessage,
@@ -17,7 +17,7 @@ from patterpunk.llm.messages import (
     ROLE_ASSISTANT,
     ROLE_USER,
 )
-from patterpunk.llm.models import Model
+from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger, logger_llm
 
 
@@ -25,39 +25,26 @@ class BedrockMissingCredentialsError(Exception):
     pass
 
 
-class BedrockModel(Model):
+class BedrockModel(Model, ABC):
     def __init__(
         self,
         model_id: str,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float = DEFAULT_TOP_P,
         region_name: Optional[str] = None,
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
     ):
         self.model_id = model_id
         self.temperature = temperature
         self.top_p = top_p
 
-        aws_access_key_id = AWS_ACCESS_KEY_ID
-        aws_secret_access_key = AWS_SECRET_ACCESS_KEY
-        aws_region = AWS_REGION
-
-        if not aws_access_key_id or not aws_secret_access_key:
-            raise BedrockMissingCredentialsError(
-                "Both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY have to be set - check the environment variables PP_AWS_ACCESS_KEY_ID and PP_AWS_SECRET_ACCESS_KEY"
-            )
-
-        if region_name is not None:
-            aws_region = region_name
-
-        if aws_access_key_id and aws_secret_access_key:
-            self.client = boto3.client(
-                "bedrock-runtime",
-                region_name=aws_region,
-                aws_access_key_id=aws_access_key_id,
-                aws_secret_access_key=aws_secret_access_key,
-            )
-        else:
-            self.client = boto3.client("bedrock-runtime", region_name=aws_region)
+        self.client = get_bedrock_client_by_region(
+            client_type="bedrock-runtime",
+            region=region_name,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+        )
 
     def generate_assistant_message(
         self, messages: List[Message], functions: list | None = None
@@ -105,6 +92,25 @@ class BedrockModel(Model):
         logger_llm.info(f"[Assistant]\n{response_text}")
 
         return AssistantMessage(response_text)
+
+    @staticmethod
+    def get_name():
+        return "Bedrock"
+
+    @staticmethod
+    def get_available_models(
+        region: str = None,
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
+    ) -> List[str]:
+        client = get_bedrock_client_by_region(client_type="bedrock", region=region)
+
+        return [
+            model["modelName"]
+            for model in client.list_foundation_models(byOutputModality="TEXT")[
+                "modelSummaries"
+            ]
+        ]
 
     def __deepcopy__(self, memo_dict):
         return BedrockModel(

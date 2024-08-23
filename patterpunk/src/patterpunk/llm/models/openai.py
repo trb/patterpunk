@@ -1,11 +1,13 @@
+from abc import ABC
 from typing import List
-
-from openai import APIError
 
 from patterpunk.config import DEFAULT_TEMPERATURE, OPENAI_MAX_RETRIES, openai
 from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
-from patterpunk.llm.models import Model
+from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger, logger_llm
+
+if openai:
+    from openai import APIError
 
 
 class OpenAiWrongParameterError(Exception):
@@ -14,11 +16,15 @@ class OpenAiWrongParameterError(Exception):
         self.parameter = parameter
 
 
+class OpenAiMissingConfigurationError(Exception):
+    pass
+
+
 class OpenAiApiError(Exception):
     pass
 
 
-class OpenAiModel(Model):
+class OpenAiModel(Model, ABC):
     def __init__(
         self,
         model="",
@@ -28,6 +34,11 @@ class OpenAiModel(Model):
         presence_penalty=None,
         logit_bias=None,
     ):
+        if not openai:
+            raise OpenAiMissingConfigurationError(
+                "OpenAi was not initialized correctly, did you set the api key?"
+            )
+
         if temperature is None:
             temperature = DEFAULT_TEMPERATURE
         if top_p is None:
@@ -125,3 +136,11 @@ class OpenAiModel(Model):
             )
         else:
             return AssistantMessage(response_message.message.content)
+
+    @staticmethod
+    def get_name():
+        return "OpenAI"
+
+    @staticmethod
+    def get_available_models() -> List[str]:
+        return [model.id for model in openai.models.list().data]
