@@ -20,5 +20,5 @@ NEW_VERSION="VERSION = \"$MAJOR.$MINOR.$NEW_PATCH\""
 # Use sed to replace the old version with the new version in the file
 sed -i -E "s/$VERSION_LINE/$NEW_VERSION/" $FILE
 
-./build
-./clean
+/app/bin/build
+/app/bin/clean
