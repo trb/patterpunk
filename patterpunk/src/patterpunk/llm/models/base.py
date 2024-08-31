@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Callable, Optional, override
+from typing import List, Callable, Optional
 
 from patterpunk.llm.messages import Message
 
