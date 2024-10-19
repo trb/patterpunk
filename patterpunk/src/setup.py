@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 from pathlib import Path
 
 
-VERSION = "0.0.6"
+VERSION = "0.0.14"
 
 current_dir = Path(__file__).parent
 requirements_path = current_dir / "requirements.txt"
@@ -10,6 +10,9 @@ requirements_path = current_dir / "requirements.txt"
 
 setup(
     name="patterpunk",
+    description="A simple library to interact with various LLM providers",
+    long_description=open(current_dir / "patterpunk" / "README.md").read(),
+    long_description_content_type="text/markdown",
     version=VERSION,
     packages=find_packages(exclude=["tests", "bin", "dist"]),
     url="https://github.com/trb/patterpunk",
@@ -24,7 +27,6 @@ setup(
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",
-        "License :: OSI Approved :: Mozilla Public License 2.0",
         "Intended Audience :: Developers",
     ],
 )

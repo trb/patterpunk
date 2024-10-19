@@ -19,7 +19,9 @@ COPY ./src/ /app
 
 WORKDIR /app
 
-RUN pip install --break-system-packages -r requirements.txt && pip install --break-system-packages -r test.requirements.txt
+RUN pip install --break-system-packages -r requirements.txt \
+    && pip install --break-system-packages -r test.requirements.txt \
+    && pip install --break-system-packages -r build.requirements.txt
 
 VOLUME ["/app"]
 
