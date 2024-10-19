@@ -1,4 +1,4 @@
 #!/bin/bash
 DOCKER_COMPOSE_FILE=$(realpath "$(dirname $0)/../../docker-compose.yml")
 
-/home/docker-user/bin/docker-compose -f "${DOCKER_COMPOSE_FILE}" stop $1
+/home/docker-user/bin/docker compose -f "${DOCKER_COMPOSE_FILE}" stop $1

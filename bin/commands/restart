@@ -1,5 +1,5 @@
 #!/bin/bash
 DOCKER_COMPOSE_FILE=$(realpath "$(dirname $0)/../../docker-compose.yml")
 
-/home/docker-user/bin/docker-compose -f "$(pwd)/docker-compose.yml" stop $1
-/home/docker-user/bin/docker-compose -f "$(pwd)/docker-compose.yml" up --detach --remove-orphans $1
+/home/docker-user/bin/docker compose -f "$(pwd)/docker-compose.yml" stop $1
+/home/docker-user/bin/docker compose -f "$(pwd)/docker-compose.yml" up --detach --remove-orphans $1

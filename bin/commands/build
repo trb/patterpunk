@@ -1,4 +1,4 @@
 #!/bin/bash
 DOCKER_COMPOSE_FILE=$(realpath "$(dirname $0)/../../docker-compose.yml")
 
-/home/docker-user/bin/docker-compose -f "$(pwd)/docker-compose.yml" build --no-cache --force-rm $1
+/home/docker-user/bin/docker compose -f "$(pwd)/docker-compose.yml" build --no-cache --force-rm $1
