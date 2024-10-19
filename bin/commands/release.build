@@ -3,4 +3,4 @@
 SERVICE_NAME=$1
 shift  # This removes the first argument from the list
 
-/home/docker-user/bin/docker compose -f "$(pwd)/docker-compose.yml" run --entrypoint "sh -c \"/app/bin/release\"" $SERVICE_NAME
+/home/docker-user/bin/docker compose -f "$(pwd)/docker-compose.yml" run --rm --entrypoint "sh -c \"/app/bin/release\"" $SERVICE_NAME
