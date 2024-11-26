@@ -1,11 +1,14 @@
+import random
 from abc import ABC
 from typing import List, Optional
+import time
 
 from patterpunk.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     boto3,
     get_bedrock_client_by_region,
+    MAX_RETRIES,
 )
 
 if boto3:
@@ -77,15 +80,50 @@ class BedrockModel(Model, ABC):
         ]
 
         try:
-            response = self.client.converse(
-                modelId=self.model_id,
-                system=[{"text": message.content} for message in system_messages],
-                messages=conversation,
-                inferenceConfig={"temperature": self.temperature, "topP": self.top_p},
-            )
+            retry = 0
+            retry_sleep = random.randint(30, 60)
+            while True:
+                try:
+                    response = self.client.converse(
+                        modelId=self.model_id,
+                        system=[
+                            {"text": message.content} for message in system_messages
+                        ],
+                        messages=conversation,
+                        inferenceConfig={
+                            "temperature": self.temperature,
+                            "topP": self.top_p,
+                        },
+                    )
+                    break
+                except ClientError as client_exception:
+                    if (
+                        client_exception.response["Error"]["Code"]
+                        == "ThrottlingException"
+                    ):
+                        if retry > MAX_RETRIES:
+                            logger.error(
+                                f"ERROR: AWS Bedrock is throttling and max retries reached. Retries: {retry}, max retries: {MAX_RETRIES} "
+                            )
+                            raise
+                        else:
+                            logger.warning(
+                                "AWS Bedrock throttling detected, backing off and retrying"
+                            )
+                            retry += 1
+                            time.sleep(retry_sleep)
+                            retry_sleep += random.randint(30, 60)
+                    else:
+                        logger.error(
+                            "AWS Bedrock client exception detected",
+                            exc_info=client_exception,
+                        )
+                        raise
             logger.info("AWS Bedrock response received")
         except (ClientError, Exception) as e:
-            logger.error(f"ERROR: Can't invoke '{self.model_id}'. Reason: {e}")
+            logger.error(
+                f"ERROR: Can't invoke '{self.model_id}'. Reason: {e}", exc_info=e
+            )
             raise
 
         response_text = response["output"]["message"]["content"][0]["text"]
