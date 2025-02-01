@@ -1,5 +1,6 @@
+import enum
 from abc import ABC
-from typing import List
+from typing import List, Union, Literal, Optional
 
 from patterpunk.config import DEFAULT_TEMPERATURE, OPENAI_MAX_RETRIES, openai
 from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
@@ -24,6 +25,12 @@ class OpenAiApiError(Exception):
     pass
 
 
+class OpenAiReasoningEffort(enum.Enum):
+    LOW = enum.auto()
+    MEDIUM = enum.auto()
+    HIGH = enum.auto()
+
+
 class OpenAiModel(Model, ABC):
     def __init__(
         self,
@@ -33,6 +40,12 @@ class OpenAiModel(Model, ABC):
         frequency_penalty=None,
         presence_penalty=None,
         logit_bias=None,
+        reasoning_effort: Optional[
+            Union[
+                OpenAiReasoningEffort,
+                Literal["low", "medium", "high"],
+            ]
+        ] = OpenAiReasoningEffort.LOW,
     ):
         if not openai:
             raise OpenAiMissingConfigurationError(
@@ -70,14 +83,22 @@ class OpenAiModel(Model, ABC):
             logger.warning(message)
             raise OpenAiWrongParameterError(message, "presence_penalty")
 
+        if not isinstance(reasoning_effort, OpenAiReasoningEffort):
+            try:
+                reasoning_effort = OpenAiReasoningEffort[reasoning_effort.upper()]
+            except KeyError:
+                message = f"Reasoning effort must be a value of OpenAiReasoningEffort or 'low', 'medium' or 'high', parameter given: {reasoning_effort}"
+                logger.warning(message)
+                raise OpenAiWrongParameterError(message, "reasoning_effort")
+
         self.model = model
         self.temperature = temperature
         self.top_p = top_p
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.logit_bias = {} if logit_bias is None else logit_bias
-
         self.completion = None
+        self.reasoning_effort = reasoning_effort
 
     def generate_assistant_message(
         self, messages: List[Message], functions: list | None = None
@@ -88,6 +109,7 @@ class OpenAiModel(Model, ABC):
                 [f"{message.__repr__(truncate=False)}" for message in messages]
             )
         )
+        # @todo move this under openai_parameters are build and log those instead of class arguments
         logger_llm.info(
             f"Model params: {self.model}, temp: {self.temperature}, top_p: {self.top_p}, frequency_penalty: {self.frequency_penalty}, presence_penalty: {self.presence_penalty}, functions: {functions}"
         )
@@ -100,12 +122,19 @@ class OpenAiModel(Model, ABC):
                 for message in messages
                 if not message.is_function_call
             ],
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
-            "logit_bias": self.logit_bias,
         }
+
+        if self.model.startswith("o"):
+            openai_parameters["reasoning_effort"] = self.reasoning_effort.name.lower()
+        else:
+            openai_parameters = {
+                **openai_parameters,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "frequency_penalty": self.frequency_penalty,
+                "presence_penalty": self.presence_penalty,
+                "logit_bias": self.logit_bias,
+            }
 
         if functions:
             openai_parameters["functions"] = functions

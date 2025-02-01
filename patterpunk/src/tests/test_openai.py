@@ -221,3 +221,17 @@ nager, WAMITAB
     print()
     print("json")
     print(chat.extract_json())
+
+
+def test_o1():
+    chat = Chat(
+        model=OpenAiModel(model="o3-mini", temperature=0.1, reasoning_effort="medium")
+    )
+
+    chat = (
+        chat.add_message(SystemMessage("""Only reply with 'test'"""))
+        .add_message(UserMessage("You are being tested"))
+        .complete()
+    )
+
+    print(chat.latest_message.content)
