@@ -23,7 +23,7 @@ services:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_HOST=0.0.0.0
     volumes:
-      - /docker/llama-models/ollama:/root/.ollama/models
+      - /home/docker-user/ollama/models:/root/.ollama/models
     deploy:
       resources:
         reservations:

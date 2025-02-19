@@ -139,7 +139,7 @@ class OpenAiModel(Model, ABC):
         if functions:
             openai_parameters["functions"] = functions
 
-        retry_count = 1
+        retry_count = 0
         done = False
         response = False
 

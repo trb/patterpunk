@@ -1,3 +1,4 @@
+import time
 from abc import ABC
 from typing import List, Optional, Callable, get_args
 
@@ -7,6 +8,7 @@ from patterpunk.config import (
     ANTHROPIC_DEFAULT_TOP_P,
     ANTHROPIC_DEFAULT_TOP_K,
     ANTHROPIC_DEFAULT_MAX_TOKENS,
+    MAX_RETRIES,
 )
 from patterpunk.llm.messages import (
     Message,
@@ -17,6 +19,16 @@ from patterpunk.llm.messages import (
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger
+
+
+if anthropic:
+    from anthropic import APIError
+
+
+class AnthropicRateLimitError(Exception):
+    """Raised when all retry attempts for rate limit errors are exhausted"""
+
+    pass
 
 
 class AnthropicMaxTokensError(Exception):
@@ -49,32 +61,63 @@ class AnthropicModel(Model, ABC):
             [message.content for message in messages if message.role == ROLE_SYSTEM]
         )
 
-        response = anthropic.messages.create(
-            model=self.model,
-            system=system_prompt,
-            messages=[
-                message.to_dict()
-                for message in messages
-                if message.role in [ROLE_USER, ROLE_ASSISTANT]
-                and not message.is_function_call
-            ],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-        )
+        retry_count = 0
+        wait_time = 60  # Initial wait time in seconds
 
-        if response.stop_reason in ["end_turn", "stop_sequence"]:
-            content = "\n".join(
-                [block.text for block in response.content if block.type == "text"]
-            )
-            return AssistantMessage(content)
-        elif response.stop_reason == "max_tokens":
-            raise AnthropicMaxTokensError("Model reached maximum tokens")
-        elif response.stop_reason == "tool_use":
-            raise AnthropicNotImplemented(
-                "Tool use has not been implemented for Anthropic yet"
-            )
+        while True:
+            try:
+                response = anthropic.messages.create(
+                    model=self.model,
+                    system=system_prompt,
+                    messages=[
+                        message.to_dict()
+                        for message in messages
+                        if message.role in [ROLE_USER, ROLE_ASSISTANT]
+                        and not message.is_function_call
+                    ],
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
+                )
+
+                if response.stop_reason in ["end_turn", "stop_sequence"]:
+                    content = "\n".join(
+                        [
+                            block.text
+                            for block in response.content
+                            if block.type == "text"
+                        ]
+                    )
+                    return AssistantMessage(content)
+                elif response.stop_reason == "max_tokens":
+                    raise AnthropicMaxTokensError("Model reached maximum tokens")
+                elif response.stop_reason == "tool_use":
+                    raise AnthropicNotImplemented(
+                        "Tool use has not been implemented for Anthropic yet"
+                    )
+
+            except APIError as e:
+                if (
+                    getattr(e, "status_code", None) == 429
+                    or "rate_limit_error" in str(e).lower()
+                ):
+                    if retry_count >= MAX_RETRIES:
+                        raise AnthropicRateLimitError(
+                            f"Rate limit exceeded after {retry_count} retries"
+                        ) from e
+
+                    logger.warning(
+                        f"Rate limit hit, attempt {retry_count + 1}/{MAX_RETRIES}. "
+                        f"Waiting {wait_time} seconds before retry."
+                    )
+
+                    time.sleep(wait_time)
+                    retry_count += 1
+                    wait_time = int(wait_time * 1.5)  # Increase wait time by 50%
+                    continue
+
+                raise  # Re-raise any other API errors
 
     @staticmethod
     def get_available_models() -> List[str]:
