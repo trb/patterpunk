@@ -1,3 +1,6 @@
+
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.messages import SystemMessage, UserMessage
@@ -222,3 +225,172 @@ nager, WAMITAB
     print(chat.latest_message.content)
     print()
     print(chat.extract_json())
+
+def test_structured_output():
+    """
+    @todo Add an assert that checks that fields that can't be answered from the text are actually set to none. This
+    ensures the models don't hallucinate.
+    """
+    # Define a complex structured output type using Pydantic
+    class Author(BaseModel):
+        name: str
+        expertise: List[str]
+        years_experience: Optional[int] = None
+
+    class Reference(BaseModel):
+        title: str
+        year: int
+        url: Optional[str] = None
+
+    class DocumentAnalysis(BaseModel):
+        title: str
+        summary: str
+        key_points: List[str]
+        sentiment: str = Field(description="Overall sentiment of the document (positive, negative, neutral)")
+        topics: List[str] = Field(min_items=3, max_items=10)
+        author: Author
+        references: List[Reference] = Field(default_factory=list)
+        confidence_score: float = Field(ge=0.0, le=1.0)
+        is_factual: bool
+
+    # Test with claude-3-7-sonnet-latest
+    sonnet_chat = Chat(
+        model=AnthropicModel(
+            model="claude-3-7-sonnet-latest", max_tokens=4096, temperature=0.2
+        )
+    )
+
+    sonnet_chat = (
+        sonnet_chat.add_message(
+            SystemMessage(
+                """
+You are an expert document analyzer. Your task is to analyze the provided text and extract structured information.
+Be thorough and accurate in your analysis.
+"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                """
+Please analyze this research paper abstract:
+
+Title: The Impact of Artificial Intelligence on Climate Change Mitigation
+
+Abstract:
+This paper examines the dual role of artificial intelligence (AI) in addressing climate change. 
+We analyze how AI technologies can both contribute to and help mitigate greenhouse gas emissions. 
+Our research indicates that while AI systems require significant energy for training and inference, 
+they also enable more efficient energy management, improved climate modeling, and optimization of 
+renewable energy systems. Through case studies across five continents, we demonstrate that 
+AI-optimized systems can reduce energy consumption by 15-30% in various sectors. However, we also 
+identify ethical concerns regarding the unequal distribution of both AI benefits and climate impacts. 
+The paper concludes with policy recommendations for ensuring that AI development aligns with climate 
+goals and promotes environmental justice.
+
+Keywords: artificial intelligence, climate change, energy efficiency, environmental policy, ethics
+""",
+                structured_output=DocumentAnalysis
+            )
+        )
+        .complete()
+    )
+
+    sonnet_parsed = sonnet_chat.parsed_output
+    
+    # Validate sonnet model output
+    assert isinstance(sonnet_parsed, DocumentAnalysis), "Sonnet output should be a DocumentAnalysis instance"
+    assert sonnet_parsed.title, "Title should not be empty"
+    assert "artificial intelligence" in sonnet_parsed.title.lower() or "ai" in sonnet_parsed.title.lower(), "Title should mention AI"
+    assert "climate" in sonnet_parsed.title.lower(), "Title should mention climate"
+    
+    assert len(sonnet_parsed.summary) > 50, "Summary should be substantial"
+    assert len(sonnet_parsed.key_points) >= 3, "Should identify at least 3 key points"
+    
+    assert sonnet_parsed.sentiment in ["positive", "negative", "neutral", "mixed"], "Sentiment should be a valid value"
+    assert len(sonnet_parsed.topics) >= 3, "Should identify at least 3 topics"
+    assert "artificial intelligence" in " ".join(sonnet_parsed.topics).lower() or "ai" in " ".join(sonnet_parsed.topics).lower(), "Topics should include AI"
+    assert "climate" in " ".join(sonnet_parsed.topics).lower(), "Topics should include climate"
+    
+    assert sonnet_parsed.author.name, "Author name should not be empty"
+    assert len(sonnet_parsed.author.expertise) > 0, "Author should have expertise"
+    
+    assert 0 <= sonnet_parsed.confidence_score <= 1, "Confidence score should be between 0 and 1"
+    assert isinstance(sonnet_parsed.is_factual, bool), "is_factual should be a boolean"
+    
+    # Check that fields that can't be answered from the text are set to None
+    assert sonnet_parsed.author.years_experience is None, "Author years_experience should be None as it's not in the text"
+    for ref in sonnet_parsed.references:
+        assert ref.url is None, "Reference URL should be None as it's not in the text"
+
+    # Test with claude-3-5-haiku-latest
+    haiku_chat = Chat(
+        model=AnthropicModel(
+            model="claude-3-5-haiku-latest", max_tokens=4096, temperature=0.2
+        )
+    )
+
+    haiku_chat = (
+        haiku_chat.add_message(
+            SystemMessage(
+                """
+You are an expert document analyzer. Your task is to analyze the provided text and extract structured information.
+Be thorough and accurate in your analysis.
+"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                """
+Please analyze this research paper abstract:
+
+Title: The Impact of Artificial Intelligence on Climate Change Mitigation
+
+Abstract:
+This paper examines the dual role of artificial intelligence (AI) in addressing climate change. 
+We analyze how AI technologies can both contribute to and help mitigate greenhouse gas emissions. 
+Our research indicates that while AI systems require significant energy for training and inference, 
+they also enable more efficient energy management, improved climate modeling, and optimization of 
+renewable energy systems. Through case studies across five continents, we demonstrate that 
+AI-optimized systems can reduce energy consumption by 15-30% in various sectors. However, we also 
+identify ethical concerns regarding the unequal distribution of both AI benefits and climate impacts. 
+The paper concludes with policy recommendations for ensuring that AI development aligns with climate 
+goals and promotes environmental justice.
+
+Keywords: artificial intelligence, climate change, energy efficiency, environmental policy, ethics
+""",
+                structured_output=DocumentAnalysis
+            )
+        )
+        .complete()
+    )
+
+    haiku_parsed = haiku_chat.parsed_output
+    
+    # Validate haiku model output
+    assert isinstance(haiku_parsed, DocumentAnalysis), "Haiku output should be a DocumentAnalysis instance"
+    assert haiku_parsed.title, "Title should not be empty"
+    assert "artificial intelligence" in haiku_parsed.title.lower() or "ai" in haiku_parsed.title.lower(), "Title should mention AI"
+    assert "climate" in haiku_parsed.title.lower(), "Title should mention climate"
+    
+    assert len(haiku_parsed.summary) > 50, "Summary should be substantial"
+    assert len(haiku_parsed.key_points) >= 3, "Should identify at least 3 key points"
+    
+    assert haiku_parsed.sentiment in ["positive", "negative", "neutral", "mixed"], "Sentiment should be a valid value"
+    assert len(haiku_parsed.topics) >= 3, "Should identify at least 3 topics"
+    assert "artificial intelligence" in " ".join(haiku_parsed.topics).lower() or "ai" in " ".join(haiku_parsed.topics).lower(), "Topics should include AI"
+    assert "climate" in " ".join(haiku_parsed.topics).lower(), "Topics should include climate"
+    
+    assert haiku_parsed.author.name, "Author name should not be empty"
+    assert len(haiku_parsed.author.expertise) > 0, "Author should have expertise"
+    
+    assert 0 <= haiku_parsed.confidence_score <= 1, "Confidence score should be between 0 and 1"
+    assert isinstance(haiku_parsed.is_factual, bool), "is_factual should be a boolean"
+    
+    # Check that fields that can't be answered from the text are set to None
+    assert haiku_parsed.author.years_experience is None, "Author years_experience should be None as it's not in the text"
+    for ref in haiku_parsed.references:
+        assert ref.url is None, "Reference URL should be None as it's not in the text"
+
+    # Compare models
+    assert isinstance(sonnet_parsed.confidence_score, float) and isinstance(haiku_parsed.confidence_score, float), "Both models should return confidence scores as floats"
+    assert len(sonnet_parsed.key_points) > 0 and len(haiku_parsed.key_points) > 0, "Both models should identify key points"

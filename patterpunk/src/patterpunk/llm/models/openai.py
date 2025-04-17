@@ -1,8 +1,10 @@
+
 import enum
 from abc import ABC
-from typing import List, Union, Literal, Optional
+from typing import List, Literal, Optional, Union
 
-from patterpunk.config import DEFAULT_TEMPERATURE, OPENAI_MAX_RETRIES, openai
+from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
+from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
 from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger, logger_llm
@@ -33,19 +35,19 @@ class OpenAiReasoningEffort(enum.Enum):
 
 class OpenAiModel(Model, ABC):
     def __init__(
-        self,
-        model="",
-        temperature=None,
-        top_p=None,
-        frequency_penalty=None,
-        presence_penalty=None,
-        logit_bias=None,
-        reasoning_effort: Optional[
-            Union[
-                OpenAiReasoningEffort,
-                Literal["low", "medium", "high"],
-            ]
-        ] = OpenAiReasoningEffort.LOW,
+            self,
+            model="",
+            temperature=None,
+            top_p=None,
+            frequency_penalty=None,
+            presence_penalty=None,
+            logit_bias=None,
+            reasoning_effort: Optional[
+                Union[
+                    OpenAiReasoningEffort,
+                    Literal["low", "medium", "high"],
+                ]
+            ] = OpenAiReasoningEffort.LOW,
     ):
         if not openai:
             raise OpenAiMissingConfigurationError(
@@ -101,7 +103,7 @@ class OpenAiModel(Model, ABC):
         self.reasoning_effort = reasoning_effort
 
     def generate_assistant_message(
-        self, messages: List[Message], functions: list | None = None
+            self, messages: List[Message], functions: list | None = None, structured_output: Optional[object] = None
     ) -> AssistantMessage | FunctionCallMessage:
         logger.info("Request to OpenAi made")
         logger_llm.debug(
@@ -109,20 +111,31 @@ class OpenAiModel(Model, ABC):
                 [f"{message.__repr__(truncate=False)}" for message in messages]
             )
         )
-        # @todo move this under openai_parameters are build and log those instead of class arguments
-        logger_llm.info(
-            f"Model params: {self.model}, temp: {self.temperature}, top_p: {self.top_p}, frequency_penalty: {self.frequency_penalty}, presence_penalty: {self.presence_penalty}, functions: {functions}"
-        )
 
-        openai_parameters = {
-            "model": self.model,
-            # don't send function calls back, they're wasted tokens
-            "messages": [
-                message.to_dict()
+        openai_parameters = {}
+        openai_call = openai.chat.completions.create
+        set_parsed_output = False
+        prompt_for_structured_output = False
+
+        if structured_output and has_model_schema(structured_output):
+            # Fall back to JSON mode for models that don't support structured output
+            if self.model.startswith("o") or self.model.startswith('gpt-4o') or self.model.startswith('gpt-4.'):
+                openai_call = openai.beta.chat.completions.parse
+                set_parsed_output = True
+                openai_parameters["response_format"] = structured_output
+            else:
+                openai_parameters["response_format"] = {
+                    "type": "json_object",
+                }
+
+                prompt_for_structured_output = True
+
+        openai_parameters["model"] = self.model
+        openai_parameters["messages"] = [
+                message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
                 for message in messages
                 if not message.is_function_call
-            ],
-        }
+            ]
 
         if self.model.startswith("o"):
             openai_parameters["reasoning_effort"] = self.reasoning_effort.name.lower()
@@ -139,17 +152,24 @@ class OpenAiModel(Model, ABC):
         if functions:
             openai_parameters["functions"] = functions
 
+        # Log only the parameters that are actually sent to the model
+        log_params = {k: v for k, v in openai_parameters.items() if k != "messages"}
+        param_strings = []
+        for key, value in log_params.items():
+            param_strings.append(f"{key}: {value}")
+        logger_llm.info(f"OpenAi Model params: {', '.join(param_strings)}")
+
         retry_count = 0
         done = False
         response = False
 
         while not done and retry_count < OPENAI_MAX_RETRIES:
             try:
-                response = openai.chat.completions.create(**openai_parameters)
+                response = openai_call(**openai_parameters)
                 logger.info("OpenAi response received")
                 done = True
             except APIError as error:
-                logger.info("Retrying OpenAI request due to APIError", exc_info=error)
+                logger.info("Retrying OpenAi request due to APIError", exc_info=error)
                 retry_count += 1
 
         if not done or not response:
@@ -164,7 +184,7 @@ class OpenAiModel(Model, ABC):
                 response_message.message.function_call,
             )
         else:
-            return AssistantMessage(response_message.message.content)
+            return AssistantMessage(response_message.message.content, structured_output=structured_output, parsed_output=response_message.message.parsed if set_parsed_output else None)
 
     @staticmethod
     def get_name():

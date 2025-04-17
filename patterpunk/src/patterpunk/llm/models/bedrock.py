@@ -7,9 +7,10 @@ from patterpunk.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     boto3,
-    get_bedrock_client_by_region,
+    GENERATE_STRUCTURED_OUTPUT_PROMPT, get_bedrock_client_by_region,
     MAX_RETRIES,
 )
+from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 
 if boto3:
     from botocore.exceptions import ClientError
@@ -26,6 +27,13 @@ from patterpunk.logger import logger, logger_llm
 
 class BedrockMissingCredentialsError(Exception):
     pass
+
+
+def get_bedrock_conversation_content(message: Message):
+    if message.structured_output and  has_model_schema(message.structured_output):
+        return f'{message.content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}'
+
+    return message.content
 
 
 class BedrockModel(Model, ABC):
@@ -50,7 +58,7 @@ class BedrockModel(Model, ABC):
         )
 
     def generate_assistant_message(
-        self, messages: List[Message], functions: list | None = None
+        self, messages: List[Message], functions: list | None = None, structured_output: Optional[object] = None
     ) -> AssistantMessage:
         logger.info("Request to AWS Bedrock made")
         logger_llm.debug(
@@ -75,7 +83,7 @@ class BedrockModel(Model, ABC):
         ]
 
         conversation = [
-            {"role": message.role, "content": [{"text": message.content}]}
+            {"role": message.role, "content": [{"text": get_bedrock_conversation_content(message)}]}
             for message in messages
         ]
 
@@ -129,7 +137,7 @@ class BedrockModel(Model, ABC):
         response_text = response["output"]["message"]["content"][0]["text"]
         logger_llm.info(f"[Assistant]\n{response_text}")
 
-        return AssistantMessage(response_text)
+        return AssistantMessage(response_text, structured_output=structured_output)
 
     @staticmethod
     def get_name():

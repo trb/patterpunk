@@ -39,6 +39,10 @@ class AnthropicNotImplemented(Exception):
     pass
 
 
+class AnthropicAPIError(Exception):
+    pass
+
+
 class AnthropicModel(Model, ABC):
     def __init__(
         self,
@@ -55,8 +59,7 @@ class AnthropicModel(Model, ABC):
         self.max_tokens = max_tokens
 
     def generate_assistant_message(
-        self, messages: List[Message], functions: Optional[List[Callable]] = None
-    ) -> Message:
+        self, messages: List[Message], functions: Optional[List[Callable]] = None, structured_output: Optional[object] = None) -> Message:
         system_prompt = "\n\n".join(
             [message.content for message in messages if message.role == ROLE_SYSTEM]
         )
@@ -70,7 +73,7 @@ class AnthropicModel(Model, ABC):
                     model=self.model,
                     system=system_prompt,
                     messages=[
-                        message.to_dict()
+                        message.to_dict(prompt_for_structured_output=True)
                         for message in messages
                         if message.role in [ROLE_USER, ROLE_ASSISTANT]
                         and not message.is_function_call
@@ -81,7 +84,9 @@ class AnthropicModel(Model, ABC):
                     top_k=self.top_k,
                 )
 
-                if response.stop_reason in ["end_turn", "stop_sequence"]:
+                if response.stop_reason in ["end_turn", "stop_sequence", "max_tokens"]:
+                    if response.stop_reason == "max_tokens":
+                        logger.warning("Anthropic response was cut off as the model hit MAX_TOKENS")
                     content = "\n".join(
                         [
                             block.text
@@ -89,13 +94,13 @@ class AnthropicModel(Model, ABC):
                             if block.type == "text"
                         ]
                     )
-                    return AssistantMessage(content)
-                elif response.stop_reason == "max_tokens":
-                    raise AnthropicMaxTokensError("Model reached maximum tokens")
+                    return AssistantMessage(content, structured_output=structured_output)
                 elif response.stop_reason == "tool_use":
                     raise AnthropicNotImplemented(
                         "Tool use has not been implemented for Anthropic yet"
                     )
+                else:
+                    raise AnthropicAPIError(f"Unknown stop reason: {response.stop_reason}")
 
             except APIError as e:
                 if (
@@ -118,6 +123,7 @@ class AnthropicModel(Model, ABC):
                     continue
 
                 raise  # Re-raise any other API errors
+        raise AnthropicAPIError(f'Unexpected outcome - out of retries, but neither error raised or message returned')
 
     @staticmethod
     def get_available_models() -> List[str]:
