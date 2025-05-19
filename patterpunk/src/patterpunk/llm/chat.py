@@ -5,8 +5,10 @@ import re
 from types import GenericAlias, UnionType
 from typing import Dict, List, Optional, _GenericAlias
 
+from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.defaults import default_model
-from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
+from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message, StructuredOutputFailedToParseError, \
+    UserMessage
 from patterpunk.llm.models.openai import Model
 from patterpunk.logger import logger
 
@@ -24,6 +26,10 @@ class NotAFunctionError(Exception):
 
 
 class FunctionNotFoundError(Exception):
+    pass
+
+
+class StructuredOutputParsingError(Exception):
     pass
 
 
@@ -127,39 +133,6 @@ def serialize_functions(functions: list):
     return new_functions
 
 
-def extract_json(json_string: str) -> List[str]:
-    json_substrings = []
-    stack = []
-    inside_string = False
-    start_index = None
-    bracket_type = None
-
-    for i, char in enumerate(json_string):
-        if (
-            char in ["{", "["]
-            and not inside_string
-            and (not bracket_type or bracket_type == char)
-        ):
-            if not stack:
-                start_index = i
-                bracket_type = char
-            stack.append(char)
-        elif (
-            char in ["}", "]"] and not inside_string and stack and bracket_type == "{"
-            if char == "}"
-            else bracket_type == "["
-        ):
-            stack.pop()
-            if not stack:
-                json_substrings.append(json_string[start_index : i + 1])
-                bracket_type = None
-        elif char == '"':
-            if not inside_string or (inside_string and json_string[i - 1] != "\\"):
-                inside_string = not inside_string
-
-    return json_substrings
-
-
 class Chat:
     def __init__(
         self,
@@ -190,9 +163,10 @@ class Chat:
         return new_chat
 
     def complete(self):
-        model = self.messages[-1].model if self.messages[-1].model else self.model
+        message = self.latest_message
+        model = message.model if message.model else self.model
         response_message = model.generate_assistant_message(
-            self.messages, self.functions
+            self.messages, self.functions, structured_output=getattr(message, 'structured_output', None)
         )
         if hasattr(response_message, "set_available_functions"):
             response_message.set_available_functions(self.functions_map)
@@ -223,6 +197,27 @@ class Chat:
                 return jsons
 
         return None
+
+    @property
+    def parsed_output(self):
+        if not getattr(self.latest_message, "structured_output", None):
+            return None
+
+        retry = 0
+        max_reties = 2
+
+        chat = self
+
+        while retry < max_reties:
+            try:
+                obj = chat.latest_message.parsed_output
+                return obj
+            except StructuredOutputFailedToParseError as error:
+                logger.debug('[CHAT] Failed to parse structured_output from latest message', exc_info=error)
+                chat = chat.add_message(UserMessage('You did not generate valid JSON! YOUR RESPONSE HAS TO BE A VALID JSON OBJECT THAT CONFORMS TO THE JSON SCHEMA!', structured_output=chat.latest_message.structured_output)).complete()
+                retry += 1
+
+        raise StructuredOutputParsingError(f'[CHAT] Failed to parse structured_output from latest message, latest message:\n{self.latest_message.content}')
 
     @property
     def latest_message(self):

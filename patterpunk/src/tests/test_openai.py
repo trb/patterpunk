@@ -1,3 +1,8 @@
+from typing import List, Optional
+
+import pytest
+from pydantic import BaseModel, Field
+
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import SystemMessage, UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
@@ -235,3 +240,75 @@ def test_o1():
     )
 
     print(chat.latest_message.content)
+
+
+@pytest.mark.parametrize("model_name", ["gpt-4o", "o3-mini", "gpt-3.5-turbo"])
+def test_structured_output(model_name):
+    class BookInfo(BaseModel):
+        title: str
+        author: str
+        publication_year: int
+        isbn: Optional[str] = None
+        genres: Optional[List[str]] = None
+        page_count: Optional[int] = None
+        is_bestseller: Optional[bool] = None
+
+    class ThoughtfulBookResponse(BaseModel):
+        requirements: str = Field(description='List the requirements for this request')
+        thoughts: str = Field(description='Think out loud about how you will complete the request. Be careful to catch edge cases and subtleties.')
+        book_info: BookInfo = Field(description='The BookInfo structure representing the requested data. Follow the provided schema carefully. Do not infer fields, only include information that is present in the source message')
+
+    # Create a chat instance with the parameterized model
+    chat = Chat(model=OpenAiModel(model=model_name, temperature=0.1))
+
+    # Sample text containing information about a book
+    sample_text = """
+    "To Kill a Mockingbird" is a novel by Harper Lee published in 1960. 
+    It was immediately successful, winning the Pulitzer Prize, and has 
+    become a classic of modern American literature. The plot and characters 
+    are loosely based on Lee's observations of her family, her neighbors 
+    and an event that occurred near her hometown of Monroeville, Alabama, in 1936, 
+    when she was 10 years old.
+    """
+
+    # Add system message with instructions
+    chat = chat.add_message(
+        SystemMessage(
+            """
+            Extract information about the book from the provided text.
+            Include the title, author, and publication year.
+            If available, also extract the ISBN, genres, page count, and whether it's a bestseller.
+            
+            Strictly extract information about the book from the provided text and do not infer information.
+            """
+        )
+    )
+
+    # Add user message with the sample text and structured_output parameter
+    chat = chat.add_message(
+        UserMessage(sample_text, structured_output=ThoughtfulBookResponse)
+    )
+
+    # Complete the chat to get the response
+    chat = chat.complete()
+
+    # Access the parsed_output and verify the results
+    parsed_output = chat.parsed_output.book_info
+
+    # Verify that parsed_output is not None and is an instance of BookInfo
+    assert parsed_output is not None
+    assert isinstance(parsed_output, BookInfo)
+
+    # Verify required fields are correctly parsed
+    assert parsed_output.title == "To Kill a Mockingbird"
+    assert parsed_output.author == "Harper Lee"
+    assert parsed_output.publication_year == 1960
+
+    # Verify optional fields without information in the text are None or empty
+    assert parsed_output.isbn is None
+    assert parsed_output.page_count is None
+    assert parsed_output.is_bestseller is None
+
+    # Genres might be extracted as ["American literature"] or similar, or might be None
+    # We'll just check that it's either None or a list
+    assert parsed_output.genres is None or isinstance(parsed_output.genres, list)

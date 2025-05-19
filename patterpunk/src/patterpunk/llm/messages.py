@@ -3,6 +3,9 @@ import json
 from typing import Dict
 from jinja2 import Template
 
+from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
+from patterpunk.lib.structured_output import get_model_schema, has_model_schema
+from patterpunk.lib.extract_json import extract_json
 from patterpunk.logger import logger
 
 
@@ -20,12 +23,22 @@ class UnexpectedFunctionCallError(Exception):
     pass
 
 
+class StructuredOutputNotPydanticLikeError(Exception):
+    pass
+
+
+class StructuredOutputFailedToParseError(Exception):
+    pass
+
+
 class Message:
     def __init__(self, content: str, role: str = ROLE_USER):
         self.content = content
         self.role = role
         self._model = None
         self.is_function_call = False
+        self.structured_output = None
+        self._parsed_output = None
 
     def format_content(self, parameters):
         variables = {}
@@ -73,8 +86,39 @@ class Message:
             raise BadParameterError(error)
         return new_message
 
-    def to_dict(self):
-        return {"role": self.role, "content": self.content}
+    @property
+    def parsed_output(self):
+        if self._parsed_output is not None:
+            return self._parsed_output
+
+        if not self.structured_output:
+            return None
+
+        if not getattr(self.structured_output, 'parse_raw', None) and not getattr(self.structured_output, 'model_validate_json', None):
+            raise StructuredOutputNotPydanticLikeError(f'[MESSAGE][{self.role}] The provided structured_output is not a pydantic model (missing parse_raw or model_validate_json)')
+
+        json_messages = extract_json(self.content)
+        for json_message in json_messages:
+            try:
+                if getattr(self.structured_output, 'model_validate_json', None):
+                    obj = self.structured_output.model_validate_json(json_message)
+                else:
+                    obj = self.structured_output.parse_raw(json_message)
+
+                self._parsed_output = obj
+
+                return obj
+            except Exception as error:
+                logger.debug(f'[MESSAGE][{self.role}][STRUCTURED_OUTPUT] Failed to parse response {json_message}: {error}', exc_info=error)
+
+        raise StructuredOutputFailedToParseError(f'[MESSAGE][{self.role}] Structured output could not be parsed, message: \n{self.content}')
+
+    def to_dict(self, prompt_for_structured_output: bool = False):
+        content = self.content
+        if prompt_for_structured_output and self.structured_output and has_model_schema(self.structured_output):
+            content = f'{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(self.structured_output)}'
+
+        return {"role": self.role, "content": content}
 
     @property
     def model(self):
@@ -101,13 +145,16 @@ class SystemMessage(Message):
 
 
 class UserMessage(Message):
-    def __init__(self, content: str):
+    def __init__(self, content: str, structured_output = None):
         super().__init__(content, ROLE_USER)
+        self.structured_output = structured_output
 
 
 class AssistantMessage(Message):
-    def __init__(self, content: str):
+    def __init__(self, content: str, structured_output = None, parsed_output = None):
         super().__init__(content, ROLE_ASSISTANT)
+        self.structured_output = structured_output
+        self._parsed_output = parsed_output
 
 
 class FunctionCallMessage(Message):
@@ -124,7 +171,7 @@ class FunctionCallMessage(Message):
     def set_available_functions(self, available_functions: Dict[str, callable]):
         self.available_functions = available_functions
 
-    def to_dict(self):
+    def to_dict(self, _ = False):
         return {
             "role": "function",
             "content": self.function_call["arguments"],
