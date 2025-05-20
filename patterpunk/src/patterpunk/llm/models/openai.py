@@ -1,4 +1,3 @@
-
 import enum
 from abc import ABC
 from typing import List, Literal, Optional, Union
@@ -35,19 +34,19 @@ class OpenAiReasoningEffort(enum.Enum):
 
 class OpenAiModel(Model, ABC):
     def __init__(
-            self,
-            model="",
-            temperature=None,
-            top_p=None,
-            frequency_penalty=None,
-            presence_penalty=None,
-            logit_bias=None,
-            reasoning_effort: Optional[
-                Union[
-                    OpenAiReasoningEffort,
-                    Literal["low", "medium", "high"],
-                ]
-            ] = OpenAiReasoningEffort.LOW,
+        self,
+        model="",
+        temperature=None,
+        top_p=None,
+        frequency_penalty=None,
+        presence_penalty=None,
+        logit_bias=None,
+        reasoning_effort: Optional[
+            Union[
+                OpenAiReasoningEffort,
+                Literal["low", "medium", "high"],
+            ]
+        ] = OpenAiReasoningEffort.LOW,
     ):
         if not openai:
             raise OpenAiMissingConfigurationError(
@@ -103,7 +102,10 @@ class OpenAiModel(Model, ABC):
         self.reasoning_effort = reasoning_effort
 
     def generate_assistant_message(
-            self, messages: List[Message], functions: list | None = None, structured_output: Optional[object] = None
+        self,
+        messages: List[Message],
+        functions: list | None = None,
+        structured_output: Optional[object] = None,
     ) -> AssistantMessage | FunctionCallMessage:
         logger.info("Request to OpenAi made")
         logger_llm.debug(
@@ -119,7 +121,11 @@ class OpenAiModel(Model, ABC):
 
         if structured_output and has_model_schema(structured_output):
             # Fall back to JSON mode for models that don't support structured output
-            if self.model.startswith("o") or self.model.startswith('gpt-4o') or self.model.startswith('gpt-4.'):
+            if (
+                self.model.startswith("o")
+                or self.model.startswith("gpt-4o")
+                or self.model.startswith("gpt-4.")
+            ):
                 openai_call = openai.beta.chat.completions.parse
                 set_parsed_output = True
                 openai_parameters["response_format"] = structured_output
@@ -132,10 +138,10 @@ class OpenAiModel(Model, ABC):
 
         openai_parameters["model"] = self.model
         openai_parameters["messages"] = [
-                message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
-                for message in messages
-                if not message.is_function_call
-            ]
+            message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
+            for message in messages
+            if not message.is_function_call
+        ]
 
         if self.model.startswith("o"):
             openai_parameters["reasoning_effort"] = self.reasoning_effort.name.lower()
@@ -184,7 +190,13 @@ class OpenAiModel(Model, ABC):
                 response_message.message.function_call,
             )
         else:
-            return AssistantMessage(response_message.message.content, structured_output=structured_output, parsed_output=response_message.message.parsed if set_parsed_output else None)
+            return AssistantMessage(
+                response_message.message.content,
+                structured_output=structured_output,
+                parsed_output=(
+                    response_message.message.parsed if set_parsed_output else None
+                ),
+            )
 
     @staticmethod
     def get_name():

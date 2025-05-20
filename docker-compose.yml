@@ -14,6 +14,9 @@ services:
       PP_OLLAMA_API_ENDPOINT: "http://ollama:11434"
       PP_ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
 
+      PP_GOOGLE_LOCATION: "${GOOGLE_LOCATION}"
+      PP_GOOGLE_ACCOUNT_CREDENTIALS: "${GOOGLE_ACCOUNT_CREDENTIALS}"
+
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped

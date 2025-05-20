@@ -29,7 +29,10 @@ class OllamaModel(Model, ABC):
         self.max_tokens = max_tokens
 
     def generate_assistant_message(
-        self, messages: List[Message], functions: Optional[List[Callable]] = None, structured_output: Optional[object] = None
+        self,
+        messages: List[Message],
+        functions: Optional[List[Callable]] = None,
+        structured_output: Optional[object] = None,
     ) -> Message:
         options = {}
         if self.temperature is not None:
@@ -56,11 +59,17 @@ class OllamaModel(Model, ABC):
                 if not message.is_function_call
             ],
             stream=False,
-            format=get_model_schema(structured_output) if has_model_schema(structured_output) else None,
+            format=(
+                get_model_schema(structured_output)
+                if has_model_schema(structured_output)
+                else None
+            ),
             options=options,
         )
 
-        return AssistantMessage(response["message"]["content"], structured_output=structured_output)
+        return AssistantMessage(
+            response["message"]["content"], structured_output=structured_output
+        )
 
     @staticmethod
     def get_name():

@@ -1,4 +1,3 @@
-
 import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -42,6 +41,7 @@ def test_simple_bedrock(model_id):
         .latest_message.content
     )
 
+
 @pytest.mark.parametrize(
     "model_id",
     [
@@ -60,22 +60,32 @@ def test_structured_output(model_id):
         price: float = Field(description="Price of the product in USD")
         category: str = Field(description="Product category")
         rating: float = Field(description="Rating from 0.0 to 5.0")
-        reviewer_name: str = Field(description="Name of the person who wrote the review")
+        reviewer_name: str = Field(
+            description="Name of the person who wrote the review"
+        )
         pros: List[str] = Field(description="List of positive aspects of the product")
         cons: List[str] = Field(description="List of negative aspects of the product")
-        key_features: List[ProductFeature] = Field(description="List of key features of the product")
-        warranty_period: Optional[str] = Field(description="Length of warranty if mentioned")
-        competitor_comparison: Optional[str] = Field(description="Comparison to competitor products if mentioned")
-        recommended: bool = Field(description="Whether the reviewer recommends the product")
+        key_features: List[ProductFeature] = Field(
+            description="List of key features of the product"
+        )
+        warranty_period: Optional[str] = Field(
+            description="Length of warranty if mentioned"
+        )
+        competitor_comparison: Optional[str] = Field(
+            description="Comparison to competitor products if mentioned"
+        )
+        recommended: bool = Field(
+            description="Whether the reviewer recommends the product"
+        )
 
     bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
-    
+
     system_prompt = SystemMessage(
         "You are a data extraction assistant. Your task is to extract structured information from product reviews. "
         "Extract only the information that is explicitly mentioned in the text. "
         "Do not infer or make up information. If information for a field is not provided, set it to null."
     )
-    
+
     review_text = """
     Product Review: XDR-500 Noise Cancelling Headphones by SoundMaster
     
@@ -107,15 +117,15 @@ def test_structured_output(model_id):
     performance make them worth the investment. I definitely recommend these to anyone looking for premium 
     noise-cancelling headphones.
     """
-    
+
     chat = Chat(model=bedrock, messages=[system_prompt])
-    
+
     result = chat.add_message(
         UserMessage(review_text, structured_output=ProductReview)
     ).complete()
-    
+
     parsed_output = result.parsed_output
-    
+
     assert parsed_output is not None
     assert parsed_output.product_name == "XDR-500 Noise Cancelling Headphones"
     assert parsed_output.manufacturer == "SoundMaster"
@@ -128,8 +138,9 @@ def test_structured_output(model_id):
     assert len(parsed_output.cons) >= 2
     assert "Expensive compared to similar models" in parsed_output.cons
     assert len(parsed_output.key_features) >= 2
-    assert any(feature.name == "noise cancellation" for feature in parsed_output.key_features) or \
-           any("noise" in feature.name.lower() for feature in parsed_output.key_features)
+    assert any(
+        feature.name == "noise cancellation" for feature in parsed_output.key_features
+    ) or any("noise" in feature.name.lower() for feature in parsed_output.key_features)
     assert parsed_output.warranty_period is None  # Not mentioned in the review
     assert parsed_output.competitor_comparison is None  # Not mentioned in the review
     assert parsed_output.recommended is True

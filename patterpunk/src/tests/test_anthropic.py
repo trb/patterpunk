@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from patterpunk.llm.chat import Chat
@@ -226,11 +225,13 @@ nager, WAMITAB
     print()
     print(chat.extract_json())
 
+
 def test_structured_output():
     """
     @todo Add an assert that checks that fields that can't be answered from the text are actually set to none. This
     ensures the models don't hallucinate.
     """
+
     # Define a complex structured output type using Pydantic
     class Author(BaseModel):
         name: str
@@ -246,7 +247,9 @@ def test_structured_output():
         title: str
         summary: str
         key_points: List[str]
-        sentiment: str = Field(description="Overall sentiment of the document (positive, negative, neutral)")
+        sentiment: str = Field(
+            description="Overall sentiment of the document (positive, negative, neutral)"
+        )
         topics: List[str] = Field(min_items=3, max_items=10)
         author: Author
         references: List[Reference] = Field(default_factory=list)
@@ -289,36 +292,55 @@ goals and promotes environmental justice.
 
 Keywords: artificial intelligence, climate change, energy efficiency, environmental policy, ethics
 """,
-                structured_output=DocumentAnalysis
+                structured_output=DocumentAnalysis,
             )
         )
         .complete()
     )
 
     sonnet_parsed = sonnet_chat.parsed_output
-    
+
     # Validate sonnet model output
-    assert isinstance(sonnet_parsed, DocumentAnalysis), "Sonnet output should be a DocumentAnalysis instance"
+    assert isinstance(
+        sonnet_parsed, DocumentAnalysis
+    ), "Sonnet output should be a DocumentAnalysis instance"
     assert sonnet_parsed.title, "Title should not be empty"
-    assert "artificial intelligence" in sonnet_parsed.title.lower() or "ai" in sonnet_parsed.title.lower(), "Title should mention AI"
+    assert (
+        "artificial intelligence" in sonnet_parsed.title.lower()
+        or "ai" in sonnet_parsed.title.lower()
+    ), "Title should mention AI"
     assert "climate" in sonnet_parsed.title.lower(), "Title should mention climate"
-    
+
     assert len(sonnet_parsed.summary) > 50, "Summary should be substantial"
     assert len(sonnet_parsed.key_points) >= 3, "Should identify at least 3 key points"
-    
-    assert sonnet_parsed.sentiment in ["positive", "negative", "neutral", "mixed"], "Sentiment should be a valid value"
+
+    assert sonnet_parsed.sentiment in [
+        "positive",
+        "negative",
+        "neutral",
+        "mixed",
+    ], "Sentiment should be a valid value"
     assert len(sonnet_parsed.topics) >= 3, "Should identify at least 3 topics"
-    assert "artificial intelligence" in " ".join(sonnet_parsed.topics).lower() or "ai" in " ".join(sonnet_parsed.topics).lower(), "Topics should include AI"
-    assert "climate" in " ".join(sonnet_parsed.topics).lower(), "Topics should include climate"
-    
+    assert (
+        "artificial intelligence" in " ".join(sonnet_parsed.topics).lower()
+        or "ai" in " ".join(sonnet_parsed.topics).lower()
+    ), "Topics should include AI"
+    assert (
+        "climate" in " ".join(sonnet_parsed.topics).lower()
+    ), "Topics should include climate"
+
     assert sonnet_parsed.author.name, "Author name should not be empty"
     assert len(sonnet_parsed.author.expertise) > 0, "Author should have expertise"
-    
-    assert 0 <= sonnet_parsed.confidence_score <= 1, "Confidence score should be between 0 and 1"
+
+    assert (
+        0 <= sonnet_parsed.confidence_score <= 1
+    ), "Confidence score should be between 0 and 1"
     assert isinstance(sonnet_parsed.is_factual, bool), "is_factual should be a boolean"
-    
+
     # Check that fields that can't be answered from the text are set to None
-    assert sonnet_parsed.author.years_experience is None, "Author years_experience should be None as it's not in the text"
+    assert (
+        sonnet_parsed.author.years_experience is None
+    ), "Author years_experience should be None as it's not in the text"
     for ref in sonnet_parsed.references:
         assert ref.url is None, "Reference URL should be None as it's not in the text"
 
@@ -358,39 +380,62 @@ goals and promotes environmental justice.
 
 Keywords: artificial intelligence, climate change, energy efficiency, environmental policy, ethics
 """,
-                structured_output=DocumentAnalysis
+                structured_output=DocumentAnalysis,
             )
         )
         .complete()
     )
 
     haiku_parsed = haiku_chat.parsed_output
-    
+
     # Validate haiku model output
-    assert isinstance(haiku_parsed, DocumentAnalysis), "Haiku output should be a DocumentAnalysis instance"
+    assert isinstance(
+        haiku_parsed, DocumentAnalysis
+    ), "Haiku output should be a DocumentAnalysis instance"
     assert haiku_parsed.title, "Title should not be empty"
-    assert "artificial intelligence" in haiku_parsed.title.lower() or "ai" in haiku_parsed.title.lower(), "Title should mention AI"
+    assert (
+        "artificial intelligence" in haiku_parsed.title.lower()
+        or "ai" in haiku_parsed.title.lower()
+    ), "Title should mention AI"
     assert "climate" in haiku_parsed.title.lower(), "Title should mention climate"
-    
+
     assert len(haiku_parsed.summary) > 50, "Summary should be substantial"
     assert len(haiku_parsed.key_points) >= 3, "Should identify at least 3 key points"
-    
-    assert haiku_parsed.sentiment in ["positive", "negative", "neutral", "mixed"], "Sentiment should be a valid value"
+
+    assert haiku_parsed.sentiment in [
+        "positive",
+        "negative",
+        "neutral",
+        "mixed",
+    ], "Sentiment should be a valid value"
     assert len(haiku_parsed.topics) >= 3, "Should identify at least 3 topics"
-    assert "artificial intelligence" in " ".join(haiku_parsed.topics).lower() or "ai" in " ".join(haiku_parsed.topics).lower(), "Topics should include AI"
-    assert "climate" in " ".join(haiku_parsed.topics).lower(), "Topics should include climate"
-    
+    assert (
+        "artificial intelligence" in " ".join(haiku_parsed.topics).lower()
+        or "ai" in " ".join(haiku_parsed.topics).lower()
+    ), "Topics should include AI"
+    assert (
+        "climate" in " ".join(haiku_parsed.topics).lower()
+    ), "Topics should include climate"
+
     assert haiku_parsed.author.name, "Author name should not be empty"
     assert len(haiku_parsed.author.expertise) > 0, "Author should have expertise"
-    
-    assert 0 <= haiku_parsed.confidence_score <= 1, "Confidence score should be between 0 and 1"
+
+    assert (
+        0 <= haiku_parsed.confidence_score <= 1
+    ), "Confidence score should be between 0 and 1"
     assert isinstance(haiku_parsed.is_factual, bool), "is_factual should be a boolean"
-    
+
     # Check that fields that can't be answered from the text are set to None
-    assert haiku_parsed.author.years_experience is None, "Author years_experience should be None as it's not in the text"
+    assert (
+        haiku_parsed.author.years_experience is None
+    ), "Author years_experience should be None as it's not in the text"
     for ref in haiku_parsed.references:
         assert ref.url is None, "Reference URL should be None as it's not in the text"
 
     # Compare models
-    assert isinstance(sonnet_parsed.confidence_score, float) and isinstance(haiku_parsed.confidence_score, float), "Both models should return confidence scores as floats"
-    assert len(sonnet_parsed.key_points) > 0 and len(haiku_parsed.key_points) > 0, "Both models should identify key points"
+    assert isinstance(sonnet_parsed.confidence_score, float) and isinstance(
+        haiku_parsed.confidence_score, float
+    ), "Both models should return confidence scores as floats"
+    assert (
+        len(sonnet_parsed.key_points) > 0 and len(haiku_parsed.key_points) > 0
+    ), "Both models should identify key points"

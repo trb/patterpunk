@@ -7,7 +7,8 @@ from patterpunk.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     boto3,
-    GENERATE_STRUCTURED_OUTPUT_PROMPT, get_bedrock_client_by_region,
+    GENERATE_STRUCTURED_OUTPUT_PROMPT,
+    get_bedrock_client_by_region,
     MAX_RETRIES,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
@@ -30,8 +31,8 @@ class BedrockMissingCredentialsError(Exception):
 
 
 def get_bedrock_conversation_content(message: Message):
-    if message.structured_output and  has_model_schema(message.structured_output):
-        return f'{message.content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}'
+    if message.structured_output and has_model_schema(message.structured_output):
+        return f"{message.content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
 
     return message.content
 
@@ -58,7 +59,10 @@ class BedrockModel(Model, ABC):
         )
 
     def generate_assistant_message(
-        self, messages: List[Message], functions: list | None = None, structured_output: Optional[object] = None
+        self,
+        messages: List[Message],
+        functions: list | None = None,
+        structured_output: Optional[object] = None,
     ) -> AssistantMessage:
         logger.info("Request to AWS Bedrock made")
         logger_llm.debug(
@@ -83,7 +87,10 @@ class BedrockModel(Model, ABC):
         ]
 
         conversation = [
-            {"role": message.role, "content": [{"text": get_bedrock_conversation_content(message)}]}
+            {
+                "role": message.role,
+                "content": [{"text": get_bedrock_conversation_content(message)}],
+            }
             for message in messages
         ]
 
