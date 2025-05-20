@@ -7,8 +7,13 @@ from typing import Dict, List, Optional, _GenericAlias
 
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.defaults import default_model
-from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message, StructuredOutputFailedToParseError, \
-    UserMessage
+from patterpunk.llm.messages import (
+    AssistantMessage,
+    FunctionCallMessage,
+    Message,
+    StructuredOutputFailedToParseError,
+    UserMessage,
+)
 from patterpunk.llm.models.openai import Model
 from patterpunk.logger import logger
 
@@ -166,7 +171,9 @@ class Chat:
         message = self.latest_message
         model = message.model if message.model else self.model
         response_message = model.generate_assistant_message(
-            self.messages, self.functions, structured_output=getattr(message, 'structured_output', None)
+            self.messages,
+            self.functions,
+            structured_output=getattr(message, "structured_output", None),
         )
         if hasattr(response_message, "set_available_functions"):
             response_message.set_available_functions(self.functions_map)
@@ -213,11 +220,21 @@ class Chat:
                 obj = chat.latest_message.parsed_output
                 return obj
             except StructuredOutputFailedToParseError as error:
-                logger.debug('[CHAT] Failed to parse structured_output from latest message', exc_info=error)
-                chat = chat.add_message(UserMessage('You did not generate valid JSON! YOUR RESPONSE HAS TO BE A VALID JSON OBJECT THAT CONFORMS TO THE JSON SCHEMA!', structured_output=chat.latest_message.structured_output)).complete()
+                logger.debug(
+                    "[CHAT] Failed to parse structured_output from latest message",
+                    exc_info=error,
+                )
+                chat = chat.add_message(
+                    UserMessage(
+                        "You did not generate valid JSON! YOUR RESPONSE HAS TO BE A VALID JSON OBJECT THAT CONFORMS TO THE JSON SCHEMA!",
+                        structured_output=chat.latest_message.structured_output,
+                    )
+                ).complete()
                 retry += 1
 
-        raise StructuredOutputParsingError(f'[CHAT] Failed to parse structured_output from latest message, latest message:\n{self.latest_message.content}')
+        raise StructuredOutputParsingError(
+            f"[CHAT] Failed to parse structured_output from latest message, latest message:\n{self.latest_message.content}"
+        )
 
     @property
     def latest_message(self):

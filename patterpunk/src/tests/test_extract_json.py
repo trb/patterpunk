@@ -1,4 +1,3 @@
-
 import json
 
 from patterpunk.lib.extract_json import extract_json
@@ -40,13 +39,13 @@ def test_complex_json():
 
     jsons = extract_json(json_str)
     # @todo add assertions that the decoded json correctly replicates all the fields from the json_str. Shorten the fields in the json since the length doesn't matter and they're pretty long right now.
-    
+
     # Check that we got a list with one JSON object
     assert len(jsons) == 1
-    
+
     # Get the extracted JSON object
     extracted_json = json.loads(jsons[0])
-    
+
     # Check all top-level fields exist
     assert "title" in extracted_json
     assert "summary" in extracted_json
@@ -57,31 +56,37 @@ def test_complex_json():
     assert "references" in extracted_json
     assert "confidence_score" in extracted_json
     assert "is_factual" in extracted_json
-    
+
     # Check field values
-    assert extracted_json["title"] == "The Impact of Artificial Intelligence on Climate Change Mitigation"
+    assert (
+        extracted_json["title"]
+        == "The Impact of Artificial Intelligence on Climate Change Mitigation"
+    )
     assert "AI in climate change" in extracted_json["summary"]
-    
+
     # Check arrays
     assert len(extracted_json["key_points"]) == 6
-    assert "AI has both positive and negative impacts on climate change" in extracted_json["key_points"]
-    
+    assert (
+        "AI has both positive and negative impacts on climate change"
+        in extracted_json["key_points"]
+    )
+
     assert len(extracted_json["topics"]) == 7
     assert "artificial intelligence" in extracted_json["topics"]
     assert "climate change" in extracted_json["topics"]
-    
+
     # Check nested object
     assert extracted_json["author"]["name"] == "Unknown"
     assert len(extracted_json["author"]["expertise"]) == 3
     assert "artificial intelligence" in extracted_json["author"]["expertise"]
     assert extracted_json["author"]["years_experience"] == 5
-    
+
     # Check empty array
     assert extracted_json["references"] == []
-    
+
     # Check numeric and boolean values
     assert extracted_json["confidence_score"] == 0.85
     assert extracted_json["is_factual"] is True
-    
+
     # Check sentiment
     assert extracted_json["sentiment"] == "neutral"

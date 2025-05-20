@@ -254,9 +254,13 @@ def test_structured_output(model_name):
         is_bestseller: Optional[bool] = None
 
     class ThoughtfulBookResponse(BaseModel):
-        requirements: str = Field(description='List the requirements for this request')
-        thoughts: str = Field(description='Think out loud about how you will complete the request. Be careful to catch edge cases and subtleties.')
-        book_info: BookInfo = Field(description='The BookInfo structure representing the requested data. Follow the provided schema carefully. Do not infer fields, only include information that is present in the source message')
+        requirements: str = Field(description="List the requirements for this request")
+        thoughts: str = Field(
+            description="Think out loud about how you will complete the request. Be careful to catch edge cases and subtleties."
+        )
+        book_info: BookInfo = Field(
+            description="The BookInfo structure representing the requested data. Follow the provided schema carefully. Do not infer fields, only include information that is present in the source message"
+        )
 
     # Create a chat instance with the parameterized model
     chat = Chat(model=OpenAiModel(model=model_name, temperature=0.1))

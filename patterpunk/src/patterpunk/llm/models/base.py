@@ -1,4 +1,3 @@
-
 from abc import ABC, abstractmethod
 from typing import List, Callable, Optional
 
@@ -12,7 +11,10 @@ class ModelNotImplemented(Exception):
 class Model(ABC):
     @abstractmethod
     def generate_assistant_message(
-        self, messages: List[Message], functions: Optional[List[Callable]] = None, structured_output: Optional[object] = None
+        self,
+        messages: List[Message],
+        functions: Optional[List[Callable]] = None,
+        structured_output: Optional[object] = None,
     ) -> Message:
         raise ModelNotImplemented("You need to use a LLM-specific model")
 

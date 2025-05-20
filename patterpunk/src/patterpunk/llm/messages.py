@@ -94,13 +94,17 @@ class Message:
         if not self.structured_output:
             return None
 
-        if not getattr(self.structured_output, 'parse_raw', None) and not getattr(self.structured_output, 'model_validate_json', None):
-            raise StructuredOutputNotPydanticLikeError(f'[MESSAGE][{self.role}] The provided structured_output is not a pydantic model (missing parse_raw or model_validate_json)')
+        if not getattr(self.structured_output, "parse_raw", None) and not getattr(
+            self.structured_output, "model_validate_json", None
+        ):
+            raise StructuredOutputNotPydanticLikeError(
+                f"[MESSAGE][{self.role}] The provided structured_output is not a pydantic model (missing parse_raw or model_validate_json)"
+            )
 
         json_messages = extract_json(self.content)
         for json_message in json_messages:
             try:
-                if getattr(self.structured_output, 'model_validate_json', None):
+                if getattr(self.structured_output, "model_validate_json", None):
                     obj = self.structured_output.model_validate_json(json_message)
                 else:
                     obj = self.structured_output.parse_raw(json_message)
@@ -109,14 +113,23 @@ class Message:
 
                 return obj
             except Exception as error:
-                logger.debug(f'[MESSAGE][{self.role}][STRUCTURED_OUTPUT] Failed to parse response {json_message}: {error}', exc_info=error)
+                logger.debug(
+                    f"[MESSAGE][{self.role}][STRUCTURED_OUTPUT] Failed to parse response {json_message}: {error}",
+                    exc_info=error,
+                )
 
-        raise StructuredOutputFailedToParseError(f'[MESSAGE][{self.role}] Structured output could not be parsed, message: \n{self.content}')
+        raise StructuredOutputFailedToParseError(
+            f"[MESSAGE][{self.role}] Structured output could not be parsed, message: \n{self.content}"
+        )
 
     def to_dict(self, prompt_for_structured_output: bool = False):
         content = self.content
-        if prompt_for_structured_output and self.structured_output and has_model_schema(self.structured_output):
-            content = f'{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(self.structured_output)}'
+        if (
+            prompt_for_structured_output
+            and self.structured_output
+            and has_model_schema(self.structured_output)
+        ):
+            content = f"{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(self.structured_output)}"
 
         return {"role": self.role, "content": content}
 
@@ -145,13 +158,13 @@ class SystemMessage(Message):
 
 
 class UserMessage(Message):
-    def __init__(self, content: str, structured_output = None):
+    def __init__(self, content: str, structured_output=None):
         super().__init__(content, ROLE_USER)
         self.structured_output = structured_output
 
 
 class AssistantMessage(Message):
-    def __init__(self, content: str, structured_output = None, parsed_output = None):
+    def __init__(self, content: str, structured_output=None, parsed_output=None):
         super().__init__(content, ROLE_ASSISTANT)
         self.structured_output = structured_output
         self._parsed_output = parsed_output
@@ -171,7 +184,7 @@ class FunctionCallMessage(Message):
     def set_available_functions(self, available_functions: Dict[str, callable]):
         self.available_functions = available_functions
 
-    def to_dict(self, _ = False):
+    def to_dict(self, _=False):
         return {
             "role": "function",
             "content": self.function_call["arguments"],
