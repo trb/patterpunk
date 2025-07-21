@@ -77,6 +77,8 @@ if __name__ == "__main__":
         ]
     )
 
-    initial_prompt = CodePrompt(prompt="A function that calculates the nth fibonacci number.")
+    initial_prompt = CodePrompt(
+        prompt="A function that calculates the nth fibonacci number."
+    )
     best_snippet = chain.execute(initial_prompt)
     print(best_snippet)

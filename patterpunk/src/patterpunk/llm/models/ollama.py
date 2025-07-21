@@ -31,7 +31,7 @@ class OllamaModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: Optional[List[Callable]] = None,
+        tools=None,
         structured_output: Optional[object] = None,
     ) -> Message:
         options = {}
@@ -53,11 +53,7 @@ class OllamaModel(Model, ABC):
 
         response = ollama.chat(
             model=self.model,
-            messages=[
-                message.to_dict()
-                for message in messages
-                if not message.is_function_call
-            ],
+            messages=[message.to_dict() for message in messages],
             stream=False,
             format=(
                 get_model_schema(structured_output)

@@ -1,6 +1,4 @@
 import copy
-import json
-from typing import Dict
 from jinja2 import Template
 
 from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
@@ -12,7 +10,7 @@ from patterpunk.logger import logger
 ROLE_SYSTEM = "system"
 ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
-ROLE_FUNCTION_CALL = "function_call"
+ROLE_TOOL_CALL = "tool_call"
 
 
 class BadParameterError(Exception):
@@ -36,7 +34,6 @@ class Message:
         self.content = content
         self.role = role
         self._model = None
-        self.is_function_call = False
         self.structured_output = None
         self._parsed_output = None
 
@@ -170,45 +167,4 @@ class AssistantMessage(Message):
         self._parsed_output = parsed_output
 
 
-class FunctionCallMessage(Message):
-    def __init__(self, content, function_call):
-        super().__init__(content, ROLE_FUNCTION_CALL)
-        self._function_call = function_call
-        self.available_functions: Dict[str, callable] = {}
-        self.is_function_call = True
-
-    @property
-    def function_call(self):
-        return self._function_call
-
-    def set_available_functions(self, available_functions: Dict[str, callable]):
-        self.available_functions = available_functions
-
-    def to_dict(self, _=False):
-        return {
-            "role": "function",
-            "content": self.function_call["arguments"],
-            "name": self.function_call["name"],
-        }
-
-    def execute_function_call(self):
-        name = self._function_call["name"]
-        if name not in self.available_functions:
-            raise UnexpectedFunctionCallError(
-                f"Model indicated call to {name}, but no such function exists: {self.available_functions}"
-            )
-
-        return self.available_functions[name](
-            **json.loads(self._function_call["arguments"])
-        )
-
-    def __repr__(self, truncate=True):
-        if self.content:
-            content = (
-                self.content
-                if len(self.content) < 50 or truncate is False
-                else f"{self.content[:50]}..."
-            )
-        else:
-            content = "null"
-        return f'FunctionCallMessage("{content}", "{self._function_call}")'
+class ToolCallMessage(Message): ...

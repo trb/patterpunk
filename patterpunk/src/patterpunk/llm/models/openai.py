@@ -3,8 +3,8 @@ from abc import ABC
 from typing import List, Literal, Optional, Union
 
 from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
-from patterpunk.lib.structured_output import get_model_schema, has_model_schema
-from patterpunk.llm.messages import AssistantMessage, FunctionCallMessage, Message
+from patterpunk.lib.structured_output import has_model_schema
+from patterpunk.llm.messages import AssistantMessage, Message
 from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger, logger_llm
 
@@ -104,9 +104,9 @@ class OpenAiModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: list | None = None,
+        tools=None,
         structured_output: Optional[object] = None,
-    ) -> AssistantMessage | FunctionCallMessage:
+    ) -> AssistantMessage:
         logger.info("Request to OpenAi made")
         logger_llm.debug(
             "\n---\n".join(
@@ -140,7 +140,6 @@ class OpenAiModel(Model, ABC):
         openai_parameters["messages"] = [
             message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
             for message in messages
-            if not message.is_function_call
         ]
 
         if self.model.startswith("o"):
@@ -154,9 +153,6 @@ class OpenAiModel(Model, ABC):
                 "presence_penalty": self.presence_penalty,
                 "logit_bias": self.logit_bias,
             }
-
-        if functions:
-            openai_parameters["functions"] = functions
 
         # Log only the parameters that are actually sent to the model
         log_params = {k: v for k, v in openai_parameters.items() if k != "messages"}
@@ -184,19 +180,13 @@ class OpenAiModel(Model, ABC):
         response_message = response.choices[0]
         logger_llm.info(f"[Assistant]\n{response_message}")
 
-        if response_message.finish_reason == "function_call":
-            return FunctionCallMessage(
-                response_message.message.content,
-                response_message.message.function_call,
-            )
-        else:
-            return AssistantMessage(
-                response_message.message.content,
-                structured_output=structured_output,
-                parsed_output=(
-                    response_message.message.parsed if set_parsed_output else None
-                ),
-            )
+        return AssistantMessage(
+            response_message.message.content,
+            structured_output=structured_output,
+            parsed_output=(
+                response_message.message.parsed if set_parsed_output else None
+            ),
+        )
 
     @staticmethod
     def get_name():

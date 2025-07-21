@@ -53,4 +53,3 @@ class Agent(Generic[InputType, OutputType], ABC):
     def _render_user_prompt(self, input_data: InputType) -> str:
         template = jinja2.Template(self._user_prompt_template)
         return template.render(asdict(input_data))
-

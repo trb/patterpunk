@@ -61,7 +61,7 @@ class BedrockModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: list | None = None,
+        tools=None,
         structured_output: Optional[object] = None,
     ) -> AssistantMessage:
         logger.info("Request to AWS Bedrock made")
@@ -71,7 +71,7 @@ class BedrockModel(Model, ABC):
             )
         )
         logger_llm.info(
-            f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, functions: {functions}"
+            f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
         # Bedrock needs system messages to be handled with a special call parameter, not as a message

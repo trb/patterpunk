@@ -64,7 +64,7 @@ class AnthropicModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: Optional[List[Callable]] = None,
+        tools=None,
         structured_output: Optional[object] = None,
     ) -> Message:
         system_prompt = "\n\n".join(
@@ -83,7 +83,6 @@ class AnthropicModel(Model, ABC):
                         message.to_dict(prompt_for_structured_output=True)
                         for message in messages
                         if message.role in [ROLE_USER, ROLE_ASSISTANT]
-                        and not message.is_function_call
                     ],
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,

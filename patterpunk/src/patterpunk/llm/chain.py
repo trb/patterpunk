@@ -20,6 +20,9 @@ class AgentChain:
                 current_input = step.execute(current_input)
             elif isinstance(step, Parallel):
                 with ThreadPoolExecutor() as executor:
-                    futures = [executor.submit(agent.execute, current_input) for agent in step.agents]
+                    futures = [
+                        executor.submit(agent.execute, current_input)
+                        for agent in step.agents
+                    ]
                     current_input = [future.result() for future in futures]
         return current_input

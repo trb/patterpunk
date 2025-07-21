@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Callable, Optional
+from typing import List, Optional
 
 from patterpunk.llm.messages import Message
 
@@ -13,7 +13,7 @@ class Model(ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: Optional[List[Callable]] = None,
+        tools=None,
         structured_output: Optional[object] = None,
     ) -> Message:
         raise ModelNotImplemented("You need to use a LLM-specific model")

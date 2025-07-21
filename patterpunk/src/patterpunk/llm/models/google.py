@@ -1,15 +1,15 @@
 import json
 import time
 from abc import ABC
-from typing import List, Optional, Callable
+from typing import List, Optional
 
 from patterpunk.config import (
     GOOGLE_ACCOUNT_CREDENTIALS,
-    GOOGLE_LOCATION,
-    GOOGLE_DEFAULT_TEMPERATURE,
-    GOOGLE_DEFAULT_TOP_P,
-    GOOGLE_DEFAULT_TOP_K,
     GOOGLE_DEFAULT_MAX_TOKENS,
+    GOOGLE_DEFAULT_TEMPERATURE,
+    GOOGLE_DEFAULT_TOP_K,
+    GOOGLE_DEFAULT_TOP_P,
+    GOOGLE_LOCATION,
     MAX_RETRIES,
 )
 
@@ -148,7 +148,7 @@ class GoogleModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        functions: Optional[List[Callable]] = None,
+        tools=None,
         structured_output: Optional[object] = None,
     ) -> Message:
         system_prompt = "\n\n".join(
@@ -161,17 +161,12 @@ class GoogleModel(Model, ABC):
             if message.role == ROLE_SYSTEM:
                 continue
             elif message.role == ROLE_USER:
-                if not message.is_function_call:
-                    contents.append(
-                        types.Content(
-                            role="user",
-                            parts=[types.Part.from_text(text=message.content)],
-                        )
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=message.content)],
                     )
-                else:
-                    logger.warning(
-                        "Function call messages are not fully supported in VertexAI yet"
-                    )
+                )
             elif message.role == ROLE_ASSISTANT:
                 contents.append(
                     types.Content(
@@ -195,9 +190,6 @@ class GoogleModel(Model, ABC):
                 config.response_schema = structured_output
             else:
                 config.response_schema = structured_output
-
-        if functions:
-            config.tools = functions
 
         retry_count = 0
         wait_time = 60
