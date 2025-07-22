@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, _GenericAlias
 
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.defaults import default_model
+from patterpunk.llm.types import ToolDefinition
 from patterpunk.llm.messages import (
     AssistantMessage,
     ToolCallMessage,
@@ -24,7 +25,7 @@ class Chat:
         self,
         messages: Optional[List[Message]] = None,
         model: Optional[Model] = None,
-        tools: Optional[list] = None,
+        tools: Optional["ToolDefinition"] = None,
     ):
         if messages is None:
             messages = []
@@ -38,7 +39,7 @@ class Chat:
         new_chat.messages.append(message)
         return new_chat
     
-    def with_tools(self, tools: list):
+    def with_tools(self, tools: "ToolDefinition"):
         """
         Set tools available for this chat.
         

@@ -32,6 +32,7 @@ from patterpunk.llm.messages import (
     AssistantMessage,
 )
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger
 
 
@@ -148,7 +149,7 @@ class GoogleModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        tools=None,
+        tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = "\n\n".join(

@@ -5,6 +5,7 @@ from patterpunk.config import ollama
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages import Message, AssistantMessage
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.types import ToolDefinition
 
 
 class OllamaModel(Model, ABC):
@@ -31,7 +32,7 @@ class OllamaModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        tools=None,
+        tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         options = {}

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional, Union
 
 from patterpunk.llm.messages import Message
+from patterpunk.llm.types import ToolDefinition
 
 
 class ModelNotImplemented(Exception):
@@ -13,7 +14,7 @@ class Model(ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        tools=None,
+        tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         raise ModelNotImplemented("You need to use a LLM-specific model")

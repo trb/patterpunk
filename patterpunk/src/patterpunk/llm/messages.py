@@ -1,10 +1,12 @@
 import copy
 from jinja2 import Template
+from typing import List, Dict
 
 from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.logger import logger
+from patterpunk.llm.types import ToolCallList
 
 
 ROLE_SYSTEM = "system"
@@ -169,7 +171,7 @@ class AssistantMessage(Message):
 
 
 class ToolCallMessage(Message):
-    def __init__(self, tool_calls: list):
+    def __init__(self, tool_calls: ToolCallList):
         """
         Represents a tool call message from the LLM.
         

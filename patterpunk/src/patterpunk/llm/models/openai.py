@@ -6,6 +6,7 @@ from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
 from patterpunk.lib.structured_output import has_model_schema
 from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger, logger_llm
 
 if openai:
@@ -104,7 +105,7 @@ class OpenAiModel(Model, ABC):
     def generate_assistant_message(
         self,
         messages: List[Message],
-        tools=None,
+        tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[AssistantMessage, ToolCallMessage]:
         logger.info("Request to OpenAi made")
