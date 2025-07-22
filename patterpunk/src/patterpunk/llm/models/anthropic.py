@@ -1,3 +1,4 @@
+import json
 import time
 from abc import ABC
 from typing import List, Optional, Callable, get_args, Union
@@ -17,6 +18,7 @@ from patterpunk.llm.messages import (
     ROLE_USER,
     ROLE_ASSISTANT,
     AssistantMessage,
+    ToolCallMessage,
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.types import ToolDefinition
@@ -62,6 +64,25 @@ class AnthropicModel(Model, ABC):
         self.max_tokens = max_tokens
         self.timeout = timeout
 
+    def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
+        """
+        Convert OpenAI-style tool definitions to Anthropic format.
+        
+        OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
+        Anthropic format: {"name": "...", "description": "...", "input_schema": {...}}
+        """
+        anthropic_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                anthropic_tool = {
+                    "name": func["name"],
+                    "description": func["description"],
+                    "input_schema": func["parameters"]
+                }
+                anthropic_tools.append(anthropic_tool)
+        return anthropic_tools
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -77,20 +98,29 @@ class AnthropicModel(Model, ABC):
 
         while True:
             try:
-                response = anthropic.messages.create(
-                    model=self.model,
-                    system=system_prompt,
-                    messages=[
+                # Prepare API parameters
+                api_params = {
+                    "model": self.model,
+                    "system": system_prompt,
+                    "messages": [
                         message.to_dict(prompt_for_structured_output=True)
                         for message in messages
                         if message.role in [ROLE_USER, ROLE_ASSISTANT]
                     ],
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    top_k=self.top_k,
-                    timeout=self.timeout,
-                )
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "top_p": self.top_p,
+                    "top_k": self.top_k,
+                    "timeout": self.timeout,
+                }
+                
+                # Add tools if provided
+                if tools:
+                    anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+                    if anthropic_tools:
+                        api_params["tools"] = anthropic_tools
+
+                response = anthropic.messages.create(**api_params)
 
                 if response.stop_reason in ["end_turn", "stop_sequence", "max_tokens"]:
                     if response.stop_reason == "max_tokens":
@@ -108,9 +138,35 @@ class AnthropicModel(Model, ABC):
                         content, structured_output=structured_output
                     )
                 elif response.stop_reason == "tool_use":
-                    raise AnthropicNotImplemented(
-                        "Tool use has not been implemented for Anthropic yet"
-                    )
+                    # Handle tool use response
+                    tool_calls = []
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            # Convert Anthropic tool use format to patterpunk standard format
+                            # Anthropic returns input as a dict, we need to convert to JSON string
+                            arguments = "{}"
+                            if hasattr(block, 'input') and block.input:
+                                try:
+                                    arguments = json.dumps(block.input)
+                                except (TypeError, ValueError):
+                                    arguments = str(block.input)
+                            
+                            tool_call = {
+                                "id": block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": block.name,
+                                    "arguments": arguments
+                                }
+                            }
+                            tool_calls.append(tool_call)
+                    
+                    if tool_calls:
+                        return ToolCallMessage(tool_calls)
+                    else:
+                        raise AnthropicAPIError(
+                            "Tool use stop reason but no tool use blocks found in response"
+                        )
                 else:
                     raise AnthropicAPIError(
                         f"Unknown stop reason: {response.stop_reason}"
