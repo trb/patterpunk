@@ -31,19 +31,36 @@ class Chat:
         self.messages = messages
 
         self.model = default_model() if model is None else model
-        self.tools = None
+        self.tools = tools
 
     def add_message(self, message: Message):
         new_chat = self.copy()
         new_chat.messages.append(message)
         return new_chat
+    
+    def with_tools(self, tools: list):
+        """
+        Set tools available for this chat.
+        
+        :param tools: List of tool definitions in OpenAI format
+        :return: New Chat instance with tools set
+        """
+        new_chat = self.copy()
+        new_chat.tools = tools
+        return new_chat
 
     def complete(self):
         message = self.latest_message
         model = message.model if message.model else self.model
+        
+        # Only pass tools if the latest message allows tool calls
+        tools_to_use = None
+        if self.tools and getattr(message, "allow_tool_calls", True):
+            tools_to_use = self.tools
+            
         response_message = model.generate_assistant_message(
             self.messages,
-            self.tools,
+            tools_to_use,
             structured_output=getattr(message, "structured_output", None),
         )
 

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from patterpunk.llm.messages import Message
 
@@ -15,7 +15,7 @@ class Model(ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> Message:
+    ) -> Union[Message, "ToolCallMessage"]:
         raise ModelNotImplemented("You need to use a LLM-specific model")
 
     @staticmethod

@@ -155,9 +155,10 @@ class SystemMessage(Message):
 
 
 class UserMessage(Message):
-    def __init__(self, content: str, structured_output=None):
+    def __init__(self, content: str, structured_output=None, allow_tool_calls=True):
         super().__init__(content, ROLE_USER)
         self.structured_output = structured_output
+        self.allow_tool_calls = allow_tool_calls
 
 
 class AssistantMessage(Message):
@@ -167,4 +168,22 @@ class AssistantMessage(Message):
         self._parsed_output = parsed_output
 
 
-class ToolCallMessage(Message): ...
+class ToolCallMessage(Message):
+    def __init__(self, tool_calls: list):
+        """
+        Represents a tool call message from the LLM.
+        
+        :param tool_calls: List of tool calls, each containing id, function name, and arguments
+        """
+        super().__init__("", ROLE_TOOL_CALL)
+        self.tool_calls = tool_calls
+        
+    def to_dict(self, prompt_for_structured_output: bool = False):
+        return {
+            "role": self.role,
+            "tool_calls": self.tool_calls
+        }
+        
+    def __repr__(self, truncate=True):
+        tool_names = [call.get("function", {}).get("name", "unknown") for call in self.tool_calls]
+        return f'ToolCallMessage({", ".join(tool_names)})'

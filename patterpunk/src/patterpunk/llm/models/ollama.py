@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Union
 
 from patterpunk.config import ollama
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
@@ -33,7 +33,7 @@ class OllamaModel(Model, ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> Message:
+    ) -> Union[Message, "ToolCallMessage"]:
         options = {}
         if self.temperature is not None:
             options["temperature"] = self.temperature

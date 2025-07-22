@@ -1,6 +1,6 @@
 import random
 from abc import ABC
-from typing import List, Optional
+from typing import List, Optional, Union
 import time
 
 from patterpunk.config import (
@@ -63,7 +63,7 @@ class BedrockModel(Model, ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> AssistantMessage:
+    ) -> Union[AssistantMessage, "ToolCallMessage"]:
         logger.info("Request to AWS Bedrock made")
         logger_llm.debug(
             "\n---\n".join(

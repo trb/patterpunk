@@ -4,7 +4,7 @@ from typing import List, Literal, Optional, Union
 
 from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
 from patterpunk.lib.structured_output import has_model_schema
-from patterpunk.llm.messages import AssistantMessage, Message
+from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.logger import logger, logger_llm
 
@@ -106,7 +106,7 @@ class OpenAiModel(Model, ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> AssistantMessage:
+    ) -> Union[AssistantMessage, ToolCallMessage]:
         logger.info("Request to OpenAi made")
         logger_llm.debug(
             "\n---\n".join(
@@ -141,6 +141,10 @@ class OpenAiModel(Model, ABC):
             message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
             for message in messages
         ]
+        
+        # Add tools if provided
+        if tools:
+            openai_parameters["tools"] = tools
 
         if self.model.startswith("o"):
             openai_parameters["reasoning_effort"] = self.reasoning_effort.name.lower()
@@ -180,6 +184,21 @@ class OpenAiModel(Model, ABC):
         response_message = response.choices[0]
         logger_llm.info(f"[Assistant]\n{response_message}")
 
+        # Check if the response contains tool calls
+        if response_message.message.tool_calls:
+            # Convert OpenAI tool calls to our format
+            tool_calls = []
+            for tool_call in response_message.message.tool_calls:
+                tool_calls.append({
+                    "id": tool_call.id,
+                    "type": tool_call.type,
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    }
+                })
+            return ToolCallMessage(tool_calls)
+        
         return AssistantMessage(
             response_message.message.content,
             structured_output=structured_output,

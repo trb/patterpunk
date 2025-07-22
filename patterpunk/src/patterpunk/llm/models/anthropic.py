@@ -1,6 +1,6 @@
 import time
 from abc import ABC
-from typing import List, Optional, Callable, get_args
+from typing import List, Optional, Callable, get_args, Union
 
 from patterpunk.config import (
     anthropic,
@@ -66,7 +66,7 @@ class AnthropicModel(Model, ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> Message:
+    ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = "\n\n".join(
             [message.content for message in messages if message.role == ROLE_SYSTEM]
         )

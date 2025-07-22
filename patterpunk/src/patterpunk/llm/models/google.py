@@ -1,7 +1,7 @@
 import json
 import time
 from abc import ABC
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from patterpunk.config import (
     GOOGLE_ACCOUNT_CREDENTIALS,
@@ -150,7 +150,7 @@ class GoogleModel(Model, ABC):
         messages: List[Message],
         tools=None,
         structured_output: Optional[object] = None,
-    ) -> Message:
+    ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = "\n\n".join(
             [message.content for message in messages if message.role == ROLE_SYSTEM]
         )
