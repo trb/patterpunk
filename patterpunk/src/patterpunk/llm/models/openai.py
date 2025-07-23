@@ -128,9 +128,22 @@ class OpenAiModel(Model, ABC):
                             content_parts.append({"type": "input_image", "image_url": part["image_url"]["url"]})
                     responses_input.append({"role": "user", "content": content_parts})
             elif message_dict["role"] == "assistant":
+                if message_dict.get("content"):
+                    responses_input.append({
+                        "role": "assistant",
+                        "content": [{"type": "input_text", "text": message_dict["content"]}]
+                    })
+                if message_dict.get("tool_calls"):
+                    responses_input.append({
+                        "role": "assistant",
+                        "content": [],
+                        "tool_calls": message_dict["tool_calls"]
+                    })
+            elif message_dict["role"] == "tool_call":
                 responses_input.append({
                     "role": "assistant",
-                    "content": [{"type": "input_text", "text": message_dict["content"]}]
+                    "content": [],
+                    "tool_calls": message_dict["tool_calls"]
                 })
         
         return responses_input
@@ -163,6 +176,16 @@ class OpenAiModel(Model, ABC):
         if tools:
             responses_parameters["tools"] = tools
 
+        if structured_output and has_model_schema(structured_output) and not prompt_for_structured_output:
+            responses_parameters["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": get_model_schema(structured_output),
+                    "strict": True
+                }
+            }
+
         if self.model.startswith("o"):
             responses_parameters["reasoning"] = {
                 "effort": self.reasoning_effort.name.lower()
@@ -170,6 +193,12 @@ class OpenAiModel(Model, ABC):
         else:
             responses_parameters["temperature"] = self.temperature
             responses_parameters["top_p"] = self.top_p
+            if self.frequency_penalty != 0.0:
+                responses_parameters["frequency_penalty"] = self.frequency_penalty
+            if self.presence_penalty != 0.0:
+                responses_parameters["presence_penalty"] = self.presence_penalty
+            if self.logit_bias:
+                responses_parameters["logit_bias"] = self.logit_bias
 
         log_params = {k: v for k, v in responses_parameters.items() if k != "input"}
         param_strings = []
@@ -216,10 +245,23 @@ class OpenAiModel(Model, ABC):
                         })
                     return ToolCallMessage(tool_calls)
 
+        parsed_output = None
+        if structured_output and has_model_schema(structured_output):
+            try:
+                parsed_output = structured_output.model_validate_json(response.output_text)
+            except Exception as e:
+                logger.warning(f"Failed to parse structured output: {e}")
+                try:
+                    json_content = extract_json(response.output_text)
+                    if json_content:
+                        parsed_output = structured_output.model_validate(json_content)
+                except Exception as fallback_error:
+                    logger.warning(f"Fallback JSON parsing also failed: {fallback_error}")
+
         return AssistantMessage(
             response.output_text,
             structured_output=structured_output,
-            parsed_output=None
+            parsed_output=parsed_output
         )
 
     @staticmethod
