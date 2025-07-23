@@ -12,7 +12,8 @@ RUN apt-get update \
     gnupg  \
     python3  \
     python3-pip \
-    python-is-python3
+    python-is-python3 \
+  && pip install uv --break-system-packages
 
 
 COPY ./src/ /app

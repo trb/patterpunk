@@ -4,12 +4,12 @@ from abc import ABC
 from typing import List, Optional, Union
 
 from patterpunk.config import (
-    GOOGLE_ACCOUNT_CREDENTIALS,
+    GOOGLE_APPLICATION_CREDENTIALS,
     GOOGLE_DEFAULT_MAX_TOKENS,
     GOOGLE_DEFAULT_TEMPERATURE,
     GOOGLE_DEFAULT_TOP_K,
     GOOGLE_DEFAULT_TOP_P,
-    GOOGLE_LOCATION,
+    GEMINI_REGION,
     MAX_RETRIES,
 )
 
@@ -23,6 +23,8 @@ try:
     google_genai_available = True
 except ImportError:
     google_genai_available = False
+
+print('has it?', google_genai_available)
 
 from patterpunk.llm.messages import (
     Message,
@@ -70,10 +72,10 @@ class GoogleModel(Model, ABC):
     @staticmethod
     def get_client(
         location: str,
-        google_account_credentials: Optional[GOOGLE_ACCOUNT_CREDENTIALS] = None,
+        google_account_credentials: Optional[str] = None,
     ):
         if google_account_credentials is None:
-            google_account_credentials = GOOGLE_ACCOUNT_CREDENTIALS
+            google_account_credentials = GOOGLE_APPLICATION_CREDENTIALS
         if not google_account_credentials:
             raise GoogleAuthenticationError(
                 "No Google account credentials provided. Please pass `google_account_credentials` to constructor or set `PP_GOOGLE_ACCOUNT_CREDENTIALS` environment variable."
@@ -107,7 +109,7 @@ class GoogleModel(Model, ABC):
     def __init__(
         self,
         model: str,
-        location: str = GOOGLE_LOCATION,
+        location: str = GEMINI_REGION,
         temperature: float = GOOGLE_DEFAULT_TEMPERATURE,
         top_p: float = GOOGLE_DEFAULT_TOP_P,
         top_k: int = GOOGLE_DEFAULT_TOP_K,
@@ -252,7 +254,7 @@ class GoogleModel(Model, ABC):
 
         try:
             if not GoogleModel.client:
-                GoogleModel.client = GoogleModel.get_client(location=GOOGLE_LOCATION)
+                GoogleModel.client = GoogleModel.get_client(location=GEMINI_REGION)
 
             client = (
                 GoogleModel.get_client(location=location)

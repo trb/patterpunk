@@ -4,6 +4,11 @@
 
 Write Python code that prioritizes **functional programming principles** and **immutability** within the constraints of idiomatic Python style. Minimize object-oriented programming and inheritance while maintaining clean, maintainable code through focused, single-responsibility modules.
 
+## Must-follow rules
+
+Never abbreviate variables. Always spell them out. E.g. when handling a function
+signature, use `signature` as the variable name, not `sig`.
+
 ## Functional Programming Guidelines
 
 ### Immutability and Pure Functions

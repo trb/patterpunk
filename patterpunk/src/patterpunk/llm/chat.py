@@ -1,8 +1,9 @@
 import copy
 import re
-from typing import Dict, List, Optional, _GenericAlias
+from typing import Dict, List, Optional, _GenericAlias, Union, Callable
 
 from patterpunk.lib.extract_json import extract_json
+from patterpunk.lib.function_to_tool import functions_to_tools
 from patterpunk.llm.defaults import default_model
 from patterpunk.llm.types import ToolDefinition
 from patterpunk.llm.messages import (
@@ -38,27 +39,47 @@ class Chat:
         new_chat = self.copy()
         new_chat.messages.append(message)
         return new_chat
-    
-    def with_tools(self, tools: "ToolDefinition"):
+
+    def with_tools(self, tools: Union["ToolDefinition", List[Callable]]):
         """
         Set tools available for this chat.
-        
-        :param tools: List of tool definitions in OpenAI format
+
+        :param tools: Either a list of tool definitions in OpenAI format, or a list of annotated Python functions
         :return: New Chat instance with tools set
+
+        Examples:
+            # Using annotated functions (recommended)
+            def get_weather(location: str, unit: str = "fahrenheit") -> str:
+                '''Get current weather for a location.'''
+                return f"Weather in {location}"
+
+            chat = chat.with_tools([get_weather])
+
+            # Using manual tool definitions (legacy)
+            tools = [{"type": "function", "function": {...}}]
+            chat = chat.with_tools(tools)
         """
         new_chat = self.copy()
-        new_chat.tools = tools
+
+        # Check if tools is a list of functions or tool definitions
+        if tools and isinstance(tools[0], dict):
+            # Legacy format: list of tool definitions
+            new_chat.tools = tools
+        else:
+            # New format: list of functions - convert them
+            new_chat.tools = functions_to_tools(tools)
+
         return new_chat
 
     def complete(self):
         message = self.latest_message
         model = message.model if message.model else self.model
-        
+
         # Only pass tools if the latest message allows tool calls
         tools_to_use = None
         if self.tools and getattr(message, "allow_tool_calls", True):
             tools_to_use = self.tools
-            
+
         response_message = model.generate_assistant_message(
             self.messages,
             tools_to_use,

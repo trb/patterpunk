@@ -102,6 +102,39 @@ class OpenAiModel(Model, ABC):
         self.completion = None
         self.reasoning_effort = reasoning_effort
 
+    def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
+        """Convert patterpunk messages to Responses API input format."""
+        responses_input = []
+        for message in messages:
+            message_dict = message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
+            
+            if message_dict["role"] == "system":
+                responses_input.append({
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": message_dict["content"]}]
+                })
+            elif message_dict["role"] == "user":
+                if isinstance(message_dict["content"], str):
+                    responses_input.append({
+                        "role": "user", 
+                        "content": [{"type": "input_text", "text": message_dict["content"]}]
+                    })
+                else:
+                    content_parts = []
+                    for part in message_dict["content"]:
+                        if part["type"] == "text":
+                            content_parts.append({"type": "input_text", "text": part["text"]})
+                        elif part["type"] == "image_url":
+                            content_parts.append({"type": "input_image", "image_url": part["image_url"]["url"]})
+                    responses_input.append({"role": "user", "content": content_parts})
+            elif message_dict["role"] == "assistant":
+                responses_input.append({
+                    "role": "assistant",
+                    "content": [{"type": "input_text", "text": message_dict["content"]}]
+                })
+        
+        return responses_input
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -115,56 +148,34 @@ class OpenAiModel(Model, ABC):
             )
         )
 
-        openai_parameters = {}
-        openai_call = openai.chat.completions.create
-        set_parsed_output = False
         prompt_for_structured_output = False
-
-        if structured_output and has_model_schema(structured_output):
-            # Fall back to JSON mode for models that don't support structured output
-            if (
-                self.model.startswith("o")
-                or self.model.startswith("gpt-4o")
-                or self.model.startswith("gpt-4.")
-            ):
-                openai_call = openai.beta.chat.completions.parse
-                set_parsed_output = True
-                openai_parameters["response_format"] = structured_output
-            else:
-                openai_parameters["response_format"] = {
-                    "type": "json_object",
-                }
-
-                prompt_for_structured_output = True
-
-        openai_parameters["model"] = self.model
-        openai_parameters["messages"] = [
-            message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
-            for message in messages
-        ]
         
-        # Add tools if provided
+        if structured_output and has_model_schema(structured_output):
+            prompt_for_structured_output = True
+
+        responses_input = self._convert_messages_to_responses_input(messages, prompt_for_structured_output)
+        
+        responses_parameters = {
+            "model": self.model,
+            "input": responses_input,
+        }
+
         if tools:
-            openai_parameters["tools"] = tools
+            responses_parameters["tools"] = tools
 
         if self.model.startswith("o"):
-            openai_parameters["reasoning_effort"] = self.reasoning_effort.name.lower()
-        else:
-            openai_parameters = {
-                **openai_parameters,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "frequency_penalty": self.frequency_penalty,
-                "presence_penalty": self.presence_penalty,
-                "logit_bias": self.logit_bias,
+            responses_parameters["reasoning"] = {
+                "effort": self.reasoning_effort.name.lower()
             }
+        else:
+            responses_parameters["temperature"] = self.temperature
+            responses_parameters["top_p"] = self.top_p
 
-        # Log only the parameters that are actually sent to the model
-        log_params = {k: v for k, v in openai_parameters.items() if k != "messages"}
+        log_params = {k: v for k, v in responses_parameters.items() if k != "input"}
         param_strings = []
         for key, value in log_params.items():
             param_strings.append(f"{key}: {value}")
-        logger_llm.info(f"OpenAi Model params: {', '.join(param_strings)}")
+        logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
 
         retry_count = 0
         done = False
@@ -172,40 +183,43 @@ class OpenAiModel(Model, ABC):
 
         while not done and retry_count < OPENAI_MAX_RETRIES:
             try:
-                response = openai_call(**openai_parameters)
-                logger.info("OpenAi response received")
+                response = openai.responses.create(**responses_parameters)
+                logger.info("OpenAi Responses API response received")
                 done = True
             except APIError as error:
-                logger.info("Retrying OpenAi request due to APIError", exc_info=error)
+                if "reasoning.summary" in str(error) and "reasoning" in responses_parameters:
+                    logger.info("Organization not verified for reasoning summaries, removing reasoning parameter and treating as regular model")
+                    responses_parameters.pop("reasoning", None)
+                    responses_parameters["temperature"] = self.temperature
+                    responses_parameters["top_p"] = self.top_p
+                else:
+                    logger.info("Retrying OpenAi Responses API request due to APIError", exc_info=error)
                 retry_count += 1
 
         if not done or not response:
-            raise OpenAiApiError("OpenAi api is returning too many api errors")
+            raise OpenAiApiError("OpenAi Responses API is returning too many api errors")
 
-        response_message = response.choices[0]
-        logger_llm.info(f"[Assistant]\n{response_message}")
+        logger_llm.info(f"[Assistant]\n{response.output_text}")
 
-        # Check if the response contains tool calls
-        if response_message.message.tool_calls:
-            # Convert OpenAI tool calls to our format
-            tool_calls = []
-            for tool_call in response_message.message.tool_calls:
-                tool_calls.append({
-                    "id": tool_call.id,
-                    "type": tool_call.type,
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
-                    }
-                })
-            return ToolCallMessage(tool_calls)
-        
+        if hasattr(response, 'output') and response.output:
+            for output_item in response.output:
+                if hasattr(output_item, 'tool_calls') and output_item.tool_calls:
+                    tool_calls = []
+                    for tool_call in output_item.tool_calls:
+                        tool_calls.append({
+                            "id": tool_call.id,
+                            "type": tool_call.type,
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments,
+                            },
+                        })
+                    return ToolCallMessage(tool_calls)
+
         return AssistantMessage(
-            response_message.message.content,
+            response.output_text,
             structured_output=structured_output,
-            parsed_output=(
-                response_message.message.parsed if set_parsed_output else None
-            ),
+            parsed_output=None
         )
 
     @staticmethod

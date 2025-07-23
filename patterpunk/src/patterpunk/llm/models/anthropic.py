@@ -67,7 +67,7 @@ class AnthropicModel(Model, ABC):
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         """
         Convert OpenAI-style tool definitions to Anthropic format.
-        
+
         OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
         Anthropic format: {"name": "...", "description": "...", "input_schema": {...}}
         """
@@ -78,7 +78,7 @@ class AnthropicModel(Model, ABC):
                 anthropic_tool = {
                     "name": func["name"],
                     "description": func["description"],
-                    "input_schema": func["parameters"]
+                    "input_schema": func["parameters"],
                 }
                 anthropic_tools.append(anthropic_tool)
         return anthropic_tools
@@ -113,7 +113,7 @@ class AnthropicModel(Model, ABC):
                     "top_k": self.top_k,
                     "timeout": self.timeout,
                 }
-                
+
                 # Add tools if provided
                 if tools:
                     anthropic_tools = self._convert_tools_to_anthropic_format(tools)
@@ -145,22 +145,22 @@ class AnthropicModel(Model, ABC):
                             # Convert Anthropic tool use format to patterpunk standard format
                             # Anthropic returns input as a dict, we need to convert to JSON string
                             arguments = "{}"
-                            if hasattr(block, 'input') and block.input:
+                            if hasattr(block, "input") and block.input:
                                 try:
                                     arguments = json.dumps(block.input)
                                 except (TypeError, ValueError):
                                     arguments = str(block.input)
-                            
+
                             tool_call = {
                                 "id": block.id,
                                 "type": "function",
                                 "function": {
                                     "name": block.name,
-                                    "arguments": arguments
-                                }
+                                    "arguments": arguments,
+                                },
                             }
                             tool_calls.append(tool_call)
-                    
+
                     if tool_calls:
                         return ToolCallMessage(tool_calls)
                     else:
