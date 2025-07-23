@@ -25,6 +25,9 @@ setup(
         line.strip()
         for line in open(requirements_path, "r")
     ],
+    extras_require={
+        "mcp": ["requests>=2.25.0"],
+    },
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

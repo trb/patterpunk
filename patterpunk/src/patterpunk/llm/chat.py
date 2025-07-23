@@ -34,6 +34,7 @@ class Chat:
 
         self.model = default_model() if model is None else model
         self.tools = tools
+        self._mcp_client = None
 
     def add_message(self, message: Message):
         new_chat = self.copy()
@@ -71,6 +72,46 @@ class Chat:
 
         return new_chat
 
+    def with_mcp_servers(self, server_configs):
+        """
+        Set MCP servers available for this chat.
+
+        :param server_configs: List of MCPServerConfig instances
+        :return: New Chat instance with MCP servers configured
+
+        Examples:
+            from patterpunk.lib.mcp import MCPServerConfig
+            
+            weather_server = MCPServerConfig(
+                name="weather",
+                url="http://localhost:8000/mcp"
+            )
+            
+            chat = chat.with_mcp_servers([weather_server])
+        """
+        try:
+            from patterpunk.lib.mcp import MCPClient
+            from patterpunk.lib.mcp.tool_converter import mcp_tools_to_patterpunk_tools
+        except ImportError as e:
+            raise ImportError(f"MCP functionality requires missing dependencies: {e}")
+
+        new_chat = self.copy()
+        new_chat._mcp_client = MCPClient(server_configs)
+        
+        try:
+            mcp_tools = new_chat._mcp_client.get_available_tools()
+            patterpunk_tools = mcp_tools_to_patterpunk_tools(mcp_tools)
+            
+            if new_chat.tools:
+                new_chat.tools.extend(patterpunk_tools)
+            else:
+                new_chat.tools = patterpunk_tools
+                
+        except Exception as e:
+            logger.warning(f"Failed to initialize MCP servers: {e}")
+            
+        return new_chat
+
     def complete(self):
         message = self.latest_message
         model = message.model if message.model else self.model
@@ -86,7 +127,50 @@ class Chat:
             structured_output=getattr(message, "structured_output", None),
         )
 
-        return self.add_message(response_message)
+        new_chat = self.add_message(response_message)
+        
+        if new_chat.is_latest_message_tool_call and new_chat._mcp_client:
+            new_chat = new_chat._execute_mcp_tool_calls()
+            
+        return new_chat
+
+    def _execute_mcp_tool_calls(self):
+        """Execute MCP tool calls from the latest ToolCallMessage."""
+        if not isinstance(self.latest_message, ToolCallMessage):
+            return self
+            
+        new_chat = self
+        
+        for tool_call in self.latest_message.tool_calls:
+            try:
+                function_name = tool_call["function"]["name"]
+                arguments_str = tool_call["function"]["arguments"]
+                tool_call_id = tool_call["id"]
+                
+                import json
+                arguments = json.loads(arguments_str) if arguments_str else {}
+                
+                from patterpunk.lib.mcp.tool_converter import extract_mcp_server_from_tool_call
+                server_name = extract_mcp_server_from_tool_call(function_name, self.tools or [])
+                
+                result = self._mcp_client.call_tool(function_name, arguments, server_name)
+                
+                tool_result_message = UserMessage(
+                    f"Tool '{function_name}' returned: {result}",
+                    allow_tool_calls=True
+                )
+                
+                new_chat = new_chat.add_message(tool_result_message)
+                
+            except Exception as e:
+                logger.error(f"Failed to execute MCP tool call '{function_name}': {e}")
+                error_message = UserMessage(
+                    f"Tool '{function_name}' failed with error: {str(e)}",
+                    allow_tool_calls=True
+                )
+                new_chat = new_chat.add_message(error_message)
+        
+        return new_chat.complete()
 
     def extract_json(self) -> Optional[List[str]]:
         """Extracts any json in any non-user message"""
