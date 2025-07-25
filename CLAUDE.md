@@ -3,18 +3,12 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Development Commands
-
-**Testing:**
-- `pytest` - Run test suite from `/workspace/patterpunk/src/` directory
-- **IMPORTANT: DO NOT execute tests unless explicitly instructed by the user**
 - Tests are located in `patterpunk/src/tests/` with provider-specific test files
-
-**Package Management:**
-- `pip install -e .` - Install package in development mode (from `patterpunk/src/`)
+- Run tests with `docker-compose run --entrypoing '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
 - Dependencies: core (`requirements.txt`), testing (`test.requirements.txt`), build (`build.requirements.txt`)
 
 **Code Formatting:**
-- Uses `black` for formatting (available in test requirements)
+- Uses `black` for formatting
 
 ## Architecture Overview
 
@@ -97,13 +91,6 @@ patterpunk/src/patterpunk/
 - Separate files for distinct domain concepts
 - Keep helper functions with their primary function when only used locally
 
-## Configuration
-
-All settings use environment variables with `PP_` prefix:
-- Provider credentials: `PP_OPENAI_API_KEY`, `PP_ANTHROPIC_API_KEY`, etc.
-- Model defaults: `PP_DEFAULT_MODEL`, `PP_DEFAULT_TEMPERATURE`
-- Regional settings: `PP_AWS_REGION`, `PP_GOOGLE_LOCATION`
-
 ### MCP Server Configuration
 
 MCP servers are configured via `MCPServerConfig` objects supporting dual transport modes:
@@ -134,7 +121,7 @@ MCP integration requires optional dependencies:
 ## Research Guidelines
 
 When performing web research:
-- Issue limited number of highly divergent search queries
+- Issue multiple highly divergent and constrasting search queries
 - Avoid multiple searches with slight wording variations
 - Search for very different terms to maximize coverage
 
