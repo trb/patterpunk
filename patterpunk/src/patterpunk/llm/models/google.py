@@ -1,4 +1,5 @@
 import json
+import random
 import time
 from abc import ABC
 from typing import List, Optional, Union
@@ -32,6 +33,7 @@ from patterpunk.llm.messages import (
     ROLE_USER,
     ROLE_ASSISTANT,
     AssistantMessage,
+    ToolCallMessage,
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.types import ToolDefinition
@@ -148,6 +150,53 @@ class GoogleModel(Model, ABC):
         self.top_k = top_k
         self.max_tokens = max_tokens
 
+    def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
+        """Convert Patterpunk standard tools to Google genai format"""
+        if not google_genai_available:
+            return []
+        
+        # Type mapping from JSON Schema to Google genai types
+        type_mapping = {
+            "string": "STRING",
+            "number": "NUMBER", 
+            "integer": "INTEGER",
+            "boolean": "BOOLEAN",
+            "array": "ARRAY",
+            "object": "OBJECT"
+        }
+            
+        function_declarations = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                
+                # Convert properties to Google Schema format
+                properties = {}
+                for prop_name, prop_def in func["parameters"].get("properties", {}).items():
+                    json_type = prop_def.get("type", "string")
+                    google_type = type_mapping.get(json_type.lower(), "STRING")
+                    
+                    properties[prop_name] = types.Schema(
+                        type=google_type,
+                        description=prop_def.get("description", "")
+                    )
+                
+                function_declaration = types.FunctionDeclaration(
+                    name=func["name"],
+                    description=func["description"],
+                    parameters=types.Schema(
+                        type="OBJECT",
+                        properties=properties,
+                        required=func["parameters"].get("required", [])
+                    )
+                )
+                function_declarations.append(function_declaration)
+        
+        # Wrap function declarations in a Tool object
+        if function_declarations:
+            return [types.Tool(function_declarations=function_declarations)]
+        return []
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -187,6 +236,13 @@ class GoogleModel(Model, ABC):
         if system_prompt:
             config.system_instruction = system_prompt
 
+        if tools:
+            google_tools = self._convert_tools_to_google_format(tools)
+            if google_tools:
+                config.tools = google_tools
+                # Disable automatic function calling to handle manually
+                config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
+
         if structured_output:
             config.response_mime_type = "application/json"
             if hasattr(structured_output, "__annotations__"):
@@ -203,13 +259,56 @@ class GoogleModel(Model, ABC):
                     model=self.model, contents=contents, config=config
                 )
 
-                if hasattr(response, "text"):
-                    content = response.text
-                    return AssistantMessage(
-                        content, structured_output=structured_output
-                    )
-                else:
-                    raise GoogleAPIError("Unexpected response format from Vertex AI")
+                # Process response candidates and parts
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content.parts:
+                        tool_calls = []
+                        text_parts = []
+                        
+                        # Iterate through all parts to collect both text and function calls
+                        for part in candidate.content.parts:
+                            # Check for function calls with proper None handling
+                            if hasattr(part, 'function_call') and part.function_call is not None:
+                                # Convert Google function call to standard format
+                                tool_call = {
+                                    "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": part.function_call.name,
+                                        "arguments": json.dumps(dict(part.function_call.args))
+                                    }
+                                }
+                                tool_calls.append(tool_call)
+                            
+                            # Check for text content (changed elif to if to handle parts with both text and function_call)
+                            if hasattr(part, 'text') and part.text and part.text != 'None':
+                                text_parts.append(part.text)
+                        
+                        # Return ToolCallMessage if function calls were found
+                        if tool_calls:
+                            return ToolCallMessage(tool_calls)
+                        
+                        # Return AssistantMessage with text content
+                        if text_parts:
+                            content = "\n".join(text_parts)
+                            return AssistantMessage(
+                                content, structured_output=structured_output
+                            )
+                
+                # Fallback: try using response.text for simple responses
+                try:
+                    if hasattr(response, "text") and response.text:
+                        content = response.text
+                        return AssistantMessage(
+                            content, structured_output=structured_output
+                        )
+                except Exception:
+                    # response.text failed, likely because it's a complex response
+                    pass
+                
+                # If we get here, something went wrong
+                raise GoogleAPIError("No content found in Vertex AI response")
 
             except genai_errors.APIError as error:
                 if error.code == 429:

@@ -1,3 +1,4 @@
+import json
 import random
 from abc import ABC
 from typing import List, Optional, Union
@@ -18,6 +19,7 @@ if boto3:
 from patterpunk.llm.messages import (
     Message,
     AssistantMessage,
+    ToolCallMessage,
     ROLE_SYSTEM,
     ROLE_ASSISTANT,
     ROLE_USER,
@@ -58,6 +60,25 @@ class BedrockModel(Model, ABC):
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
         )
+
+    def _convert_tools_to_bedrock_format(self, tools: ToolDefinition) -> dict:
+        """Convert Patterpunk standard tools to Bedrock toolConfig format"""
+        bedrock_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                bedrock_tool = {
+                    "toolSpec": {
+                        "name": func["name"],
+                        "description": func["description"],
+                        "inputSchema": {
+                            "json": func["parameters"]
+                        }
+                    }
+                }
+                bedrock_tools.append(bedrock_tool)
+        
+        return {"tools": bedrock_tools}
 
     def generate_assistant_message(
         self,
@@ -100,17 +121,25 @@ class BedrockModel(Model, ABC):
             retry_sleep = random.randint(30, 60)
             while True:
                 try:
-                    response = self.client.converse(
-                        modelId=self.model_id,
-                        system=[
+                    converse_params = {
+                        "modelId": self.model_id,
+                        "system": [
                             {"text": message.content} for message in system_messages
                         ],
-                        messages=conversation,
-                        inferenceConfig={
+                        "messages": conversation,
+                        "inferenceConfig": {
                             "temperature": self.temperature,
                             "topP": self.top_p,
                         },
-                    )
+                    }
+
+                    # Add tools if provided
+                    if tools:
+                        tool_config = self._convert_tools_to_bedrock_format(tools)
+                        if tool_config["tools"]:
+                            converse_params["toolConfig"] = tool_config
+
+                    response = self.client.converse(**converse_params)
                     break
                 except ClientError as client_exception:
                     if (
@@ -142,6 +171,26 @@ class BedrockModel(Model, ABC):
             )
             raise
 
+        # Handle tool use responses
+        if response.get('stopReason') == 'tool_use':
+            tool_calls = []
+            for content_block in response['output']['message']['content']:
+                if 'toolUse' in content_block:
+                    tool_use = content_block['toolUse']
+                    tool_call = {
+                        "id": tool_use['toolUseId'],
+                        "type": "function",
+                        "function": {
+                            "name": tool_use['name'],
+                            "arguments": json.dumps(tool_use['input'])
+                        }
+                    }
+                    tool_calls.append(tool_call)
+            
+            if tool_calls:
+                return ToolCallMessage(tool_calls)
+
+        # Handle regular text responses
         response_text = response["output"]["message"]["content"][0]["text"]
         logger_llm.info(f"[Assistant]\n{response_text}")
 

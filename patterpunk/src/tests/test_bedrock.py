@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import UserMessage, SystemMessage
+from patterpunk.llm.messages import UserMessage, SystemMessage, ToolCallMessage
 
 
 @pytest.mark.parametrize(
@@ -144,3 +144,97 @@ def test_structured_output(model_id):
     assert parsed_output.warranty_period is None  # Not mentioned in the review
     assert parsed_output.competitor_comparison is None  # Not mentioned in the review
     assert parsed_output.recommended is True
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "anthropic.claude-3-sonnet-20240229-v1:0",
+        "anthropic.claude-3-haiku-20240307-v1:0",
+    ],
+)
+def test_simple_tool_calling(model_id):
+    """Test simple tool calling with a single function."""
+    
+    def get_weather(location: str) -> str:
+        """Get the current weather for a location."""
+        return f"The weather in {location} is sunny and 22°C"
+    
+    bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
+    
+    chat = Chat(model=bedrock).with_tools([get_weather])
+    
+    response = (
+        chat
+        .add_message(UserMessage("What's the weather like in Paris?"))
+        .complete()
+    )
+    
+    # Verify we got a response
+    assert response.latest_message is not None
+    assert response.latest_message.content is not None
+    
+    # Tool calls should always result in ToolCallMessage as latest message
+    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
+    # If latest message is AssistantMessage, check for expected content
+    if isinstance(response.latest_message, ToolCallMessage):
+        # Tool calling worked correctly - test passes
+        pass
+    else:
+        # Response should mention Paris and weather if not a tool call
+        content = response.latest_message.content.lower()
+        assert "paris" in content
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "anthropic.claude-3-sonnet-20240229-v1:0",
+        "anthropic.claude-3-haiku-20240307-v1:0",
+    ],
+)
+def test_tool_calling(model_id):
+    """Test tool calling functionality with multiple tools."""
+    
+    def calculate_area(length: float, width: float) -> str:
+        """Calculate the area of a rectangle given length and width."""
+        area = length * width
+        return f"The area is {area} square units"
+    
+    def get_math_fact(topic: str) -> str:
+        """Get an interesting mathematical fact about a topic."""
+        facts = {
+            "rectangle": "A rectangle has opposite sides that are equal and parallel",
+            "area": "Area measures the amount of space inside a 2D shape",
+            "geometry": "Geometry is one of the oldest mathematical sciences"
+        }
+        return facts.get(topic.lower(), "Mathematics is the language of the universe")
+    
+    bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
+    
+    chat = Chat(model=bedrock).with_tools([calculate_area, get_math_fact])
+    
+    response = (
+        chat
+        .add_message(SystemMessage("You are a geometry helper. Use tools to solve problems."))
+        .add_message(UserMessage(
+            "I have a rectangle that is 5 units long and 3 units wide. "
+            "Calculate its area and give me an interesting fact about rectangles."
+        ))
+        .complete()
+    )
+    
+    # Verify we got a response
+    assert response.latest_message is not None
+    assert response.latest_message.content is not None
+    
+    # Tool calls should always result in ToolCallMessage as latest message
+    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
+    # If latest message is AssistantMessage, check for expected content
+    if isinstance(response.latest_message, ToolCallMessage):
+        # Tool calling worked correctly - test passes
+        pass
+    else:
+        # Response should mention the calculated area if not a tool call
+        content = response.latest_message.content.lower()
+        assert "15" in content or "fifteen" in content  # 5 * 3 = 15

@@ -12,6 +12,7 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+.claude/
 .Python
 .vscode/
 build/
