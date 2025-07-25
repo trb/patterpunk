@@ -1,7 +1,8 @@
 import json
 import time
 from abc import ABC
-from typing import List, Optional, Callable, get_args, Union
+from dataclasses import dataclass
+from typing import List, Optional, Callable, get_args, Union, Literal
 
 from patterpunk.config import (
     anthropic,
@@ -27,6 +28,13 @@ from patterpunk.logger import logger
 
 if anthropic:
     from anthropic import APIError
+
+
+@dataclass
+class ThinkingConfig:
+    """Configuration for Claude reasoning mode."""
+    type: Literal["enabled"] = "enabled"
+    budget_tokens: int = 4000
 
 
 class AnthropicRateLimitError(Exception):
@@ -56,6 +64,7 @@ class AnthropicModel(Model, ABC):
         top_k: int = ANTHROPIC_DEFAULT_TOP_K,
         max_tokens: int = ANTHROPIC_DEFAULT_MAX_TOKENS,
         timeout: int = ANTHROPIC_DEFAULT_TIMEOUT,
+        thinking: Optional[ThinkingConfig] = None,
     ):
         self.model = model
         self.temperature = temperature
@@ -63,6 +72,7 @@ class AnthropicModel(Model, ABC):
         self.top_k = top_k
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.thinking = thinking
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         """
@@ -82,6 +92,54 @@ class AnthropicModel(Model, ABC):
                 }
                 anthropic_tools.append(anthropic_tool)
         return anthropic_tools
+
+    def _parse_model_version(self) -> tuple[int, int]:
+        """Parse major and minor version from model name. Returns (major, minor)."""
+        import re
+        
+        # Claude 3.x format: claude-3-7-sonnet-20250219
+        claude3_match = re.search(r'claude-3-(\d+)', self.model)
+        if claude3_match:
+            return (3, int(claude3_match.group(1)))
+            
+        # Claude 4+ format: claude-opus-4-20250514, claude-sonnet-4-5-20250614
+        # Need to distinguish between minor version and date
+        claude4plus_match = re.search(r'claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})', self.model)
+        if claude4plus_match:
+            major = int(claude4plus_match.group(1))
+            # Group 2 is minor version, Group 3 is date (8 digits)
+            minor_str = claude4plus_match.group(2)
+            minor = int(minor_str) if minor_str else 0
+            return (major, minor)
+            
+        return (0, 0)  # Unknown/unsupported format
+
+    def _is_reasoning_model(self) -> bool:
+        """Check if the model supports reasoning mode (3.7+ or 4+)."""
+        major, minor = self._parse_model_version()
+        
+        if major >= 4:
+            return True
+        elif major == 3 and minor >= 7:
+            return True
+            
+        return False
+
+    def _get_compatible_params(self, api_params: dict) -> dict:
+        """Get parameters compatible with reasoning mode constraints."""
+        if self.thinking:
+            # Reasoning mode constraints:
+            # - temperature must be exactly 1.0
+            # - top_p and top_k must be removed
+            compatible_params = api_params.copy()
+            if "top_p" in compatible_params:
+                del compatible_params["top_p"]
+            if "top_k" in compatible_params:
+                del compatible_params["top_k"]
+            # Force temperature to 1.0 for reasoning mode
+            compatible_params["temperature"] = 1.0
+            return compatible_params
+        return api_params
 
     def generate_assistant_message(
         self,
@@ -114,6 +172,15 @@ class AnthropicModel(Model, ABC):
                     "timeout": self.timeout,
                 }
 
+                # Add thinking parameter for reasoning models
+                if self.thinking and self._is_reasoning_model():
+                    api_params["thinking"] = {
+                        "type": self.thinking.type,
+                        "budget_tokens": self.thinking.budget_tokens
+                    }
+                    # Apply reasoning mode parameter constraints
+                    api_params = self._get_compatible_params(api_params)
+
                 # Add tools if provided
                 if tools:
                     anthropic_tools = self._convert_tools_to_anthropic_format(tools)
@@ -122,10 +189,14 @@ class AnthropicModel(Model, ABC):
 
                 response = anthropic.messages.create(**api_params)
 
-                if response.stop_reason in ["end_turn", "stop_sequence", "max_tokens"]:
+                if response.stop_reason in ["end_turn", "stop_sequence", "max_tokens", "refusal"]:
                     if response.stop_reason == "max_tokens":
                         logger.warning(
                             "Anthropic response was cut off as the model hit MAX_TOKENS"
+                        )
+                    elif response.stop_reason == "refusal":
+                        logger.warning(
+                            "Anthropic model refused to generate content for safety reasons"
                         )
                     content = "\n".join(
                         [
