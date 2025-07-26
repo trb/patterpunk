@@ -5,10 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Commands
 - Tests are located in `patterpunk/src/tests/` with provider-specific test files
 - Run tests with `docker-compose run --entrypoing '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
+- Test files should be given relative to `patterpunk/src` prefixed with `/app` as that is the mount point in the container. E.g. for anthropic tests, the path would be `/app/tests/test_anthropic.py`
 - Dependencies: core (`requirements.txt`), testing (`test.requirements.txt`), build (`build.requirements.txt`)
 
 **Code Formatting:**
 - Uses `black` for formatting
+
+## Coding Rules
+
+1. You MUST NOT mock any interface when writing tests unless VERY EXPLICTLY instructed to do so by the user. Our tests are all integration tests and should hit all services.
 
 ## Architecture Overview
 

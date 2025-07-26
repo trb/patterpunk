@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import asdict
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, get_args
 
 import jinja2
 from patterpunk.llm.chat import Chat
@@ -42,14 +42,26 @@ class Agent(Generic[InputType, OutputType], ABC):
 
     def prepare_user_message(self, input_data: InputType) -> UserMessage:
         user_prompt = self._render_user_prompt(input_data)
+        output_type = self._get_output_type()
+        structured_output = None if output_type is str else output_type
         return UserMessage(
             user_prompt,
-            structured_output=self.__class__.__orig_bases__[0].__args__[1],
+            structured_output=structured_output,
         )
 
     def process_response(self, chat: Chat) -> OutputType:
+        output_type = self._get_output_type()
+        if output_type is str:
+            return chat.latest_message.content
         return chat.parsed_output
+
+    def _get_output_type(self):
+        return get_args(self.__class__.__orig_bases__[0])[1]
 
     def _render_user_prompt(self, input_data: InputType) -> str:
         template = jinja2.Template(self._user_prompt_template)
-        return template.render(asdict(input_data))
+
+        if isinstance(input_data, str):
+            return template.render(text=input_data)
+        else:
+            return template.render(asdict(input_data))
