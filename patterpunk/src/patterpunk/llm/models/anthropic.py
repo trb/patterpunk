@@ -22,6 +22,7 @@ from patterpunk.llm.messages import (
     ToolCallMessage,
 )
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger
 
@@ -64,8 +65,21 @@ class AnthropicModel(Model, ABC):
         top_k: int = ANTHROPIC_DEFAULT_TOP_K,
         max_tokens: int = ANTHROPIC_DEFAULT_MAX_TOKENS,
         timeout: int = ANTHROPIC_DEFAULT_TIMEOUT,
-        thinking: Optional[ThinkingConfig] = None,
+        thinking_config: Optional[UnifiedThinkingConfig] = None,
     ):
+        thinking = None
+        if thinking_config is not None:
+            if thinking_config.token_budget is not None:
+                budget_tokens = min(thinking_config.token_budget, 128000)
+            else:
+                effort_to_tokens = {
+                    "low": 2000,
+                    "medium": 8000, 
+                    "high": 24000
+                }
+                budget_tokens = effort_to_tokens[thinking_config.effort]
+            thinking = ThinkingConfig(type="enabled", budget_tokens=budget_tokens)
+        
         self.model = model
         self.temperature = temperature
         self.top_p = top_p
@@ -73,6 +87,7 @@ class AnthropicModel(Model, ABC):
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.thinking = thinking
+        self.thinking_config = thinking_config
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         """

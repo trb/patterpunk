@@ -3,9 +3,11 @@ from abc import ABC
 from typing import List, Literal, Optional, Union
 
 from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
-from patterpunk.lib.structured_output import has_model_schema
+from patterpunk.lib.structured_output import has_model_schema, get_model_schema
+from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger, logger_llm
 
@@ -42,12 +44,7 @@ class OpenAiModel(Model, ABC):
         frequency_penalty=None,
         presence_penalty=None,
         logit_bias=None,
-        reasoning_effort: Optional[
-            Union[
-                OpenAiReasoningEffort,
-                Literal["low", "medium", "high"],
-            ]
-        ] = OpenAiReasoningEffort.LOW,
+        thinking_config: Optional[ThinkingConfig] = None,
     ):
         if not openai:
             raise OpenAiMissingConfigurationError(
@@ -85,13 +82,19 @@ class OpenAiModel(Model, ABC):
             logger.warning(message)
             raise OpenAiWrongParameterError(message, "presence_penalty")
 
-        if not isinstance(reasoning_effort, OpenAiReasoningEffort):
-            try:
-                reasoning_effort = OpenAiReasoningEffort[reasoning_effort.upper()]
-            except KeyError:
-                message = f"Reasoning effort must be a value of OpenAiReasoningEffort or 'low', 'medium' or 'high', parameter given: {reasoning_effort}"
-                logger.warning(message)
-                raise OpenAiWrongParameterError(message, "reasoning_effort")
+        reasoning_effort = OpenAiReasoningEffort.LOW
+        if thinking_config is not None:
+            if thinking_config.effort is not None:
+                reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
+            else:
+                if thinking_config.token_budget == 0:
+                    reasoning_effort = OpenAiReasoningEffort.LOW
+                elif thinking_config.token_budget <= 4000:
+                    reasoning_effort = OpenAiReasoningEffort.LOW
+                elif thinking_config.token_budget <= 12000:
+                    reasoning_effort = OpenAiReasoningEffort.MEDIUM
+                else:
+                    reasoning_effort = OpenAiReasoningEffort.HIGH
 
         self.model = model
         self.temperature = temperature
@@ -101,6 +104,7 @@ class OpenAiModel(Model, ABC):
         self.logit_bias = {} if logit_bias is None else logit_bias
         self.completion = None
         self.reasoning_effort = reasoning_effort
+        self.thinking_config = thinking_config
 
     def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
         """Convert patterpunk messages to Responses API input format."""

@@ -25,6 +25,7 @@ from patterpunk.llm.messages import (
     ROLE_USER,
 )
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger, logger_llm
 
@@ -49,10 +50,12 @@ class BedrockModel(Model, ABC):
         region_name: Optional[str] = None,
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
+        thinking_config: Optional[UnifiedThinkingConfig] = None,
     ):
         self.model_id = model_id
         self.temperature = temperature
         self.top_p = top_p
+        self.thinking_config = thinking_config
 
         self.client = get_bedrock_client_by_region(
             client_type="bedrock-runtime",
@@ -71,14 +74,33 @@ class BedrockModel(Model, ABC):
                     "toolSpec": {
                         "name": func["name"],
                         "description": func["description"],
-                        "inputSchema": {
-                            "json": func["parameters"]
-                        }
+                        "inputSchema": {"json": func["parameters"]},
                     }
                 }
                 bedrock_tools.append(bedrock_tool)
-        
+
         return {"tools": bedrock_tools}
+
+    def _get_thinking_params(self) -> dict:
+        """Convert unified thinking config to Bedrock additionalModelRequestFields format."""
+        if not self.thinking_config:
+            return {}
+
+        additional_fields = {}
+
+        if self.thinking_config.effort is not None:
+            # For OpenAI/DeepSeek models that use reasoning_effort
+            additional_fields["reasoning_effort"] = self.thinking_config.effort
+
+        if self.thinking_config.token_budget is not None:
+            # For Anthropic models that use reasoning_config with budget_tokens
+            budget_tokens = max(1024, self.thinking_config.token_budget)  # Minimum 1024
+            additional_fields["reasoning_config"] = {
+                "type": "enabled",
+                "budget_tokens": budget_tokens,
+            }
+
+        return additional_fields
 
     def generate_assistant_message(
         self,
@@ -121,17 +143,33 @@ class BedrockModel(Model, ABC):
             retry_sleep = random.randint(30, 60)
             while True:
                 try:
+                    # Build inference config
+                    inference_config = {
+                        "temperature": self.temperature,
+                        "topP": self.top_p,
+                    }
+
+                    # Get thinking parameters
+                    thinking_params = self._get_thinking_params()
+
+                    # For Anthropic models with reasoning_config, top_p must be disabled
+                    if thinking_params.get("reasoning_config"):
+                        inference_config.pop("topP", None)
+
                     converse_params = {
                         "modelId": self.model_id,
                         "system": [
                             {"text": message.content} for message in system_messages
                         ],
                         "messages": conversation,
-                        "inferenceConfig": {
-                            "temperature": self.temperature,
-                            "topP": self.top_p,
-                        },
+                        "inferenceConfig": inference_config,
                     }
+
+                    # Add thinking parameters if present
+                    if thinking_params:
+                        converse_params["additionalModelRequestFields"] = (
+                            thinking_params
+                        )
 
                     # Add tools if provided
                     if tools:
@@ -172,29 +210,53 @@ class BedrockModel(Model, ABC):
             raise
 
         # Handle tool use responses
-        if response.get('stopReason') == 'tool_use':
+        if response.get("stopReason") == "tool_use":
             tool_calls = []
-            for content_block in response['output']['message']['content']:
-                if 'toolUse' in content_block:
-                    tool_use = content_block['toolUse']
+            for content_block in response["output"]["message"]["content"]:
+                if "toolUse" in content_block:
+                    tool_use = content_block["toolUse"]
                     tool_call = {
-                        "id": tool_use['toolUseId'],
+                        "id": tool_use["toolUseId"],
                         "type": "function",
                         "function": {
-                            "name": tool_use['name'],
-                            "arguments": json.dumps(tool_use['input'])
-                        }
+                            "name": tool_use["name"],
+                            "arguments": json.dumps(tool_use["input"]),
+                        },
                     }
                     tool_calls.append(tool_call)
-            
+
             if tool_calls:
                 return ToolCallMessage(tool_calls)
 
         # Handle regular text responses
-        response_text = response["output"]["message"]["content"][0]["text"]
-        logger_llm.info(f"[Assistant]\n{response_text}")
+        response_content = response["output"]["message"]["content"]
+        response_text = ""
+        reasoning_text = ""
 
-        return AssistantMessage(response_text, structured_output=structured_output)
+        # Extract both regular text and reasoning content
+        for content_block in response_content:
+            if "text" in content_block:
+                response_text += content_block["text"]
+            elif "reasoningContent" in content_block:
+                reasoning_content = content_block["reasoningContent"]
+                if "reasoningText" in reasoning_content:
+                    reasoning_text += reasoning_content["reasoningText"]["text"]
+
+        # Include reasoning content if enabled
+        if (
+            reasoning_text
+            and self.thinking_config
+            and self.thinking_config.include_thoughts
+        ):
+            full_response = (
+                f"<thinking>\n{reasoning_text}\n</thinking>\n\n{response_text}"
+            )
+        else:
+            full_response = response_text
+
+        logger_llm.info(f"[Assistant]\n{full_response}")
+
+        return AssistantMessage(full_response, structured_output=structured_output)
 
     @staticmethod
     def get_name():
@@ -221,4 +283,5 @@ class BedrockModel(Model, ABC):
             temperature=self.temperature,
             top_p=self.top_p,
             region_name=self.client.meta.region_name,
+            thinking_config=self.thinking_config,
         )

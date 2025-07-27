@@ -36,6 +36,7 @@ from patterpunk.llm.messages import (
     ToolCallMessage,
 )
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition
 from patterpunk.logger import logger
 
@@ -119,6 +120,7 @@ class GoogleModel(Model, ABC):
         # Either google_account_credentials OR client have to be set, but not both
         google_account_credentials: Optional[str] = None,
         client: Optional[genai.Client] = None,
+        thinking_config: Optional[ThinkingConfig] = None,
     ):
         if not google_genai_available:
             raise ImportError(
@@ -129,6 +131,20 @@ class GoogleModel(Model, ABC):
             raise ValueError(
                 "Cannot set both `google_account_credentials` and `client`"
             )
+        
+        thinking_budget = None
+        include_thoughts = False
+        if thinking_config is not None:
+            if thinking_config.token_budget is not None:
+                thinking_budget = min(thinking_config.token_budget, 24576)
+            else:
+                effort_to_tokens = {
+                    "low": 1500,
+                    "medium": 4000,
+                    "high": 12000
+                }
+                thinking_budget = effort_to_tokens[thinking_config.effort]
+            include_thoughts = thinking_config.include_thoughts
 
         if client:
             self.client = client
@@ -149,6 +165,9 @@ class GoogleModel(Model, ABC):
         self.top_p = top_p
         self.top_k = top_k
         self.max_tokens = max_tokens
+        self.thinking_budget = thinking_budget
+        self.include_thoughts = include_thoughts
+        self.thinking_config = thinking_config
 
     def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
         """Convert Patterpunk standard tools to Google genai format"""
@@ -232,6 +251,14 @@ class GoogleModel(Model, ABC):
             top_p=self.top_p,
             top_k=self.top_k,
         )
+
+        if self.thinking_budget is not None or self.include_thoughts:
+            thinking_config_kwargs = {}
+            if self.thinking_budget is not None:
+                thinking_config_kwargs['thinking_budget'] = self.thinking_budget
+            if self.include_thoughts:
+                thinking_config_kwargs['include_thoughts'] = self.include_thoughts
+            config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
 
         if system_prompt:
             config.system_instruction = system_prompt
@@ -399,4 +426,5 @@ class GoogleModel(Model, ABC):
             top_k=self.top_k,
             max_tokens=self.max_tokens,
             client=self.client,
+            thinking_config=self.thinking_config,
         )

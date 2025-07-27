@@ -11,6 +11,7 @@ from patterpunk.llm.types import ToolDefinition
 
 
 class OllamaModel(Model, ABC):
+    # @todo: Add thinking mode support when Ollama supports reasoning models
     def __init__(
         self,
         model: str,

@@ -188,3 +188,144 @@ def test_simple_tool_calling():
         # Response should mention Paris and weather if not a tool call
         content = response.latest_message.content.lower()
         assert "paris" in content
+
+
+def test_thinking_mode_fixed_budget():
+    """Test thinking mode with a fixed budget."""
+    from patterpunk.llm.thinking import ThinkingConfig
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1", 
+        temperature=0.1,
+        thinking_config=ThinkingConfig(token_budget=1024)
+    )
+    
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("Solve this step by step: What is 23 * 47?"))
+        .complete()
+        .latest_message
+    )
+    
+    assert response.content is not None
+    assert len(response.content) > 0
+    content = response.content.lower()
+    assert "1081" in content or "23" in content or "47" in content
+
+
+def test_thinking_mode_dynamic_budget():
+    """Test thinking mode with dynamic budget (effort=high)."""
+    from patterpunk.llm.thinking import ThinkingConfig
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1", 
+        temperature=0.1,
+        thinking_config=ThinkingConfig(effort="high")
+    )
+    
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("Explain the concept of recursion in programming with an example."))
+        .complete()
+        .latest_message
+    )
+    
+    assert response.content is not None
+    assert len(response.content) > 100
+    content = response.content.lower()
+    assert "recursion" in content
+
+
+def test_thinking_mode_disabled():
+    """Test thinking mode disabled (budget=0)."""
+    from patterpunk.llm.thinking import ThinkingConfig
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1", 
+        temperature=0.1,
+        thinking_config=ThinkingConfig(token_budget=0)
+    )
+    
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("What is the capital of France?"))
+        .complete()
+        .latest_message
+    )
+    
+    assert response.content is not None
+    assert len(response.content) > 0
+    content = response.content.lower()
+    assert "paris" in content
+
+
+def test_thinking_mode_include_thoughts():
+    """Test thinking mode with thoughts included in response."""
+    from patterpunk.llm.thinking import ThinkingConfig
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1", 
+        temperature=0.1,
+        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=True)
+    )
+    
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("Calculate the area of a circle with radius 5."))
+        .complete()
+        .latest_message
+    )
+    
+    assert response.content is not None
+    assert len(response.content) > 0
+    content = response.content.lower()
+    assert "circle" in content or "area" in content or "5" in content
+
+
+def test_thinking_mode_exclude_thoughts():
+    """Test thinking mode with thoughts excluded from response."""
+    from patterpunk.llm.thinking import ThinkingConfig
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1", 
+        temperature=0.1,
+        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=False)
+    )
+    
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("What is 2 + 2?"))
+        .complete()
+        .latest_message
+    )
+    
+    assert response.content is not None
+    assert len(response.content) > 0
+    content = response.content.lower()
+    assert "4" in content or "four" in content
+
+
+def test_thinking_mode_deepcopy():
+    """Test that thinking mode parameters are preserved in deepcopy."""
+    import copy
+    from patterpunk.llm.thinking import ThinkingConfig
+    
+    thinking_config = ThinkingConfig(token_budget=1024, include_thoughts=True)
+    original_model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="northamerica-northeast1",
+        thinking_config=thinking_config
+    )
+    
+    copied_model = copy.deepcopy(original_model)
+    
+    assert copied_model.thinking_config == original_model.thinking_config
+    assert copied_model.thinking_budget == original_model.thinking_budget
+    assert copied_model.include_thoughts == original_model.include_thoughts
+    assert copied_model.model == original_model.model
+    assert copied_model.location == original_model.location

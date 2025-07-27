@@ -1,7 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from patterpunk.llm.chat import Chat
-from patterpunk.llm.models.anthropic import AnthropicModel, ThinkingConfig
+from patterpunk.llm.models.anthropic import AnthropicModel
+from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.messages import SystemMessage, UserMessage, ToolCallMessage
 
 
@@ -505,7 +506,7 @@ def test_reasoning_mode_parameter_compatibility():
     # Test with reasoning mode
     model_with_thinking = AnthropicModel(
         model="claude-3-7-sonnet-20250219",
-        thinking=ThinkingConfig(type="enabled", budget_tokens=4000)
+        thinking_config=ThinkingConfig(token_budget=4000)
     )
     
     # With thinking parameter, top_p and top_k should be removed, temperature forced to 1.0
@@ -526,16 +527,16 @@ def test_reasoning_mode_parameter_compatibility():
 def test_reasoning_mode_initialization():
     """Test that AnthropicModel can be initialized with thinking parameter."""
     
-    thinking_config = ThinkingConfig(type="enabled", budget_tokens=8000)
+    thinking_config = ThinkingConfig(token_budget=8000)
     
     model = AnthropicModel(
         model="claude-sonnet-4-20250514",
-        thinking=thinking_config,
+        thinking_config=thinking_config,
         temperature=0.5,
         max_tokens=2000
     )
     
-    assert model.thinking == thinking_config
+    assert model.thinking_config == thinking_config
     assert model.thinking.type == "enabled"
     assert model.thinking.budget_tokens == 8000
     assert model.model == "claude-sonnet-4-20250514"
@@ -547,12 +548,12 @@ def test_reasoning_mode_initialization():
 def test_reasoning_mode_default_type():
     """Test that ThinkingConfig defaults to type='enabled' when only budget_tokens is set."""
     
-    # Test with only budget_tokens specified
-    thinking_config = ThinkingConfig(budget_tokens=6000)
+    # Test with only token_budget specified
+    thinking_config = ThinkingConfig(token_budget=6000)
     
     model = AnthropicModel(
         model="claude-opus-4-20250514",
-        thinking=thinking_config,
+        thinking_config=thinking_config,
         temperature=0.3,
         max_tokens=1500
     )
@@ -584,12 +585,12 @@ def test_reasoning_mode_with_claude_sonnet_4():
     from patterpunk.llm.chat import Chat
     
     # Test initialization with thinking parameter
-    thinking_config = ThinkingConfig(type="enabled", budget_tokens=4000)
+    thinking_config = ThinkingConfig(token_budget=4000)
     
     chat = Chat(
         model=AnthropicModel(
             model="claude-sonnet-4-20250514",
-            thinking=thinking_config,
+            thinking_config=thinking_config,
             temperature=0.7,
             top_p=0.9,
             top_k=40,
@@ -598,7 +599,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
     )
     
     # Verify the model is properly configured
-    assert chat.model.thinking == thinking_config
+    assert chat.model.thinking_config == thinking_config
     assert chat.model._is_reasoning_model() == True
     assert chat.model._parse_model_version() == (4, 0)
     
@@ -628,7 +629,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
     chat_37 = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
-            thinking=ThinkingConfig(type="enabled", budget_tokens=2000),
+            thinking_config=ThinkingConfig(token_budget=2000),
             temperature=0.5
         )
     )
@@ -667,7 +668,7 @@ def test_reasoning_mode_plain_text_response():
     chat = Chat(
         model=AnthropicModel(
             model="claude-sonnet-4-20250514",
-            thinking=ThinkingConfig(budget_tokens=2000),
+            thinking_config=ThinkingConfig(token_budget=2000),
             max_tokens=4000,  # Must be greater than budget_tokens
             temperature=1.0  # Must be 1.0 when thinking is enabled
         )
@@ -704,7 +705,7 @@ def test_reasoning_mode_structured_output():
     chat = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
-            thinking=ThinkingConfig(budget_tokens=3000),
+            thinking_config=ThinkingConfig(token_budget=3000),
             max_tokens=5000,  # Must be greater than budget_tokens
             temperature=1.0   # Must be 1.0 when thinking is enabled
         )
@@ -754,7 +755,7 @@ def test_reasoning_mode_tool_calling():
     chat = Chat(
         model=AnthropicModel(
             model="claude-opus-4-20250514",
-            thinking=ThinkingConfig(budget_tokens=4000),
+            thinking_config=ThinkingConfig(token_budget=4000),
             max_tokens=6000,  # Must be greater than budget_tokens
             temperature=1.0   # Must be 1.0 when thinking is enabled
         )

@@ -229,8 +229,9 @@ nager, WAMITAB
 
 
 def test_o1():
+    from patterpunk.llm.thinking import ThinkingConfig
     chat = Chat(
-        model=OpenAiModel(model="o3-mini", temperature=0.1, reasoning_effort="medium")
+        model=OpenAiModel(model="o3-mini", temperature=0.1, thinking_config=ThinkingConfig(effort="medium"))
     )
 
     chat = (
