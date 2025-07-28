@@ -2,7 +2,7 @@ import enum
 from abc import ABC
 from typing import List, Literal, Optional, Union
 
-from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES
+from patterpunk.config import DEFAULT_TEMPERATURE, openai, OPENAI_MAX_RETRIES, GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage

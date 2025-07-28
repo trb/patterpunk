@@ -24,6 +24,7 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
 
 
@@ -107,6 +108,94 @@ class AnthropicModel(Model, ABC):
                 }
                 anthropic_tools.append(anthropic_tool)
         return anthropic_tools
+
+    def _create_structured_output_tool(self, structured_output: object) -> dict:
+        """
+        Create a tool definition for structured output using Pydantic model schema.
+        This follows Anthropic's recommended approach for forcing JSON output.
+        """
+        if not has_model_schema(structured_output):
+            raise ValueError("structured_output must be a Pydantic model with schema support")
+        
+        schema = get_model_schema(structured_output)
+        
+        return {
+            "name": "provide_structured_response",
+            "description": "Provide the response in the exact structured format specified by the schema.",
+            "input_schema": schema
+        }
+
+    def _format_reasoning_to_structured_output(self, reasoning_content: str, structured_output: object, original_messages: List[Message]) -> AssistantMessage:
+        """
+        Use Claude 3.5 Haiku to format reasoning output into structured JSON.
+        This is part of the two-model approach to handle reasoning + structured output conflict.
+        """
+        logger.info("[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku")
+        
+        # Create the structured output tool
+        structured_output_tool = self._create_structured_output_tool(structured_output)
+        
+        # Get the original user message for context
+        user_context = ""
+        for msg in reversed(original_messages):
+            if msg.role == ROLE_USER:
+                user_context = msg.get_content_as_string()
+                break
+        
+        # Create formatting prompt
+        formatting_prompt = f"""Based on the following reasoning and analysis, extract and format the information into the exact JSON structure specified by the tool schema.
+
+Original user request: {user_context}
+
+Reasoning and analysis from Claude:
+{reasoning_content}
+
+Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
+
+        # Prepare API call for Claude 3.5 Haiku
+        haiku_params = {
+            "model": "claude-3-5-haiku-20241022",  # Use stable Haiku model
+            "messages": [{"role": "user", "content": formatting_prompt}],
+            "max_tokens": 4096,
+            "temperature": 0.1,  # Low temperature for consistent formatting
+            "tools": [structured_output_tool],
+            "tool_choice": {
+                "type": "tool", 
+                "name": "provide_structured_response"
+            }
+        }
+        
+        try:
+            # Make the formatting call
+            formatting_response = anthropic.messages.create(**haiku_params)
+            
+            # Extract structured output from the tool call
+            for block in formatting_response.content:
+                if block.type == "tool_use" and block.name == "provide_structured_response":
+                    if hasattr(block, "input") and block.input:
+                        try:
+                            # Parse the structured output
+                            parsed_output = structured_output.model_validate(block.input)
+                            # Create content from the structured data  
+                            structured_response_content = json.dumps(block.input, indent=2)
+                            
+                            logger.info("[ANTHROPIC] Successfully formatted reasoning output to structured JSON")
+                            return AssistantMessage(
+                                structured_response_content,
+                                structured_output=structured_output,
+                                parsed_output=parsed_output
+                            )
+                        except Exception as e:
+                            logger.error(f"[ANTHROPIC] Failed to parse structured output from Haiku formatting: {e}")
+                            
+            # If we get here, something went wrong with the formatting
+            logger.warning("[ANTHROPIC] Haiku formatting failed, falling back to reasoning content")
+            return AssistantMessage(reasoning_content, structured_output=structured_output)
+            
+        except Exception as e:
+            logger.error(f"[ANTHROPIC] Error in two-model structured output approach: {e}")
+            # Fall back to returning the reasoning content
+            return AssistantMessage(reasoning_content, structured_output=structured_output)
 
     def _parse_model_version(self) -> tuple[int, int]:
         """Parse major and minor version from model name. Returns (major, minor)."""
@@ -261,8 +350,117 @@ class AnthropicModel(Model, ABC):
                     # Apply reasoning mode parameter constraints
                     api_params = self._get_compatible_params(api_params)
 
-                # Add tools if provided
-                if tools:
+                # Handle structured output with reasoning mode
+                if structured_output and has_model_schema(structured_output) and self.thinking and self._is_reasoning_model():
+                    # Try reasoning model with auto tool choice first (compatible with thinking)
+                    logger.info(f"[ANTHROPIC] Attempting reasoning model with auto tool choice for structured output")
+                    
+                    # Create structured output tool
+                    structured_output_tool = self._create_structured_output_tool(structured_output)
+                    
+                    # Convert existing tools to Anthropic format
+                    anthropic_tools = []
+                    if tools:
+                        anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+                    
+                    # Add the structured output tool
+                    anthropic_tools.append(structured_output_tool)
+                    api_params["tools"] = anthropic_tools
+                    
+                    # Use auto tool choice (compatible with reasoning mode)
+                    api_params["tool_choice"] = {"type": "auto"}
+                    
+                    # Make the reasoning call with auto tool choice
+                    try:
+                        reasoning_response = anthropic.messages.create(**api_params)
+                        
+                        # Check if the model used the structured output tool
+                        for block in reasoning_response.content:
+                            if block.type == "tool_use" and block.name == "provide_structured_response":
+                                if hasattr(block, "input") and block.input:
+                                    try:
+                                        # Parse the structured output
+                                        parsed_output = structured_output.model_validate(block.input)
+                                        # Create content from the structured data
+                                        structured_response_content = json.dumps(block.input, indent=2)
+                                        
+                                        logger.info("[ANTHROPIC] Successfully got structured output from reasoning model with auto tool choice")
+                                        return AssistantMessage(
+                                            structured_response_content,
+                                            structured_output=structured_output,
+                                            parsed_output=parsed_output
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"[ANTHROPIC] Failed to parse structured output from reasoning model: {e}")
+                                        break
+                        
+                        # If we get here, the reasoning model didn't use the structured output tool
+                        # Fall back to two-model approach
+                        logger.info("[ANTHROPIC] Reasoning model didn't use structured output tool, falling back to two-model approach")
+                        
+                        # Extract the reasoning content (handle both text and tool calls)
+                        reasoning_parts = []
+                        for block in reasoning_response.content:
+                            if block.type == "text":
+                                reasoning_parts.append(block.text)
+                            elif block.type == "tool_use" and block.name != "provide_structured_response":
+                                # Include other tool calls in the reasoning context
+                                reasoning_parts.append(f"Tool call: {block.name} with arguments: {json.dumps(block.input)}")
+                        
+                        reasoning_content = "\n".join(reasoning_parts)
+                        
+                        # Second call: use Claude 3.5 Haiku to format the reasoning into structured output
+                        return self._format_reasoning_to_structured_output(
+                            reasoning_content, structured_output, messages
+                        )
+                        
+                    except Exception as e:
+                        logger.warning(f"[ANTHROPIC] Error with reasoning model auto tool choice: {e}, falling back to two-model approach")
+                        
+                        # Fall back to two-model approach without structured output tool
+                        if tools:
+                            anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+                            api_params["tools"] = anthropic_tools
+                            api_params["tool_choice"] = {"type": "auto"}
+                        
+                        # Make the reasoning call
+                        reasoning_response = anthropic.messages.create(**api_params)
+                        
+                        # Extract the reasoning content
+                        reasoning_parts = []
+                        for block in reasoning_response.content:
+                            if block.type == "text":
+                                reasoning_parts.append(block.text)
+                            elif block.type == "tool_use":
+                                reasoning_parts.append(f"Tool call: {block.name} with arguments: {json.dumps(block.input)}")
+                        
+                        reasoning_content = "\n".join(reasoning_parts)
+                        
+                        # Second call: use Claude 3.5 Haiku to format the reasoning into structured output
+                        return self._format_reasoning_to_structured_output(
+                            reasoning_content, structured_output, messages
+                        )
+                    
+                elif structured_output and has_model_schema(structured_output):
+                    # Regular structured output approach for non-reasoning models
+                    structured_output_tool = self._create_structured_output_tool(structured_output)
+                    
+                    # Convert existing tools to Anthropic format
+                    anthropic_tools = []
+                    if tools:
+                        anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+                    
+                    # Add the structured output tool
+                    anthropic_tools.append(structured_output_tool)
+                    api_params["tools"] = anthropic_tools
+                    
+                    # Force the model to use the structured output tool
+                    api_params["tool_choice"] = {
+                        "type": "tool",
+                        "name": "provide_structured_response"
+                    }
+                elif tools:
+                    # Regular tool handling when no structured output
                     anthropic_tools = self._convert_tools_to_anthropic_format(tools)
                     if anthropic_tools:
                         api_params["tools"] = anthropic_tools
@@ -291,8 +489,30 @@ class AnthropicModel(Model, ABC):
                 elif response.stop_reason == "tool_use":
                     # Handle tool use response
                     tool_calls = []
+                    structured_response_content = None
+                    
                     for block in response.content:
                         if block.type == "tool_use":
+                            # Check if this is our structured output tool
+                            if block.name == "provide_structured_response" and structured_output:
+                                # Extract the structured output directly from the tool call
+                                if hasattr(block, "input") and block.input:
+                                    try:
+                                        # Parse the structured output
+                                        parsed_output = structured_output.model_validate(block.input)
+                                        # Create content from the structured data
+                                        structured_response_content = json.dumps(block.input, indent=2)
+                                        
+                                        return AssistantMessage(
+                                            structured_response_content,
+                                            structured_output=structured_output,
+                                            parsed_output=parsed_output
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"Failed to parse structured output from tool call: {e}")
+                                        # Fall back to regular tool call handling
+                            
+                            # Regular tool call handling
                             # Convert Anthropic tool use format to patterpunk standard format
                             # Anthropic returns input as a dict, we need to convert to JSON string
                             arguments = "{}"
