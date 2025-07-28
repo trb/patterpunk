@@ -8,7 +8,7 @@ from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.logger import logger, logger_llm
 
 if openai:
@@ -106,49 +106,101 @@ class OpenAiModel(Model, ABC):
         self.reasoning_effort = reasoning_effort
         self.thinking_config = thinking_config
 
-    def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
-        """Convert patterpunk messages to Responses API input format."""
-        responses_input = []
+    def _process_cache_chunks_for_openai(self, chunks: List[CacheChunk]) -> tuple[str, bool]:
+        """
+        Process cache chunks for OpenAI's automatic prefix caching.
+        Returns (concatenated_content, should_warn_about_caching)
+        """
+        content = "".join(chunk.content for chunk in chunks)
+        
+        # Check for non-prefix cacheable patterns
+        cacheable_positions = [i for i, chunk in enumerate(chunks) if chunk.cacheable]
+        
+        # Warn if we have cacheable content that's not at the prefix
+        should_warn = False
+        if cacheable_positions:
+            # Check if there are non-cacheable chunks before the last cacheable chunk
+            last_cacheable = max(cacheable_positions)
+            for i in range(last_cacheable):
+                if not chunks[i].cacheable:
+                    should_warn = True
+                    break
+        
+        return content, should_warn
+
+    def _convert_messages_for_openai_cache(self, messages: List[Message]) -> List[dict]:
+        """Convert patterpunk messages to OpenAI format with cache handling."""
+        openai_messages = []
+        cache_warnings = []
+        
         for message in messages:
-            message_dict = message.to_dict(prompt_for_structured_output=prompt_for_structured_output)
+            if isinstance(message.content, list):
+                content, should_warn = self._process_cache_chunks_for_openai(message.content)
+                if should_warn:
+                    cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+            else:
+                content = message.content
             
-            if message_dict["role"] == "system":
+            openai_messages.append({
+                "role": message.role,
+                "content": content
+            })
+        
+        # Log warnings about suboptimal caching patterns
+        for warning in cache_warnings:
+            logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
+        
+        return openai_messages
+
+    def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
+        """Convert patterpunk messages to Responses API input format with cache handling."""
+        responses_input = []
+        cache_warnings = []
+        
+        for message in messages:
+            # Handle cache chunks for optimal OpenAI caching
+            if isinstance(message.content, list):
+                content, should_warn = self._process_cache_chunks_for_openai(message.content)
+                if should_warn:
+                    cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+            else:
+                content = message.get_content_as_string()
+            
+            # Add structured output prompt if needed
+            if (prompt_for_structured_output 
+                and hasattr(message, 'structured_output') 
+                and message.structured_output 
+                and has_model_schema(message.structured_output)):
+                content = f"{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+            
+            if message.role == "system":
                 responses_input.append({
                     "role": "developer",
-                    "content": [{"type": "input_text", "text": message_dict["content"]}]
+                    "content": [{"type": "input_text", "text": content}]
                 })
-            elif message_dict["role"] == "user":
-                if isinstance(message_dict["content"], str):
-                    responses_input.append({
-                        "role": "user", 
-                        "content": [{"type": "input_text", "text": message_dict["content"]}]
-                    })
-                else:
-                    content_parts = []
-                    for part in message_dict["content"]:
-                        if part["type"] == "text":
-                            content_parts.append({"type": "input_text", "text": part["text"]})
-                        elif part["type"] == "image_url":
-                            content_parts.append({"type": "input_image", "image_url": part["image_url"]["url"]})
-                    responses_input.append({"role": "user", "content": content_parts})
-            elif message_dict["role"] == "assistant":
-                if message_dict.get("content"):
+            elif message.role == "user":
+                responses_input.append({
+                    "role": "user", 
+                    "content": [{"type": "input_text", "text": content}]
+                })
+            elif message.role == "assistant":
+                if content:
                     responses_input.append({
                         "role": "assistant",
-                        "content": [{"type": "input_text", "text": message_dict["content"]}]
+                        "content": [{"type": "input_text", "text": content}]
                     })
-                if message_dict.get("tool_calls"):
+            elif message.role == "tool_call":
+                # Handle tool calls
+                if hasattr(message, 'tool_calls'):
                     responses_input.append({
                         "role": "assistant",
                         "content": [],
-                        "tool_calls": message_dict["tool_calls"]
+                        "tool_calls": message.tool_calls  
                     })
-            elif message_dict["role"] == "tool_call":
-                responses_input.append({
-                    "role": "assistant",
-                    "content": [],
-                    "tool_calls": message_dict["tool_calls"]
-                })
+        
+        # Log warnings about suboptimal caching patterns
+        for warning in cache_warnings:
+            logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
         
         return responses_input
 
