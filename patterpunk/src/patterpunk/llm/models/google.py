@@ -258,23 +258,25 @@ class GoogleModel(Model, ABC):
                 cache_mappings = self._create_cache_objects_for_chunks(message.content)
                 all_cache_mappings.update(cache_mappings)
                 
-                # Convert to Google format (concatenate for now, as Google will auto-detect cached content)
-                content_str = "".join(chunk.content for chunk in message.content)
+                # Create separate Part objects for each chunk to enable individual caching
+                parts = []
+                for chunk in message.content:
+                    parts.append(types.Part.from_text(text=chunk.content))
             else:
-                content_str = message.get_content_as_string()
+                parts = [types.Part.from_text(text=message.get_content_as_string())]
             
             if message.role == ROLE_USER:
                 contents.append(
                     types.Content(
                         role="user",
-                        parts=[types.Part.from_text(text=content_str)],
+                        parts=parts,
                     )
                 )
             elif message.role == ROLE_ASSISTANT:
                 contents.append(
                     types.Content(
                         role="model", 
-                        parts=[types.Part.from_text(text=content_str)]
+                        parts=parts
                     )
                 )
         
@@ -289,7 +291,8 @@ class GoogleModel(Model, ABC):
                 if isinstance(message.content, list):
                     # For system messages with cache chunks, we need to handle them specially
                     # Google's system_instruction expects a simple string, so we concatenate
-                    content_str = "".join(chunk.content for chunk in message.content)
+                    # but preserve chunk boundaries with proper spacing
+                    content_str = "\n\n".join(chunk.content for chunk in message.content)
                     system_parts.append(content_str)
                 else:
                     system_parts.append(message.content)
