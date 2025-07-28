@@ -11,6 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Code Formatting:**
 - Uses `black` for formatting
 
+## General Rules
+
+1. You MUST NOT estimate time periods. Under no circumstances should you add time estimates, to any file, in any context.
+
 ## Coding Rules
 
 1. You MUST NOT mock any interface when writing tests unless VERY EXPLICTLY instructed to do so by the user. Our tests are all integration tests and should hit all services.
