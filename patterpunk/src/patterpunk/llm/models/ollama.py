@@ -7,7 +7,7 @@ from patterpunk.config import ollama
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages import Message, AssistantMessage, ToolCallMessage
 from patterpunk.llm.models.base import Model
-from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.types import ToolDefinition, CacheChunk
 
 
 class OllamaModel(Model, ABC):
@@ -42,6 +42,21 @@ class OllamaModel(Model, ABC):
         
         return ollama_tools
 
+    def _convert_messages_for_ollama(self, messages: List[Message]) -> List[dict]:
+        """Convert patterpunk messages to Ollama format, ignoring cache settings."""
+        ollama_messages = []
+        
+        for message in messages:
+            # Always convert to string, ignoring cache settings
+            content = message.get_content_as_string()
+            
+            ollama_messages.append({
+                "role": message.role,
+                "content": content
+            })
+        
+        return ollama_messages
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -67,7 +82,7 @@ class OllamaModel(Model, ABC):
 
         chat_params = {
             "model": self.model,
-            "messages": [message.to_dict() for message in messages],
+            "messages": self._convert_messages_for_ollama(messages),
             "stream": False,
             "format": (
                 get_model_schema(structured_output)

@@ -26,7 +26,7 @@ from patterpunk.llm.messages import (
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
-from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.logger import logger, logger_llm
 
 
@@ -35,10 +35,11 @@ class BedrockMissingCredentialsError(Exception):
 
 
 def get_bedrock_conversation_content(message: Message):
+    content_str = message.get_content_as_string()
     if message.structured_output and has_model_schema(message.structured_output):
-        return f"{message.content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+        return f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
 
-    return message.content
+    return content_str
 
 
 class BedrockModel(Model, ABC):
@@ -102,6 +103,59 @@ class BedrockModel(Model, ABC):
 
         return additional_fields
 
+    def _convert_content_to_bedrock_format(self, chunks: List[CacheChunk]) -> List[dict]:
+        """Convert cache chunks to Bedrock content format with cache points."""
+        bedrock_content = []
+        
+        for chunk in chunks:
+            content_block = {
+                "text": chunk.content
+            }
+            
+            if chunk.cacheable:
+                content_block["cachePoint"] = {}
+            
+            bedrock_content.append(content_block)
+        
+        return bedrock_content
+
+    def _convert_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
+        """Convert patterpunk messages to Bedrock format with cache handling."""
+        bedrock_messages = []
+        
+        for message in messages:
+            if isinstance(message.content, list):
+                content = self._convert_content_to_bedrock_format(message.content)
+            else:
+                # Add structured output prompt if needed
+                content_str = message.get_content_as_string()
+                if message.structured_output and has_model_schema(message.structured_output):
+                    content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                content = [{"text": content_str}]
+            
+            bedrock_messages.append({
+                "role": message.role,
+                "content": content
+            })
+        
+        return bedrock_messages
+
+    def _convert_system_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
+        """Convert system messages to Bedrock format with cache handling."""
+        bedrock_system = []
+        
+        for message in messages:
+            if message.role == ROLE_SYSTEM:
+                if isinstance(message.content, list):
+                    # For system messages with cache chunks, concatenate them
+                    # Bedrock system parameter expects simple text format
+                    content_str = "".join(chunk.content for chunk in message.content)
+                    bedrock_system.append({"text": content_str})
+                else:
+                    bedrock_system.append({"text": message.content})
+        
+        return bedrock_system
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -123,20 +177,18 @@ class BedrockModel(Model, ABC):
             message for message in messages if message.role == ROLE_SYSTEM
         ]
 
+        # Convert system messages with cache handling
+        system_content = self._convert_system_messages_for_bedrock(system_messages)
+
         # We'll have to investigate tool usage for bedrock to ensure that it's handled via regular messages
-        messages = [
+        user_assistant_messages = [
             message
             for message in messages
             if message.role in [ROLE_USER, ROLE_ASSISTANT]
         ]
 
-        conversation = [
-            {
-                "role": message.role,
-                "content": [{"text": get_bedrock_conversation_content(message)}],
-            }
-            for message in messages
-        ]
+        # Convert messages with cache handling
+        conversation = self._convert_messages_for_bedrock(user_assistant_messages)
 
         try:
             retry = 0
@@ -158,9 +210,7 @@ class BedrockModel(Model, ABC):
 
                     converse_params = {
                         "modelId": self.model_id,
-                        "system": [
-                            {"text": message.content} for message in system_messages
-                        ],
+                        "system": system_content,
                         "messages": conversation,
                         "inferenceConfig": inference_config,
                     }

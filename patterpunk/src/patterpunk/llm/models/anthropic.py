@@ -23,7 +23,7 @@ from patterpunk.llm.messages import (
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
-from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.logger import logger
 
 
@@ -156,15 +156,78 @@ class AnthropicModel(Model, ABC):
             return compatible_params
         return api_params
 
+    def _convert_content_to_anthropic_format(self, chunks: List[CacheChunk]) -> List[dict]:
+        """Convert cache chunks to Anthropic content format with cache controls."""
+        anthropic_content = []
+        
+        for chunk in chunks:
+            content_block = {
+                "type": "text",
+                "text": chunk.content
+            }
+            
+            if chunk.cacheable:
+                cache_control = {"type": "ephemeral"}
+                if chunk.ttl:
+                    # Convert ttl to appropriate format if extended TTL is needed
+                    if chunk.ttl.total_seconds() > 300:  # More than 5 minutes
+                        cache_control["ttl"] = "1h"  # Use extended TTL
+                content_block["cache_control"] = cache_control
+            
+            anthropic_content.append(content_block)
+        
+        return anthropic_content
+
+    def _convert_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
+        """Convert patterpunk messages to Anthropic format with cache handling."""
+        anthropic_messages = []
+        
+        for message in messages:
+            if isinstance(message.content, list):
+                content = self._convert_content_to_anthropic_format(message.content)
+            else:
+                content = [{"type": "text", "text": message.content}]
+            
+            anthropic_messages.append({
+                "role": message.role,
+                "content": content
+            })
+        
+        return anthropic_messages
+
+    def _convert_system_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
+        """Convert system messages to Anthropic format with cache handling."""
+        system_content = []
+        
+        for message in messages:
+            if message.role == ROLE_SYSTEM:
+                if isinstance(message.content, list):
+                    system_content.extend(self._convert_content_to_anthropic_format(message.content))
+                else:
+                    system_content.append({"type": "text", "text": message.content})
+        
+        return system_content
+
     def generate_assistant_message(
         self,
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        system_prompt = "\n\n".join(
-            [message.content for message in messages if message.role == ROLE_SYSTEM]
-        )
+        # Convert system messages with cache handling
+        system_content = self._convert_system_messages_for_anthropic(messages)
+        system_prompt = None
+        if system_content:
+            if len(system_content) == 1 and system_content[0].get("type") == "text":
+                # Simple case: single text block without cache controls
+                if "cache_control" not in system_content[0]:
+                    system_prompt = system_content[0]["text"]
+                else:
+                    # Has cache controls, use content array format
+                    system_prompt = system_content
+            else:
+                # Multiple blocks or complex content, use content array format
+                system_prompt = system_content
 
         retry_count = 0
         wait_time = 60  # Initial wait time in seconds
@@ -174,18 +237,20 @@ class AnthropicModel(Model, ABC):
                 # Prepare API parameters
                 api_params = {
                     "model": self.model,
-                    "system": system_prompt,
-                    "messages": [
-                        message.to_dict(prompt_for_structured_output=True)
-                        for message in messages
+                    "messages": self._convert_messages_for_anthropic([
+                        message for message in messages
                         if message.role in [ROLE_USER, ROLE_ASSISTANT]
-                    ],
+                    ]),
                     "max_tokens": self.max_tokens,
                     "temperature": self.temperature,
                     "top_p": self.top_p,
                     "top_k": self.top_k,
                     "timeout": self.timeout,
                 }
+
+                # Add system prompt if we have one
+                if system_prompt is not None:
+                    api_params["system"] = system_prompt
 
                 # Add thinking parameter for reasoning models
                 if self.thinking and self._is_reasoning_model():

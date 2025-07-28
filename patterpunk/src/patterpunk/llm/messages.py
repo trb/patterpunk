@@ -1,12 +1,12 @@
 import copy
 from jinja2 import Template
-from typing import List, Dict
+from typing import List, Dict, Union
 
 from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.logger import logger
-from patterpunk.llm.types import ToolCallList
+from patterpunk.llm.types import ToolCallList, CacheChunk
 
 
 ROLE_SYSTEM = "system"
@@ -32,7 +32,7 @@ class StructuredOutputFailedToParseError(Exception):
 
 
 class Message:
-    def __init__(self, content: str, role: str = ROLE_USER):
+    def __init__(self, content: Union[str, List[CacheChunk]], role: str = ROLE_USER):
         self.content = content
         self.role = role
         self._model = None
@@ -50,8 +50,14 @@ class Message:
 
             variables[parameter_name] = value
 
-        template = Template(self.content)
-        self.content = template.render(variables)
+        if isinstance(self.content, str):
+            template = Template(self.content)
+            self.content = template.render(variables)
+        elif isinstance(self.content, list):
+            # Handle template rendering for each chunk
+            for chunk in self.content:
+                template = Template(chunk.content)
+                chunk.content = template.render(variables)
 
     def set_model(self, model):
         """
@@ -85,6 +91,30 @@ class Message:
             raise BadParameterError(error)
         return new_message
 
+    def get_content_as_string(self) -> str:
+        """Helper method to get content as string for backward compatibility."""
+        if isinstance(self.content, str):
+            return self.content
+        elif isinstance(self.content, list):
+            return "".join(chunk.content for chunk in self.content)
+        else:
+            return str(self.content)
+    
+    def has_cacheable_content(self) -> bool:
+        """Check if message contains any cacheable chunks."""
+        if isinstance(self.content, list):
+            return any(chunk.cacheable for chunk in self.content)
+        return False
+    
+    def get_cache_chunks(self) -> List[CacheChunk]:
+        """Get cache chunks, converting string content to non-cacheable chunk if needed."""
+        if isinstance(self.content, str):
+            return [CacheChunk(content=self.content, cacheable=False)]
+        elif isinstance(self.content, list):
+            return self.content
+        else:
+            return [CacheChunk(content=str(self.content), cacheable=False)]
+
     @property
     def parsed_output(self):
         if self._parsed_output is not None:
@@ -100,7 +130,7 @@ class Message:
                 f"[MESSAGE][{self.role}] The provided structured_output is not a pydantic model (missing parse_raw or model_validate_json)"
             )
 
-        json_messages = extract_json(self.content)
+        json_messages = extract_json(self.get_content_as_string())
         for json_message in json_messages:
             try:
                 if getattr(self.structured_output, "model_validate_json", None):
@@ -118,11 +148,11 @@ class Message:
                 )
 
         raise StructuredOutputFailedToParseError(
-            f"[MESSAGE][{self.role}] Structured output could not be parsed, message: \n{self.content}"
+            f"[MESSAGE][{self.role}] Structured output could not be parsed, message: \n{self.get_content_as_string()}"
         )
 
     def to_dict(self, prompt_for_structured_output: bool = False):
-        content = self.content
+        content = self.get_content_as_string()
         if (
             prompt_for_structured_output
             and self.structured_output
@@ -137,11 +167,12 @@ class Message:
         return self._model
 
     def __repr__(self, truncate=True):
-        if self.content:
+        content_str = self.get_content_as_string()
+        if content_str:
             content = (
-                self.content
-                if len(self.content) < 50 or truncate is False
-                else f"{self.content[:50]}..."
+                content_str
+                if len(content_str) < 50 or truncate is False
+                else f"{content_str[:50]}..."
             )
         else:
             content = "null"
@@ -152,12 +183,12 @@ class Message:
 
 
 class SystemMessage(Message):
-    def __init__(self, content: str):
+    def __init__(self, content: Union[str, List[CacheChunk]]):
         super().__init__(content, ROLE_SYSTEM)
 
 
 class UserMessage(Message):
-    def __init__(self, content: str, structured_output=None, allow_tool_calls=True):
+    def __init__(self, content: Union[str, List[CacheChunk]], structured_output=None, allow_tool_calls=True):
         super().__init__(content, ROLE_USER)
         self.structured_output = structured_output
         self.allow_tool_calls = allow_tool_calls

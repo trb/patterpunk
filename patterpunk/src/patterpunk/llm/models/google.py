@@ -37,7 +37,7 @@ from patterpunk.llm.messages import (
 )
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.logger import logger
 
 
@@ -216,34 +216,97 @@ class GoogleModel(Model, ABC):
             return [types.Tool(function_declarations=function_declarations)]
         return []
 
+    def _create_cache_objects_for_chunks(self, chunks: List[CacheChunk]) -> dict[str, str]:
+        """Pre-create cache objects for cacheable chunks that meet minimum requirements."""
+        cache_mappings = {}
+        
+        if not google_genai_available:
+            return cache_mappings
+        
+        for i, chunk in enumerate(chunks):
+            if chunk.cacheable and len(chunk.content) > 32000:  # Meet minimum token requirement
+                cache_id = f"cache_chunk_{i}_{hash(chunk.content)}"
+                
+                try:
+                    # Create cached content object
+                    cached_content = self.client.caches.create(
+                        config=types.CreateCachedContentConfig(
+                            model=self.model,
+                            contents=[types.Content(
+                                parts=[types.Part.from_text(chunk.content)]
+                            )],
+                            ttl=chunk.ttl or types.Timedelta(hours=1)
+                        )
+                    )
+                    cache_mappings[cache_id] = cached_content.name
+                except Exception as e:
+                    logger.warning(f"Failed to create cache for chunk {i}: {e}")
+        
+        return cache_mappings
+
+    def _convert_messages_for_google_with_cache(self, messages: List[Message]) -> tuple[List[types.Content], dict[str, str]]:
+        """Convert patterpunk messages to Google format with cache handling."""
+        contents = []
+        all_cache_mappings = {}
+        
+        for message in messages:
+            if message.role == ROLE_SYSTEM:
+                continue
+            
+            if isinstance(message.content, list):
+                # Pre-create cache objects for cacheable chunks
+                cache_mappings = self._create_cache_objects_for_chunks(message.content)
+                all_cache_mappings.update(cache_mappings)
+                
+                # Convert to Google format (concatenate for now, as Google will auto-detect cached content)
+                content_str = "".join(chunk.content for chunk in message.content)
+            else:
+                content_str = message.get_content_as_string()
+            
+            if message.role == ROLE_USER:
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=content_str)],
+                    )
+                )
+            elif message.role == ROLE_ASSISTANT:
+                contents.append(
+                    types.Content(
+                        role="model", 
+                        parts=[types.Part.from_text(text=content_str)]
+                    )
+                )
+        
+        return contents, all_cache_mappings
+
+    def _convert_system_messages_for_google_with_cache(self, messages: List[Message]) -> str:
+        """Convert system messages to Google format with cache handling."""
+        system_parts = []
+        
+        for message in messages:
+            if message.role == ROLE_SYSTEM:
+                if isinstance(message.content, list):
+                    # For system messages with cache chunks, we need to handle them specially
+                    # Google's system_instruction expects a simple string, so we concatenate
+                    content_str = "".join(chunk.content for chunk in message.content)
+                    system_parts.append(content_str)
+                else:
+                    system_parts.append(message.content)
+        
+        return "\n\n".join(system_parts)
+
     def generate_assistant_message(
         self,
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        system_prompt = "\n\n".join(
-            [message.content for message in messages if message.role == ROLE_SYSTEM]
-        )
+        # Convert system messages with cache handling
+        system_prompt = self._convert_system_messages_for_google_with_cache(messages)
 
-        contents = []
-
-        for message in messages:
-            if message.role == ROLE_SYSTEM:
-                continue
-            elif message.role == ROLE_USER:
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=message.content)],
-                    )
-                )
-            elif message.role == ROLE_ASSISTANT:
-                contents.append(
-                    types.Content(
-                        role="model", parts=[types.Part.from_text(text=message.content)]
-                    )
-                )
+        # Convert messages with cache handling
+        contents, cache_mappings = self._convert_messages_for_google_with_cache(messages)
 
         config = types.GenerateContentConfig(
             max_output_tokens=self.max_tokens,
