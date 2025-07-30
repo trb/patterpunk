@@ -22,6 +22,9 @@ from .cache import CacheChunk
 # Re-export multimodal functionality
 from .multimodal import MultimodalChunk
 
+# Re-export text functionality
+from .text import TextChunk
+
 # Content can be a string, or a list of chunks (text/cache/multimodal)
 from typing import Union, List
-ContentType = Union[str, List[Union[CacheChunk, MultimodalChunk]]]
+ContentType = Union[str, List[Union[TextChunk, CacheChunk, MultimodalChunk]]]

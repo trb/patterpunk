@@ -9,14 +9,15 @@ from typing import Union, List
 
 from ..cache import CacheChunk
 from ..multimodal import MultimodalChunk
+from ..text import TextChunk
 from ..types import ContentType
 
 
 def get_content_as_string(content: ContentType) -> str:
     """
-    Get content as string, handling both cache and multimodal chunks.
+    Get content as string, handling text, cache, and multimodal chunks.
 
-    :param content: Message content (string or list of cache/multimodal chunks)
+    :param content: Message content (string or list of text/cache/multimodal chunks)
     :return: String representation of the content
     """
     if isinstance(content, str):
@@ -25,7 +26,7 @@ def get_content_as_string(content: ContentType) -> str:
         # Only include text content from chunks
         text_parts = []
         for chunk in content:
-            if isinstance(chunk, CacheChunk):
+            if isinstance(chunk, (TextChunk, CacheChunk)):
                 text_parts.append(chunk.content)
             # MultimodalChunk doesn't contribute to text representation
         return "".join(text_parts)
@@ -48,14 +49,24 @@ def has_cacheable_content(content: ContentType) -> bool:
 def get_cache_chunks(content: ContentType) -> List[Union[CacheChunk, MultimodalChunk]]:
     """
     Get content chunks, converting string content to CacheChunk if needed.
+    
+    This function is specifically for cache-related processing where everything
+    needs to be in CacheChunk format for cache logic to work properly.
 
     :param content: Message content
-    :return: List of chunks representing the content
+    :return: List of chunks representing the content in cache-aware format
     """
     if isinstance(content, str):
         return [CacheChunk(content=content, cacheable=False)]
     elif isinstance(content, list):
-        return content
+        # Convert TextChunk to CacheChunk for cache processing
+        cache_chunks = []
+        for chunk in content:
+            if isinstance(chunk, TextChunk):
+                cache_chunks.append(CacheChunk(content=chunk.content, cacheable=False))
+            elif isinstance(chunk, (CacheChunk, MultimodalChunk)):
+                cache_chunks.append(chunk)
+        return cache_chunks
     else:
         return [CacheChunk(content=str(content), cacheable=False)]
 

@@ -28,6 +28,7 @@ from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
@@ -123,7 +124,10 @@ class BedrockModel(Model, ABC):
         session = None
         
         for chunk in content:
-            if isinstance(chunk, CacheChunk):
+            if isinstance(chunk, TextChunk):
+                bedrock_content.append({"text": chunk.content})
+                
+            elif isinstance(chunk, CacheChunk):
                 content_block = {"text": chunk.content}
                 if chunk.cacheable:
                     content_block["cachePoint"] = {}

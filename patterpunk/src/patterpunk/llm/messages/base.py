@@ -90,7 +90,7 @@ class Message:
         """Check if message contains any cacheable chunks."""
         return has_cacheable_content(self.content)
     
-    def get_cache_chunks(self) -> List[CacheChunk]:
+    def get_cache_chunks(self) -> List[Union[CacheChunk, MultimodalChunk]]:
         """Get cache chunks, converting string content to non-cacheable chunk if needed."""
         return get_cache_chunks(self.content)
 

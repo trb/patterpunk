@@ -25,6 +25,7 @@ from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
@@ -260,7 +261,13 @@ Please extract the relevant information from this reasoning and format it exactl
         session = None
         
         for chunk in content:
-            if isinstance(chunk, CacheChunk):
+            if isinstance(chunk, TextChunk):
+                anthropic_content.append({
+                    "type": "text",
+                    "text": chunk.content
+                })
+                
+            elif isinstance(chunk, CacheChunk):
                 content_block = {
                     "type": "text",
                     "text": chunk.content

@@ -9,6 +9,7 @@ from patterpunk.llm.messages import Message, AssistantMessage, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 
 
@@ -68,7 +69,7 @@ class OllamaModel(Model, ABC):
                     # Extract only text chunks for content field
                     text_parts = []
                     for chunk in message.content:
-                        if isinstance(chunk, CacheChunk):
+                        if isinstance(chunk, (TextChunk, CacheChunk)):
                             text_parts.append(chunk.content)
                     content_text = "".join(text_parts)
                 

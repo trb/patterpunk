@@ -39,6 +39,7 @@ from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger
 
@@ -258,7 +259,9 @@ class GoogleModel(Model, ABC):
         parts = []
         
         for chunk in content:
-            if isinstance(chunk, CacheChunk):
+            if isinstance(chunk, TextChunk):
+                parts.append(types.Part.from_text(text=chunk.content))
+            elif isinstance(chunk, CacheChunk):
                 parts.append(types.Part.from_text(text=chunk.content))
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "gcs_uri":
@@ -318,7 +321,7 @@ class GoogleModel(Model, ABC):
                 if has_multimodal_content(message.content):
                     parts = self._convert_message_content_for_google(message.content)
                     # Google requires at least one text part in every message
-                    has_text = any(isinstance(chunk, CacheChunk) for chunk in message.content)
+                    has_text = any(isinstance(chunk, (TextChunk, CacheChunk)) for chunk in message.content)
                     if not has_text:
                         raise ValueError(
                             "Google requires at least one text block when multimodal content is present. "

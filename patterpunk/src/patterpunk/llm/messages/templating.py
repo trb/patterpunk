@@ -9,16 +9,17 @@ from jinja2 import Template
 from typing import Union, List, Dict, Any
 
 from ..cache import CacheChunk
+from ..text import TextChunk
 
 
-def format_content(content: Union[str, List[CacheChunk]], parameters: Dict[str, Any]) -> None:
+def format_content(content: Union[str, List[Union[TextChunk, CacheChunk]]], parameters: Dict[str, Any]) -> None:
     """
     Format content with template parameters using Jinja2.
     
     Modifies content in-place, rendering all template placeholders with provided parameters.
-    Supports both string content and list of cache chunks.
+    Supports both string content and list of text/cache chunks.
     
-    :param content: The content to format (string or list of CacheChunk)
+    :param content: The content to format (string or list of TextChunk/CacheChunk)
     :param parameters: Dictionary of parameter name/value pairs for template rendering
     :raises KeyError: If template requires parameters not provided
     """
@@ -37,8 +38,9 @@ def format_content(content: Union[str, List[CacheChunk]], parameters: Dict[str, 
     elif isinstance(content, list):
         # Handle template rendering for each chunk
         for chunk in content:
-            template = Template(chunk.content)
-            chunk.content = template.render(variables)
+            if isinstance(chunk, (TextChunk, CacheChunk)):
+                template = Template(chunk.content)
+                chunk.content = template.render(variables)
         return content
     
     return content

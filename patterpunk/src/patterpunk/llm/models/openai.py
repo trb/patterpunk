@@ -10,6 +10,7 @@ from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
@@ -108,15 +109,15 @@ class OpenAiModel(Model, ABC):
         self.reasoning_effort = reasoning_effort
         self.thinking_config = thinking_config
 
-    def _process_cache_chunks_for_openai(self, chunks: List[CacheChunk]) -> tuple[str, bool]:
+    def _process_cache_chunks_for_openai(self, chunks: List[Union[TextChunk, CacheChunk]]) -> tuple[str, bool]:
         """
-        Process cache chunks for OpenAI's automatic prefix caching.
+        Process text and cache chunks for OpenAI's automatic prefix caching.
         Returns (concatenated_content, should_warn_about_caching)
         """
-        content = "".join(chunk.content for chunk in chunks)
+        content = "".join(chunk.content for chunk in chunks if isinstance(chunk, (TextChunk, CacheChunk)))
         
         # Check for non-prefix cacheable patterns
-        cacheable_positions = [i for i, chunk in enumerate(chunks) if chunk.cacheable]
+        cacheable_positions = [i for i, chunk in enumerate(chunks) if isinstance(chunk, CacheChunk) and chunk.cacheable]
         
         # Warn if we have cacheable content that's not at the prefix
         should_warn = False
@@ -124,7 +125,7 @@ class OpenAiModel(Model, ABC):
             # Check if there are non-cacheable chunks before the last cacheable chunk
             last_cacheable = max(cacheable_positions)
             for i in range(last_cacheable):
-                if not chunks[i].cacheable:
+                if not (isinstance(chunks[i], CacheChunk) and chunks[i].cacheable):
                     should_warn = True
                     break
         
@@ -144,7 +145,12 @@ class OpenAiModel(Model, ABC):
         session = None  # For URL downloading
         
         for chunk in content:
-            if isinstance(chunk, CacheChunk):
+            if isinstance(chunk, TextChunk):
+                openai_content.append({
+                    "type": "input_text",
+                    "text": chunk.content
+                })
+            elif isinstance(chunk, CacheChunk):
                 openai_content.append({
                     "type": "input_text",
                     "text": chunk.content
