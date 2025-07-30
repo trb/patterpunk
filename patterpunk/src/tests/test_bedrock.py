@@ -6,6 +6,14 @@ from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import UserMessage, SystemMessage, ToolCallMessage
 from patterpunk.llm.thinking import ThinkingConfig
+from patterpunk.llm.cache import CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from tests.test_utils import get_resource
+
+try:
+    from botocore.exceptions import ClientError
+except ImportError:
+    ClientError = None
 
 
 @pytest.mark.parametrize(
@@ -269,40 +277,52 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
 
     bedrock = BedrockModel(
         model_id=model_id,
-        temperature=0.1,
-        top_p=0.98,
         thinking_config=thinking_config,
         region_name=region,
     )
 
     chat = Chat(model=bedrock)
 
-    response = chat.add_message(
-        UserMessage(
-            "Solve this step by step: What is 17 * 23? "
-            "Think through the multiplication process carefully and show your reasoning."
+    try:
+        response = chat.add_message(
+            UserMessage(
+                "Solve this step by step: What is 17 * 23? "
+                "Think through the multiplication process carefully and show your reasoning."
+            )
+        ).complete()
+
+        # Verify we got a response
+        assert response.latest_message is not None
+        assert response.latest_message.content is not None
+
+        content = response.latest_message.content
+
+        # Check if thinking content is included when requested
+        if thinking_config.include_thoughts:
+            assert "<thinking>" in content and "</thinking>" in content
+
+        # The response should contain the correct answer (17 * 23 = 391)
+        assert "391" in content or "three hundred ninety-one" in content.lower()
+
+        # For reasoning models, we expect more detailed step-by-step reasoning
+        # (even without include_thoughts, the model should show work in the response)
+        assert any(
+            keyword in content.lower()
+            for keyword in ["step", "multiply", "calculate", "*", "×"]
         )
-    ).complete()
 
-    # Verify we got a response
-    assert response.latest_message is not None
-    assert response.latest_message.content is not None
-
-    content = response.latest_message.content
-
-    # Check if thinking content is included when requested
-    if thinking_config.include_thoughts:
-        assert "<thinking>" in content and "</thinking>" in content
-
-    # The response should contain the correct answer (17 * 23 = 391)
-    assert "391" in content or "three hundred ninety-one" in content.lower()
-
-    # For reasoning models, we expect more detailed step-by-step reasoning
-    # (even without include_thoughts, the model should show work in the response)
-    assert any(
-        keyword in content.lower()
-        for keyword in ["step", "multiply", "calculate", "*", "×"]
-    )
+    except Exception as e:
+        # Skip test if access to inference profile models is not available
+        if ClientError and isinstance(e, ClientError):
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "AccessDeniedException":
+                pytest.skip(
+                    f"Access denied for inference profile model {model_id}. "
+                    f"This model requires explicit access approval in AWS Bedrock console. "
+                    f"Skipping test."
+                )
+        # Re-raise other exceptions
+        raise
 
 
 @pytest.mark.parametrize(
@@ -340,7 +360,19 @@ def test_thinking_mode_graceful_degradation(model_id, thinking_config):
 
     except Exception as e:
         # If it fails, it should be a validation error about unsupported parameters
-        assert "ValidationException" in str(type(e)) or "reasoning" in str(e).lower()
+        if ClientError and isinstance(e, ClientError):
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "ValidationException":
+                # Expected behavior - regular models don't support reasoning parameters
+                pass
+            else:
+                raise
+        elif "ValidationException" in str(type(e)) or "reasoning" in str(e).lower():
+            # Expected behavior - validation error about unsupported parameters
+            pass
+        else:
+            # Unexpected error, re-raise
+            raise
 
 
 def test_thinking_mode_parameters():
@@ -385,3 +417,73 @@ def test_thinking_mode_parameters():
     bedrock_none = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
     thinking_params = bedrock_none._get_thinking_params()
     assert thinking_params == {}
+
+
+def test_multimodal_image():
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.1,
+        top_p=0.98
+    )
+    
+    chat = Chat(model=bedrock)
+
+    prepped_chat = (
+        chat
+        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
+
+    )
+
+    correct = (
+        prepped_chat
+        .add_message(UserMessage(
+            content=[
+                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
+            ])
+        )
+        .complete()
+        .latest_message
+        .content
+    )
+
+
+    incorrect = (
+        prepped_chat
+        .add_message(UserMessage(
+            content=[
+                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
+                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
+            ])
+        )
+        .complete()
+        .latest_message
+        .content
+    )
+
+    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
+    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+
+def test_multimodal_pdf():
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.0,
+        top_p=0.98
+    )
+    
+    chat = Chat(model=bedrock)
+
+    title = (
+        chat
+        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
+        .add_message(UserMessage(
+            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
+        ))
+        .complete()
+        .latest_message
+        .content
+    )
+
+    assert 'bank of canada' in title.lower()
+    assert 'research' in title.lower()
+    assert '2025' in title.lower()

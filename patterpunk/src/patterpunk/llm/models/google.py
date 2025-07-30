@@ -253,13 +253,13 @@ class GoogleModel(Model, ABC):
         Uses google-genai SDK with Part factory methods for different content types.
         """
         if isinstance(content, str):
-            return [types.Part.from_text(content)]
+            return [types.Part.from_text(text=content)]
         
         parts = []
         
         for chunk in content:
             if isinstance(chunk, CacheChunk):
-                parts.append(types.Part.from_text(chunk.content))
+                parts.append(types.Part.from_text(text=chunk.content))
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "gcs_uri":
                     # Google Cloud Storage URI - native support
@@ -317,6 +317,13 @@ class GoogleModel(Model, ABC):
                 # Check for multimodal content
                 if has_multimodal_content(message.content):
                     parts = self._convert_message_content_for_google(message.content)
+                    # Google requires at least one text part in every message
+                    has_text = any(isinstance(chunk, CacheChunk) for chunk in message.content)
+                    if not has_text:
+                        raise ValueError(
+                            "Google requires at least one text block when multimodal content is present. "
+                            "Please include text content along with your images or other media."
+                        )
                 else:
                     # Pre-create cache objects for cacheable chunks
                     cache_mappings = self._create_cache_objects_for_chunks(message.content)

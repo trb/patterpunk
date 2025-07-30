@@ -91,8 +91,13 @@ class BedrockModel(Model, ABC):
 
         additional_fields = {}
 
+        # DeepSeek models don't support reasoning parameters through Bedrock
+        # They inherently include reasoning in their responses
+        if "deepseek" in self.model_id.lower():
+            return {}
+
         if self.thinking_config.effort is not None:
-            # For OpenAI/DeepSeek models that use reasoning_effort
+            # For OpenAI models that use reasoning_effort
             additional_fields["reasoning_effort"] = self.thinking_config.effort
 
         if self.thinking_config.token_budget is not None:
@@ -159,9 +164,45 @@ class BedrockModel(Model, ABC):
                         }
                     }
                     bedrock_content.append(content_block)
+                elif media_type in ["application/pdf", "text/plain", "text/html", "text/markdown",
+                                   "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                   "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]:
+                    # Map media types to Bedrock document formats
+                    format_map = {
+                        "application/pdf": "pdf",
+                        "text/plain": "txt",
+                        "text/html": "html", 
+                        "text/markdown": "md",
+                        "application/msword": "doc",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+                        "application/vnd.ms-excel": "xls",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx"
+                    }
+                    
+                    document_format = format_map.get(media_type, "pdf")
+                    raw_filename = getattr(chunk, 'filename', None) or f"document.{document_format}"
+                    # Sanitize filename for Bedrock requirements: only alphanumeric, whitespace, hyphens, parentheses, square brackets
+                    # and no consecutive whitespace
+                    import re
+                    document_name = re.sub(r'[^\w\s\-\(\)\[\]]', '', raw_filename)  # Remove invalid chars
+                    document_name = re.sub(r'\s+', ' ', document_name).strip()  # Collapse whitespace
+                    
+                    content_block = {
+                        "document": {
+                            "format": document_format,
+                            "name": document_name,
+                            "source": {
+                                "bytes": chunk.to_bytes()
+                            }
+                        }
+                    }
+                    bedrock_content.append(content_block)
                 else:
-                    # Bedrock primarily supports images
-                    logger.warning(f"Bedrock may not support media type: {media_type}")
+                    raise ValueError(
+                        f"Bedrock does not support media type: {media_type}. "
+                        f"Supported types are: text, images (jpeg/png/gif/webp), and documents (pdf/csv/doc/docx/xls/xlsx/html/txt/md)."
+                    )
+        
         
         return bedrock_content
 
@@ -172,6 +213,16 @@ class BedrockModel(Model, ABC):
         for message in messages:
             if isinstance(message.content, list):
                 content = self._convert_content_to_bedrock_format(message.content)
+                
+                # Validate Bedrock requirements
+                has_text = any('text' in chunk for chunk in content)
+                has_document = any('document' in chunk for chunk in content)
+                
+                if has_document and not has_text:
+                    raise ValueError(
+                        "Bedrock requires at least one text block when documents are present. "
+                        "Please include text content along with your documents."
+                    )
             else:
                 # Add structured output prompt if needed
                 content_str = message.get_content_as_string()
