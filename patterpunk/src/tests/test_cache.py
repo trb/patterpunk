@@ -74,7 +74,6 @@ class TestMessageSubclasses:
         assert not message.has_cacheable_content()
 
     def test_assistant_message_string_only(self):
-        # AssistantMessage should remain string-only per documentation
         message = AssistantMessage(content="assistant response")
         assert message.role == "assistant"
         assert isinstance(message.content, str)
@@ -83,7 +82,6 @@ class TestMessageSubclasses:
 
 class TestBackwardCompatibility:
     def test_existing_string_messages_still_work(self):
-        # Ensure existing code using string content continues to work
         system_msg = SystemMessage(content="System instructions")
         user_msg = UserMessage(content="User query")
         assistant_msg = AssistantMessage(content="Assistant response")
@@ -92,7 +90,6 @@ class TestBackwardCompatibility:
         assert user_msg.get_content_as_string() == "User query"
         assert assistant_msg.get_content_as_string() == "Assistant response"
         
-        # Test message.to_dict() still works
         system_dict = system_msg.to_dict()
         assert system_dict["role"] == "system"
         assert system_dict["content"] == "System instructions"

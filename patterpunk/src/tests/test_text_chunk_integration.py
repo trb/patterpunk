@@ -42,10 +42,8 @@ def test_text_chunk_cache_conversion():
     cache_chunks = message.get_cache_chunks()
     assert len(cache_chunks) == 3
     
-    # All chunks should be CacheChunk for cache processing
     assert all(isinstance(chunk, CacheChunk) for chunk in cache_chunks)
     
-    # Check content and cacheability
     assert cache_chunks[0].content == "Non-cacheable text"
     assert cache_chunks[0].cacheable is False
     
@@ -57,7 +55,6 @@ def test_text_chunk_cache_conversion():
 
 
 def test_text_chunk_templating_with_mixed_types():
-    """Test that templating works with mixed TextChunk and CacheChunk."""
     message = UserMessage([
         TextChunk("Hello {{name}}, "),
         CacheChunk("you are {{age}} years old", cacheable=True),
@@ -76,27 +73,24 @@ def test_text_chunk_templating_with_mixed_types():
 
 @pytest.mark.parametrize("model_class", [AnthropicModel, OpenAiModel])
 def test_text_chunk_provider_conversion(model_class):
-    """Test that providers handle TextChunk correctly in their conversion methods."""
     if model_class == AnthropicModel:
         model = model_class(model="claude-3-5-sonnet-20240620")
         
-        # Test mixed content conversion
         content = [
             TextChunk("Hello "),
             CacheChunk("world", cacheable=True),
             TextChunk("!")
         ]
         
-        # This should not raise any errors
         anthropic_content = model._convert_content_to_anthropic_format(content)
         
         assert len(anthropic_content) == 3
         assert all(item["type"] == "text" for item in anthropic_content)
         assert anthropic_content[0]["text"] == "Hello "
-        assert "cache_control" not in anthropic_content[0]  # TextChunk has no cache control
+        assert "cache_control" not in anthropic_content[0]
         
         assert anthropic_content[1]["text"] == "world"
-        assert "cache_control" in anthropic_content[1]  # CacheChunk has cache control
+        assert "cache_control" in anthropic_content[1]
         
         assert anthropic_content[2]["text"] == "!"
         assert "cache_control" not in anthropic_content[2]  # TextChunk has no cache control
@@ -111,7 +105,6 @@ def test_text_chunk_provider_conversion(model_class):
             TextChunk("!")
         ]
         
-        # This should not raise any errors
         openai_content = model._convert_message_content_for_openai_responses(content)
         
         assert len(openai_content) == 3
@@ -122,23 +115,18 @@ def test_text_chunk_provider_conversion(model_class):
 
 
 def test_backward_compatibility():
-    """Test that existing code using only strings and CacheChunk still works."""
-    # Old style - should still work
     old_message = UserMessage([
         CacheChunk("Hello", cacheable=False),
         CacheChunk("world", cacheable=True)
     ])
     
-    # New style with TextChunk
     new_message = UserMessage([
         TextChunk("Hello"),
         CacheChunk("world", cacheable=True)
     ])
     
-    # Both should produce the same string content
     assert old_message.get_content_as_string() == new_message.get_content_as_string()
     
-    # Both should have the same cache behavior
     old_chunks = old_message.get_cache_chunks()
     new_chunks = new_message.get_cache_chunks()
     

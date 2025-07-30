@@ -150,8 +150,8 @@ def test_structured_output(model_id):
     assert any(
         feature.name == "noise cancellation" for feature in parsed_output.key_features
     ) or any("noise" in feature.name.lower() for feature in parsed_output.key_features)
-    assert parsed_output.warranty_period is None  # Not mentioned in the review
-    assert parsed_output.competitor_comparison is None  # Not mentioned in the review
+    assert parsed_output.warranty_period is None
+    assert parsed_output.competitor_comparison is None
     assert parsed_output.recommended is True
 
 
@@ -163,10 +163,8 @@ def test_structured_output(model_id):
     ],
 )
 def test_simple_tool_calling(model_id):
-    """Test simple tool calling with a single function."""
 
     def get_weather(location: str) -> str:
-        """Get the current weather for a location."""
         return f"The weather in {location} is sunny and 22°C"
 
     bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
@@ -177,18 +175,12 @@ def test_simple_tool_calling(model_id):
         UserMessage("What's the weather like in Paris?")
     ).complete()
 
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
 
-    # Tool calls should always result in ToolCallMessage as latest message
-    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
-    # If latest message is AssistantMessage, check for expected content
     if isinstance(response.latest_message, ToolCallMessage):
-        # Tool calling worked correctly - test passes
         pass
     else:
-        # Response should mention Paris and weather if not a tool call
         content = response.latest_message.content.lower()
         assert "paris" in content
 
@@ -201,15 +193,12 @@ def test_simple_tool_calling(model_id):
     ],
 )
 def test_tool_calling(model_id):
-    """Test tool calling functionality with multiple tools."""
 
     def calculate_area(length: float, width: float) -> str:
-        """Calculate the area of a rectangle given length and width."""
         area = length * width
         return f"The area is {area} square units"
 
     def get_math_fact(topic: str) -> str:
-        """Get an interesting mathematical fact about a topic."""
         facts = {
             "rectangle": "A rectangle has opposite sides that are equal and parallel",
             "area": "Area measures the amount of space inside a 2D shape",
@@ -234,26 +223,19 @@ def test_tool_calling(model_id):
         .complete()
     )
 
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
 
-    # Tool calls should always result in ToolCallMessage as latest message
-    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
-    # If latest message is AssistantMessage, check for expected content
     if isinstance(response.latest_message, ToolCallMessage):
-        # Tool calling worked correctly - test passes
         pass
     else:
-        # Response should mention the calculated area if not a tool call
         content = response.latest_message.content.lower()
-        assert "15" in content or "fifteen" in content  # 5 * 3 = 15
+        assert "15" in content or "fifteen" in content
 
 
 @pytest.mark.parametrize(
     "model_id,region,thinking_config",
     [
-        # Test Claude 3.7 Sonnet with reasoning mode using inference profiles
         (
             "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
             "us-east-1",
@@ -264,7 +246,6 @@ def test_tool_calling(model_id):
             "us-east-1",
             ThinkingConfig(token_budget=4000, include_thoughts=True),
         ),
-        # Test DeepSeek R1 with reasoning effort using inference profile
         (
             "us.deepseek.r1-v1:0",
             "us-east-1",
@@ -273,7 +254,6 @@ def test_tool_calling(model_id):
     ],
 )
 def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
-    """Test thinking mode functionality with models that actually support reasoning."""
 
     bedrock = BedrockModel(
         model_id=model_id,
@@ -291,28 +271,22 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
             )
         ).complete()
 
-        # Verify we got a response
-        assert response.latest_message is not None
+            assert response.latest_message is not None
         assert response.latest_message.content is not None
 
         content = response.latest_message.content
 
-        # Check if thinking content is included when requested
         if thinking_config.include_thoughts:
             assert "<thinking>" in content and "</thinking>" in content
 
-        # The response should contain the correct answer (17 * 23 = 391)
         assert "391" in content or "three hundred ninety-one" in content.lower()
 
-        # For reasoning models, we expect more detailed step-by-step reasoning
-        # (even without include_thoughts, the model should show work in the response)
         assert any(
             keyword in content.lower()
             for keyword in ["step", "multiply", "calculate", "*", "×"]
         )
 
     except Exception as e:
-        # Skip test if access to inference profile models is not available
         if ClientError and isinstance(e, ClientError):
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "AccessDeniedException":
@@ -321,20 +295,17 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
                     f"This model requires explicit access approval in AWS Bedrock console. "
                     f"Skipping test."
                 )
-        # Re-raise other exceptions
         raise
 
 
 @pytest.mark.parametrize(
     "model_id,thinking_config",
     [
-        # Test with regular Claude models - these won't support reasoning but should not break
         ("anthropic.claude-3-sonnet-20240229-v1:0", ThinkingConfig(token_budget=2000)),
         ("anthropic.claude-3-haiku-20240307-v1:0", ThinkingConfig(effort="low")),
     ],
 )
 def test_thinking_mode_graceful_degradation(model_id, thinking_config):
-    """Test that thinking mode parameters don't break regular models."""
 
     bedrock = BedrockModel(
         model_id=model_id, temperature=0.1, top_p=0.98, thinking_config=thinking_config
@@ -342,46 +313,35 @@ def test_thinking_mode_graceful_degradation(model_id, thinking_config):
 
     chat = Chat(model=bedrock)
 
-    # For models that don't support reasoning, the request should either:
-    # 1. Work normally (ignoring the reasoning parameters), or
-    # 2. Fail gracefully with a validation error
     try:
         response = chat.add_message(
             UserMessage("What is 17 * 23? Please show your work.")
         ).complete()
 
-        # If it succeeds, verify we got a response
         assert response.latest_message is not None
         assert response.latest_message.content is not None
 
-        # Should contain the answer even without reasoning mode
         content = response.latest_message.content
         assert "391" in content or "three hundred ninety-one" in content.lower()
 
     except Exception as e:
-        # If it fails, it should be a validation error about unsupported parameters
         if ClientError and isinstance(e, ClientError):
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "ValidationException":
-                # Expected behavior - regular models don't support reasoning parameters
                 pass
             else:
                 raise
         elif "ValidationException" in str(type(e)) or "reasoning" in str(e).lower():
-            # Expected behavior - validation error about unsupported parameters
             pass
         else:
-            # Unexpected error, re-raise
             raise
 
 
 def test_thinking_mode_parameters():
-    """Test that thinking mode parameters are correctly set in the model."""
 
-    # Test with effort parameter (for DeepSeek/OpenAI models)
     thinking_config_effort = ThinkingConfig(effort="high")
     bedrock_effort = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",  # Use available model
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
         thinking_config=thinking_config_effort,
     )
 
@@ -389,7 +349,6 @@ def test_thinking_mode_parameters():
     assert "reasoning_effort" in thinking_params
     assert thinking_params["reasoning_effort"] == "high"
 
-    # Test with token_budget parameter (for Anthropic models)
     thinking_config_budget = ThinkingConfig(token_budget=3000)
     bedrock_budget = BedrockModel(
         model_id="anthropic.claude-3-sonnet-20240229-v1:0",
@@ -401,8 +360,7 @@ def test_thinking_mode_parameters():
     assert thinking_params["reasoning_config"]["type"] == "enabled"
     assert thinking_params["reasoning_config"]["budget_tokens"] == 3000
 
-    # Test minimum budget_tokens enforcement
-    thinking_config_min = ThinkingConfig(token_budget=500)  # Below minimum
+    thinking_config_min = ThinkingConfig(token_budget=500)
     bedrock_min = BedrockModel(
         model_id="anthropic.claude-3-sonnet-20240229-v1:0",
         thinking_config=thinking_config_min,
@@ -411,9 +369,8 @@ def test_thinking_mode_parameters():
     thinking_params = bedrock_min._get_thinking_params()
     assert (
         thinking_params["reasoning_config"]["budget_tokens"] == 1024
-    )  # Should be raised to minimum
+    )
 
-    # Test no thinking config
     bedrock_none = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
     thinking_params = bedrock_none._get_thinking_params()
     assert thinking_params == {}

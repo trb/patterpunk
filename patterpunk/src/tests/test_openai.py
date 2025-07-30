@@ -267,10 +267,8 @@ def test_structured_output(model_name):
             description="The BookInfo structure representing the requested data. Follow the provided schema carefully. Do not infer fields, only include information that is present in the source message"
         )
 
-    # Create a chat instance with the parameterized model
     chat = Chat(model=OpenAiModel(model=model_name, temperature=0.1))
 
-    # Sample text containing information about a book
     sample_text = """
     "To Kill a Mockingbird" is a novel by Harper Lee published in 1960. 
     It was immediately successful, winning the Pulitzer Prize, and has 
@@ -280,7 +278,6 @@ def test_structured_output(model_name):
     when she was 10 years old.
     """
 
-    # Add system message with instructions
     chat = chat.add_message(
         SystemMessage(
             """
@@ -293,33 +290,25 @@ def test_structured_output(model_name):
         )
     )
 
-    # Add user message with the sample text and structured_output parameter
     chat = chat.add_message(
         UserMessage(sample_text, structured_output=ThoughtfulBookResponse)
     )
 
-    # Complete the chat to get the response
     chat = chat.complete()
 
-    # Access the parsed_output and verify the results
     parsed_output = chat.parsed_output.book_info
 
-    # Verify that parsed_output is not None and is an instance of BookInfo
     assert parsed_output is not None
     assert isinstance(parsed_output, BookInfo)
 
-    # Verify required fields are correctly parsed
     assert parsed_output.title == "To Kill a Mockingbird"
     assert parsed_output.author == "Harper Lee"
     assert parsed_output.publication_year == 1960
 
-    # Verify optional fields without information in the text are None or empty
     assert parsed_output.isbn is None
     assert parsed_output.page_count is None
     assert parsed_output.is_bestseller is None
 
-    # Genres might be extracted as ["American literature"] or similar, or might be None
-    # We'll just check that it's either None or a list
     assert parsed_output.genres is None or isinstance(parsed_output.genres, list)
 
 

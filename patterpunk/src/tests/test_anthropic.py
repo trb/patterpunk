@@ -236,7 +236,6 @@ def test_structured_output():
     ensures the models don't hallucinate.
     """
 
-    # Define a complex structured output type using Pydantic
     class Author(BaseModel):
         name: str
         expertise: List[str]
@@ -260,7 +259,6 @@ def test_structured_output():
         confidence_score: float = Field(ge=0.0, le=1.0)
         is_factual: bool
 
-    # Test with claude-3-7-sonnet-latest
     sonnet_chat = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-latest", max_tokens=4096, temperature=0.2
@@ -304,7 +302,6 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
 
     sonnet_parsed = sonnet_chat.parsed_output
 
-    # Validate sonnet model output
     assert isinstance(
         sonnet_parsed, DocumentAnalysis
     ), "Sonnet output should be a DocumentAnalysis instance"
@@ -341,14 +338,12 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
     ), "Confidence score should be between 0 and 1"
     assert isinstance(sonnet_parsed.is_factual, bool), "is_factual should be a boolean"
 
-    # Check that fields that can't be answered from the text are set to None
     assert (
         sonnet_parsed.author.years_experience is None
     ), "Author years_experience should be None as it's not in the text"
     for ref in sonnet_parsed.references:
         assert ref.url is None, "Reference URL should be None as it's not in the text"
 
-    # Test with claude-3-5-haiku-latest
     haiku_chat = Chat(
         model=AnthropicModel(
             model="claude-3-5-haiku-latest", max_tokens=4096, temperature=0.2
@@ -392,7 +387,6 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
 
     haiku_parsed = haiku_chat.parsed_output
 
-    # Validate haiku model output
     assert isinstance(
         haiku_parsed, DocumentAnalysis
     ), "Haiku output should be a DocumentAnalysis instance"
@@ -429,14 +423,12 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
     ), "Confidence score should be between 0 and 1"
     assert isinstance(haiku_parsed.is_factual, bool), "is_factual should be a boolean"
 
-    # Check that fields that can't be answered from the text are set to None
     assert (
         haiku_parsed.author.years_experience is None
     ), "Author years_experience should be None as it's not in the text"
     for ref in haiku_parsed.references:
         assert ref.url is None, "Reference URL should be None as it's not in the text"
 
-    # Compare models
     assert isinstance(sonnet_parsed.confidence_score, float) and isinstance(
         haiku_parsed.confidence_score, float
     ), "Both models should return confidence scores as floats"
@@ -446,53 +438,42 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
 
 
 def test_reasoning_mode_version_parsing():
-    """Test that version parsing works correctly for various model names."""
     
-    # Test Claude 3.7 format
     model_37 = AnthropicModel(model="claude-3-7-sonnet-20250219")
     assert model_37._parse_model_version() == (3, 7)
     assert model_37._is_reasoning_model() == True
     
-    # Test older Claude 3.5 format (should not support reasoning)
     model_35 = AnthropicModel(model="claude-3-5-sonnet-20240620")
     assert model_35._parse_model_version() == (3, 5)
     assert model_35._is_reasoning_model() == False
     
-    # Test Claude 4 Opus
     model_opus4 = AnthropicModel(model="claude-opus-4-20250514")
     assert model_opus4._parse_model_version() == (4, 0)
     assert model_opus4._is_reasoning_model() == True
     
-    # Test Claude 4 Sonnet
     model_sonnet4 = AnthropicModel(model="claude-sonnet-4-20250514")
     assert model_sonnet4._parse_model_version() == (4, 0)
     assert model_sonnet4._is_reasoning_model() == True
     
-    # Test future Claude 4.5 (hypothetical)
     model_45 = AnthropicModel(model="claude-sonnet-4-5-20250614")
     assert model_45._parse_model_version() == (4, 5)
     assert model_45._is_reasoning_model() == True
     
-    # Test future Claude 5 (hypothetical)
     model_5 = AnthropicModel(model="claude-opus-5-20250714")
     assert model_5._parse_model_version() == (5, 0)
     assert model_5._is_reasoning_model() == True
     
-    # Test future Claude 5.1 (hypothetical)
     model_51 = AnthropicModel(model="claude-sonnet-5-1-20250814")
     assert model_51._parse_model_version() == (5, 1)
     assert model_51._is_reasoning_model() == True
     
-    # Test unknown format
     model_unknown = AnthropicModel(model="some-unknown-model")
     assert model_unknown._parse_model_version() == (0, 0)
     assert model_unknown._is_reasoning_model() == False
 
 
 def test_reasoning_mode_parameter_compatibility():
-    """Test that reasoning mode correctly filters incompatible parameters."""
     
-    # Test without reasoning mode
     model = AnthropicModel(model="claude-3-7-sonnet-20250219")
     api_params = {
         "model": "claude-3-7-sonnet-20250219",
@@ -502,33 +483,28 @@ def test_reasoning_mode_parameter_compatibility():
         "max_tokens": 1000
     }
     
-    # Without thinking parameter, all params should remain
     filtered_params = model._get_compatible_params(api_params)
     assert filtered_params == api_params
     
-    # Test with reasoning mode
     model_with_thinking = AnthropicModel(
         model="claude-3-7-sonnet-20250219",
         thinking_config=ThinkingConfig(token_budget=4000)
     )
     
-    # With thinking parameter, top_p and top_k should be removed, temperature forced to 1.0
     filtered_params = model_with_thinking._get_compatible_params(api_params)
     expected_params = {
         "model": "claude-3-7-sonnet-20250219",
-        "temperature": 1.0,  # temperature is forced to 1.0 for reasoning mode
+        "temperature": 1.0,
         "max_tokens": 1000
     }
     assert filtered_params == expected_params
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
     
-    # Test that temperature is forced to 1.0 in reasoning mode
     assert filtered_params["temperature"] == 1.0
 
 
 def test_reasoning_mode_initialization():
-    """Test that AnthropicModel can be initialized with thinking parameter."""
     
     thinking_config = ThinkingConfig(token_budget=8000)
     
@@ -549,9 +525,7 @@ def test_reasoning_mode_initialization():
 
 
 def test_reasoning_mode_default_type():
-    """Test that ThinkingConfig defaults to type='enabled' when only budget_tokens is set."""
     
-    # Test with only token_budget specified
     thinking_config = ThinkingConfig(token_budget=6000)
     
     model = AnthropicModel(
@@ -561,12 +535,10 @@ def test_reasoning_mode_default_type():
         max_tokens=1500
     )
     
-    # Verify defaults
-    assert model.thinking.type == "enabled"  # Should default to "enabled"
+    assert model.thinking.type == "enabled"
     assert model.thinking.budget_tokens == 6000
     assert model._is_reasoning_model() == True
     
-    # Test that the API parameters are correctly set
     api_params = {
         "model": "claude-opus-4-20250514",
         "temperature": 0.3,
@@ -577,17 +549,14 @@ def test_reasoning_mode_default_type():
     
     filtered_params = model._get_compatible_params(api_params)
     
-    # Should remove top_p and top_k for reasoning mode, temperature forced to 1.0
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
-    assert filtered_params["temperature"] == 1.0  # Forced to 1.0 in reasoning mode
+    assert filtered_params["temperature"] == 1.0
 
 
 def test_reasoning_mode_with_claude_sonnet_4():
-    """Test reasoning mode functionality with Claude Sonnet 4."""
     from patterpunk.llm.chat import Chat
     
-    # Test initialization with thinking parameter
     thinking_config = ThinkingConfig(token_budget=4000)
     
     chat = Chat(
@@ -601,12 +570,10 @@ def test_reasoning_mode_with_claude_sonnet_4():
         )
     )
     
-    # Verify the model is properly configured
     assert chat.model.thinking_config == thinking_config
     assert chat.model._is_reasoning_model() == True
     assert chat.model._parse_model_version() == (4, 0)
     
-    # Test parameter filtering for API call
     api_params = {
         "model": "claude-sonnet-4-20250514",
         "temperature": 0.7,
@@ -617,18 +584,15 @@ def test_reasoning_mode_with_claude_sonnet_4():
         "messages": []
     }
     
-    # When thinking is enabled, top_p and top_k should be removed
     filtered_params = chat.model._get_compatible_params(api_params)
     
-    # Verify reasoning mode constraints are applied
-    assert "thinking" not in filtered_params  # thinking added separately in generate_assistant_message
+    assert "thinking" not in filtered_params
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
-    assert "temperature" in filtered_params  # temperature is forced to 1.0
+    assert "temperature" in filtered_params
     assert filtered_params["temperature"] == 1.0
     assert filtered_params["max_tokens"] == 2000
     
-    # Test with claude-3-7-sonnet as well for comparison
     chat_37 = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
@@ -640,7 +604,6 @@ def test_reasoning_mode_with_claude_sonnet_4():
     assert chat_37.model._is_reasoning_model() == True
     assert chat_37.model._parse_model_version() == (3, 7)
     
-    # Test that non-reasoning models don't apply constraints
     chat_35 = Chat(
         model=AnthropicModel(
             model="claude-3-5-sonnet-20240620",
@@ -653,7 +616,6 @@ def test_reasoning_mode_with_claude_sonnet_4():
     assert chat_35.model._is_reasoning_model() == False
     assert chat_35.model._parse_model_version() == (3, 5)
     
-    # Without thinking parameter, all params should remain
     non_reasoning_params = {
         "temperature": 0.5,
         "top_p": 0.8,
@@ -665,15 +627,14 @@ def test_reasoning_mode_with_claude_sonnet_4():
 
 
 def test_reasoning_mode_plain_text_response():
-    """Test reasoning mode with plain text response from Claude Sonnet 4."""
     from patterpunk.llm.chat import Chat
     
     chat = Chat(
         model=AnthropicModel(
             model="claude-sonnet-4-20250514",
             thinking_config=ThinkingConfig(token_budget=2000),
-            max_tokens=4000,  # Must be greater than budget_tokens
-            temperature=1.0  # Must be 1.0 when thinking is enabled
+            max_tokens=4000,
+            temperature=1.0
         )
     )
     
@@ -684,18 +645,15 @@ def test_reasoning_mode_plain_text_response():
         .complete()
     )
     
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
     assert len(response.latest_message.content.strip()) > 0
     
-    # Should mention mathematical concepts
     content_lower = response.latest_message.content.lower()
     assert any(term in content_lower for term in ["addition", "sum", "math", "number", "equal"])
 
 
 def test_reasoning_mode_structured_output():
-    """Test reasoning mode with structured output from Claude 3.7 Sonnet."""
     from patterpunk.llm.chat import Chat
     
     class MathExplanation(BaseModel):
@@ -709,8 +667,8 @@ def test_reasoning_mode_structured_output():
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
             thinking_config=ThinkingConfig(token_budget=3000),
-            max_tokens=5000,  # Must be greater than budget_tokens
-            temperature=1.0   # Must be 1.0 when thinking is enabled
+            max_tokens=5000,
+            temperature=1.0
         )
     )
     
@@ -724,7 +682,6 @@ def test_reasoning_mode_structured_output():
         .complete()
     )
     
-    # Verify structured output
     assert response.parsed_output is not None
     assert isinstance(response.parsed_output, MathExplanation)
     
@@ -738,16 +695,13 @@ def test_reasoning_mode_structured_output():
 
 
 def test_reasoning_mode_tool_calling():
-    """Test reasoning mode with tool calling functionality."""
     from patterpunk.llm.chat import Chat
     
     def calculate_area(length: float, width: float) -> str:
-        """Calculate the area of a rectangle given length and width."""
         area = length * width
         return f"The area is {area} square units"
     
     def get_math_fact(topic: str) -> str:
-        """Get an interesting mathematical fact about a topic."""
         facts = {
             "rectangle": "A rectangle has opposite sides that are equal and parallel",
             "area": "Area measures the amount of space inside a 2D shape",
@@ -759,8 +713,8 @@ def test_reasoning_mode_tool_calling():
         model=AnthropicModel(
             model="claude-opus-4-20250514",
             thinking_config=ThinkingConfig(token_budget=4000),
-            max_tokens=6000,  # Must be greater than budget_tokens
-            temperature=1.0   # Must be 1.0 when thinking is enabled
+            max_tokens=6000,
+            temperature=1.0
         )
     ).with_tools([calculate_area, get_math_fact])
     
@@ -774,20 +728,14 @@ def test_reasoning_mode_tool_calling():
         .complete()
     )
     
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
     
-    # Tool calls should always result in ToolCallMessage as latest message
-    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
-    # If latest message is AssistantMessage, check for expected content
     if isinstance(response.latest_message, ToolCallMessage):
-        # Tool calling worked correctly - test passes
         pass
     else:
-        # Response should mention the calculated area if not a tool call
         content = response.latest_message.content.lower()
-        assert "15" in content or "fifteen" in content  # 5 * 3 = 15
+        assert "15" in content or "fifteen" in content
 
 
 def test_multimodal_image():

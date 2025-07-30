@@ -50,10 +50,8 @@ def test_structured_output():
     model = GoogleModel(
         model="gemini-1.5-pro-002", location="northamerica-northeast1", temperature=0.1
     )
-    # Create a chat instance with the parameterized model
     chat = Chat(model=model)
 
-    # Sample text containing information about a book
     sample_text = """
     "To Kill a Mockingbird" is a novel by Harper Lee published in 1960. 
     It was immediately successful, winning the Pulitzer Prize, and has 
@@ -63,7 +61,6 @@ def test_structured_output():
     when she was 10 years old.
     """
 
-    # Add system message with instructions
     chat = chat.add_message(
         SystemMessage(
             """
@@ -76,15 +73,12 @@ def test_structured_output():
         )
     )
 
-    # Add user message with the sample text and structured_output parameter
     chat = chat.add_message(
         UserMessage(sample_text, structured_output=ThoughtfulBookResponse)
     )
 
-    # Complete the chat to get the response
     chat = chat.complete()
 
-    # Access the parsed_output and verify the results
     parsed_output: ThoughtfulBookResponse = chat.parsed_output
 
     assert parsed_output.book_info.author == "Harper Lee"
@@ -104,16 +98,13 @@ def test_available_models():
 
 
 def test_tool_calling():
-    """Test tool calling functionality with Google model."""
     from patterpunk.llm.chat import Chat
     
     def calculate_area(length: float, width: float) -> str:
-        """Calculate the area of a rectangle given length and width."""
         area = length * width
         return f"The area is {area} square units"
     
     def get_math_fact(topic: str) -> str:
-        """Get an interesting mathematical fact about a topic."""
         facts = {
             "rectangle": "A rectangle has opposite sides that are equal and parallel",
             "area": "Area measures the amount of space inside a 2D shape",
@@ -139,28 +130,21 @@ def test_tool_calling():
         .complete()
     )
     
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
     
-    # Tool calls should always result in ToolCallMessage as latest message
-    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
-    # If latest message is AssistantMessage, check for expected content
     if isinstance(response.latest_message, ToolCallMessage):
         # Tool calling worked correctly - test passes
         pass
     else:
-        # Response should mention the calculated area if not a tool call
         content = response.latest_message.content.lower()
-        assert "15" in content or "fifteen" in content  # 5 * 3 = 15
+        assert "15" in content or "fifteen" in content
 
 
 def test_simple_tool_calling():
-    """Test simple tool calling with a single function."""
     from patterpunk.llm.chat import Chat
     
     def get_weather(location: str) -> str:
-        """Get the current weather for a location."""
         return f"The weather in {location} is sunny and 22°C"
     
     model = GoogleModel(
@@ -177,24 +161,18 @@ def test_simple_tool_calling():
         .complete()
     )
     
-    # Verify we got a response
     assert response.latest_message is not None
     assert response.latest_message.content is not None
     
-    # Tool calls should always result in ToolCallMessage as latest message
-    # If latest message is a ToolCallMessage, complete() is done and user decides on tool execution
-    # If latest message is AssistantMessage, check for expected content
     if isinstance(response.latest_message, ToolCallMessage):
         # Tool calling worked correctly - test passes
         pass
     else:
-        # Response should mention Paris and weather if not a tool call
         content = response.latest_message.content.lower()
         assert "paris" in content
 
 
 def test_thinking_mode_fixed_budget():
-    """Test thinking mode with a fixed budget."""
     from patterpunk.llm.thinking import ThinkingConfig
     model = GoogleModel(
         model="gemini-2.5-flash",
@@ -218,7 +196,6 @@ def test_thinking_mode_fixed_budget():
 
 
 def test_thinking_mode_dynamic_budget():
-    """Test thinking mode with dynamic budget (effort=high)."""
     from patterpunk.llm.thinking import ThinkingConfig
     model = GoogleModel(
         model="gemini-2.5-flash",
@@ -242,7 +219,6 @@ def test_thinking_mode_dynamic_budget():
 
 
 def test_thinking_mode_disabled():
-    """Test thinking mode disabled (budget=0)."""
     from patterpunk.llm.thinking import ThinkingConfig
     model = GoogleModel(
         model="gemini-2.5-flash",
@@ -266,7 +242,6 @@ def test_thinking_mode_disabled():
 
 
 def test_thinking_mode_include_thoughts():
-    """Test thinking mode with thoughts included in response."""
     from patterpunk.llm.thinking import ThinkingConfig
     model = GoogleModel(
         model="gemini-2.5-flash",
@@ -290,7 +265,6 @@ def test_thinking_mode_include_thoughts():
 
 
 def test_thinking_mode_exclude_thoughts():
-    """Test thinking mode with thoughts excluded from response."""
     from patterpunk.llm.thinking import ThinkingConfig
     model = GoogleModel(
         model="gemini-2.5-flash",
@@ -314,7 +288,6 @@ def test_thinking_mode_exclude_thoughts():
 
 
 def test_thinking_mode_deepcopy():
-    """Test that thinking mode parameters are preserved in deepcopy."""
     import copy
     from patterpunk.llm.thinking import ThinkingConfig
     

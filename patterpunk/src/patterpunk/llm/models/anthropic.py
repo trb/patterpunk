@@ -358,12 +358,10 @@ Please extract the relevant information from this reasoning and format it exactl
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        # Convert system messages with cache handling
         system_content = self._convert_system_messages_for_anthropic(messages)
         system_prompt = None
         if system_content:
             if len(system_content) == 1 and system_content[0].get("type") == "text":
-                # Simple case: single text block without cache controls
                 if "cache_control" not in system_content[0]:
                     system_prompt = system_content[0]["text"]
                 else:
@@ -378,7 +376,6 @@ Please extract the relevant information from this reasoning and format it exactl
 
         while True:
             try:
-                # Prepare API parameters
                 api_params = {
                     "model": self.model,
                     "messages": self._convert_messages_for_anthropic([
@@ -392,28 +389,22 @@ Please extract the relevant information from this reasoning and format it exactl
                     "timeout": self.timeout,
                 }
 
-                # Add system prompt if we have one
                 if system_prompt is not None:
                     api_params["system"] = system_prompt
 
-                # Add thinking parameter for reasoning models
                 if self.thinking and self._is_reasoning_model():
                     api_params["thinking"] = {
                         "type": self.thinking.type,
                         "budget_tokens": self.thinking.budget_tokens
                     }
-                    # Apply reasoning mode parameter constraints
                     api_params = self._get_compatible_params(api_params)
 
-                # Handle structured output with reasoning mode
                 if structured_output and has_model_schema(structured_output) and self.thinking and self._is_reasoning_model():
                     # Try reasoning model with auto tool choice first (compatible with thinking)
                     logger.info(f"[ANTHROPIC] Attempting reasoning model with auto tool choice for structured output")
                     
-                    # Create structured output tool
                     structured_output_tool = self._create_structured_output_tool(structured_output)
                     
-                    # Convert existing tools to Anthropic format
                     anthropic_tools = []
                     if tools:
                         anthropic_tools = self._convert_tools_to_anthropic_format(tools)
@@ -500,7 +491,6 @@ Please extract the relevant information from this reasoning and format it exactl
                     # Regular structured output approach for non-reasoning models
                     structured_output_tool = self._create_structured_output_tool(structured_output)
                     
-                    # Convert existing tools to Anthropic format
                     anthropic_tools = []
                     if tools:
                         anthropic_tools = self._convert_tools_to_anthropic_format(tools)

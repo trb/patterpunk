@@ -260,7 +260,6 @@ def test_basic():
 
 
 def test_structured_output():
-    # Define Pydantic models for structured output
     class Person(BaseModel):
         name: str
         role: str
@@ -268,7 +267,7 @@ def test_structured_output():
 
     class Topic(BaseModel):
         name: str
-        importance: int  # 1-10 scale
+        importance: int
         related_keywords: List[str]
 
     class ArticleSection(BaseModel):
@@ -288,7 +287,6 @@ def test_structured_output():
         overall_sentiment: str
         factual_accuracy_score: Optional[int] = None
 
-    # Test article text
     article_text = """
     TECH BREAKTHROUGH: QUANTUM COMPUTING REACHES NEW MILESTONE
     
@@ -334,7 +332,6 @@ def test_structured_output():
     estimates of 7-10 years.
     """
 
-    # Test with both specified models
     models_to_test = [
         "anthropic.claude-3-sonnet-20240229-v1:0",
         "meta.llama3-70b-instruct-v1:0",
@@ -343,10 +340,8 @@ def test_structured_output():
     for model_name in models_to_test:
         print(f"\nTesting structured output with model: {model_name}")
 
-        # Create chat with model and structured output
         chat = Chat(model=OllamaModel(model=model_name, temperature=0.1))
 
-        # Add system message with instructions
         chat = chat.add_message(
             SystemMessage(
                 """
@@ -365,7 +360,6 @@ def test_structured_output():
             )
         )
 
-        # Add user message with the article
         chat = chat.add_message(
             UserMessage(
                 f"Please analyze this news article:\n\n{article_text}",
@@ -373,16 +367,12 @@ def test_structured_output():
             )
         )
 
-        # Complete the chat
         chat = chat.complete()
 
-        # Get the parsed output
         analysis = chat.parsed_output
 
-        # Print the result
         print(f"Successfully parsed structured output: {analysis}")
 
-        # Assertions to verify the output
         assert (
             analysis.article_title
             == "TECH BREAKTHROUGH: QUANTUM COMPUTING REACHES NEW MILESTONE"
@@ -390,10 +380,8 @@ def test_structured_output():
         assert analysis.source == "TechFuture Magazine"
         assert analysis.publication_date == "March 15, 2024"
 
-        # Verify key people extraction
-        assert len(analysis.key_people) >= 3  # At least Rodriguez, Patel, and Johnson
+        assert len(analysis.key_people) >= 3
 
-        # Find Dr. Rodriguez in key people
         rodriguez = next(
             (p for p in analysis.key_people if "Rodriguez" in p.name), None
         )
@@ -402,17 +390,12 @@ def test_structured_output():
             "lead" in rodriguez.role.lower() or "researcher" in rodriguez.role.lower()
         )
 
-        # Verify topics
-        assert len(analysis.main_topics) >= 2  # At least quantum computing and security
+        assert len(analysis.main_topics) >= 2
 
-        # Verify sections
-        assert len(analysis.sections) >= 3  # Should have multiple sections
+        assert len(analysis.sections) >= 3
 
-        # Verify sentiment is present
         assert analysis.overall_sentiment is not None
 
-        # Verify optional fields
-        # The author should be identified as Sarah Chen
         assert analysis.author is not None
         assert analysis.author.name == "Sarah Chen"
 

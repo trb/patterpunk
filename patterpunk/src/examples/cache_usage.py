@@ -16,11 +16,9 @@ from patterpunk.llm.messages import SystemMessage, UserMessage
 def basic_caching_example():
     """Basic example showing how to use cache chunks."""
     
-    # Legacy approach (still works)
     system_msg_old = SystemMessage("You are a helpful assistant.")
     user_msg_old = UserMessage("What is Python?")
     
-    # New approach with caching
     system_msg_new = SystemMessage([
         CacheChunk("You are a helpful assistant with expertise in:", cacheable=False),
         CacheChunk("Python programming, data science, web development...", cacheable=True)
@@ -51,13 +49,11 @@ def document_analysis_example():
     4. Highlight any risks or concerns
     """
     
-    # Create a system message with cacheable instructions
     system_message = SystemMessage([
         CacheChunk("You are an expert analyst. ", cacheable=False),
         CacheChunk(analysis_instructions, cacheable=True, ttl=timedelta(hours=2))
     ])
     
-    # Create user message with cacheable document content
     user_message = UserMessage([
         CacheChunk("Document to analyze:\n", cacheable=False),
         CacheChunk(large_document, cacheable=True, ttl=timedelta(hours=1)),
@@ -71,21 +67,17 @@ def error_handling_and_fallback():
     """Demonstrate error handling with cache chunks."""
     
     try:
-        # Even if caching fails, the content is still available as strings
         message = UserMessage([
             CacheChunk("Cacheable content", cacheable=True),
             CacheChunk("Regular content", cacheable=False)
         ])
         
-        # This will always work, regardless of cache success/failure
         content_string = message.get_content_as_string()
         print(f"Full content: {content_string}")
         
-        # Check if any content is cacheable
         if message.has_cacheable_content():
             print("This message has cacheable content")
         
-        # Get individual chunks for provider-specific processing
         chunks = message.get_cache_chunks()
         for i, chunk in enumerate(chunks):
             print(f"Chunk {i}: cacheable={chunk.cacheable}, ttl={chunk.ttl}")
