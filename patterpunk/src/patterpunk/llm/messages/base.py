@@ -1,10 +1,3 @@
-"""
-Core Message class with essential functionality only.
-
-This module contains the base Message class that provides fundamental message
-functionality while delegating complex operations to specialized modules.
-"""
-
 import copy
 from typing import Union, List, Optional, Any
 
@@ -22,12 +15,6 @@ from .structured_output import parse_structured_output
 
 
 class Message:
-    """
-    Base message class providing core functionality for all message types.
-    
-    Handles content management, model assignment, templating, and basic
-    dictionary conversion while delegating complex operations to specialized modules.
-    """
     
     def __init__(self, content: ContentType, role: str = ROLE_USER):
         self.content = content
@@ -50,25 +37,11 @@ class Message:
             format_content(self.content, variables)
 
     def set_model(self, model):
-        """
-        When using the chat feature, you can switch the model for later messages. This can be helpful to e.g. try
-        gpt3.5 to generate JSON and switch to gpt-4 if it fails, or so compare outputs, etc.
-
-        :param model: Model
-        :return: Message
-        """
         new_message = self.copy()
         new_message._model = model
         return new_message
 
     def prepare(self, parameters):
-        """
-        Prepares the message for sending to LLM.
-
-        Creates a copy of the message where all placeholders were replaced.
-        :param parameters:
-        :return: Message
-        """
         new_message = copy.deepcopy(self)
 
         try:

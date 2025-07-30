@@ -1,7 +1,3 @@
-"""
-Integration tests for TextChunk with other content types and provider models.
-"""
-
 import pytest
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.cache import CacheChunk
@@ -13,7 +9,6 @@ from tests.test_utils import get_resource
 
 
 def test_mixed_content_types_get_content_as_string():
-    """Test that mixed content types work together in get_content_as_string."""
     message = UserMessage([
         TextChunk("Hello "),
         CacheChunk("world", cacheable=True),

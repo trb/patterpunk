@@ -110,11 +110,6 @@ class OpenAiModel(Model, ABC):
         self.thinking_config = thinking_config
 
     def _process_cache_chunks_for_openai(self, chunks: List[Union[TextChunk, CacheChunk]]) -> tuple[str, bool]:
-        """
-        OpenAI only supports prefix caching (cacheable content must come first).
-        This approach differs from providers like Anthropic that support interleaved caching,
-        so we warn when non-prefix patterns are detected as they won't cache effectively.
-        """
         content = "".join(chunk.content for chunk in chunks if isinstance(chunk, (TextChunk, CacheChunk)))
         
         cacheable_positions = [i for i, chunk in enumerate(chunks) if isinstance(chunk, CacheChunk) and chunk.cacheable]
@@ -130,11 +125,6 @@ class OpenAiModel(Model, ABC):
         return content, should_warn
 
     def _convert_message_content_for_openai_responses(self, content) -> List[dict]:
-        """
-        OpenAI's Responses API uses input_* prefixed content types unlike the Chat Completions API.
-        PDFs can be handled three ways: URL reference, Files API file_id, or base64 data.
-        We prioritize more efficient methods (URL/file_id) over base64 when available.
-        """
         if isinstance(content, str):
             return [{"type": "input_text", "text": content}]
         
@@ -213,10 +203,6 @@ class OpenAiModel(Model, ABC):
         return openai_messages
 
     def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
-        """
-        OpenAI Responses API maps system messages to developer role instead of system role.
-        For structured output fallback, we append the schema prompt to the message content.
-        """
         responses_input = []
         cache_warnings = []
         

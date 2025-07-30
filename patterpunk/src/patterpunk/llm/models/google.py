@@ -49,26 +49,18 @@ class GoogleAuthenticationError(Exception):
 
 
 class GoogleRateLimitError(Exception):
-    """Raised when all retry attempts for rate limit errors are exhausted"""
-
     pass
 
 
 class GoogleMaxTokensError(Exception):
-    """Raised when the model hits the maximum token limit"""
-
     pass
 
 
 class GoogleNotImplemented(Exception):
-    """Raised for features not yet implemented"""
-
     pass
 
 
 class GoogleAPIError(Exception):
-    """Raised for general API errors"""
-
     pass
 
 

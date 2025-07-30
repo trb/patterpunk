@@ -1,10 +1,3 @@
-"""
-Advanced docstring parsing using the docstring_parser library.
-
-This module provides sophisticated docstring parsing with proper error handling
-for when the library isn't available or fails to parse specific formats.
-"""
-
 from typing import Callable, Tuple, Dict
 
 try:
@@ -15,13 +8,6 @@ except ImportError:
 
 
 def parse_with_docstring_parser(func: Callable) -> Tuple[str, Dict[str, str]]:
-    """
-    Parse function docstring using the advanced docstring_parser library.
-    
-    :param func: Function to parse docstring from
-    :return: Tuple of (description, parameter_descriptions)
-    :raises ImportError: If docstring_parser library is not available
-    """
     if not HAS_DOCSTRING_PARSER:
         raise ImportError("docstring_parser library not available")
     
@@ -51,10 +37,8 @@ def parse_with_docstring_parser(func: Callable) -> Tuple[str, Dict[str, str]]:
         return description or func.__name__, param_descriptions
 
     except Exception as e:
-        # If advanced parsing fails, let the caller handle fallback
         raise ValueError(f"Advanced docstring parsing failed: {e}")
 
 
 def is_advanced_parser_available() -> bool:
-    """Check if the advanced docstring parser library is available."""
     return HAS_DOCSTRING_PARSER

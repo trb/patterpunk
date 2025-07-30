@@ -37,14 +37,11 @@ if anthropic:
 
 @dataclass
 class ThinkingConfig:
-    """Configuration for Claude reasoning mode."""
     type: Literal["enabled"] = "enabled"
     budget_tokens: int = 4000
 
 
 class AnthropicRateLimitError(Exception):
-    """Raised when all retry attempts for rate limit errors are exhausted"""
-
     pass
 
 
@@ -94,10 +91,6 @@ class AnthropicModel(Model, ABC):
         self.thinking_config = thinking_config
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
-        """
-        OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
-        Anthropic format: {"name": "...", "description": "...", "input_schema": {...}}
-        """
         anthropic_tools = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
@@ -111,10 +104,6 @@ class AnthropicModel(Model, ABC):
         return anthropic_tools
 
     def _create_structured_output_tool(self, structured_output: object) -> dict:
-        """
-        Anthropic's recommended approach for forcing JSON output is to use a tool call
-        rather than system prompts, as this provides more reliable structured responses.
-        """
         if not has_model_schema(structured_output):
             raise ValueError("structured_output must be a Pydantic model with schema support")
         
@@ -190,7 +179,6 @@ Please extract the relevant information from this reasoning and format it exactl
             return AssistantMessage(reasoning_content, structured_output=structured_output)
 
     def _parse_model_version(self) -> tuple[int, int]:
-        """Parse major and minor version from model name. Returns (major, minor)."""
         import re
         
         # Claude 3.x format: claude-3-7-sonnet-20250219
@@ -211,7 +199,6 @@ Please extract the relevant information from this reasoning and format it exactl
         return (0, 0)  # Unknown/unsupported format
 
     def _is_reasoning_model(self) -> bool:
-        """Check if the model supports reasoning mode (3.7+ or 4+)."""
         major, minor = self._parse_model_version()
         
         if major >= 4:
@@ -222,27 +209,17 @@ Please extract the relevant information from this reasoning and format it exactl
         return False
 
     def _get_compatible_params(self, api_params: dict) -> dict:
-        """Get parameters compatible with reasoning mode constraints."""
         if self.thinking:
-            # Reasoning mode constraints:
-            # - temperature must be exactly 1.0
-            # - top_p and top_k must be removed
             compatible_params = api_params.copy()
             if "top_p" in compatible_params:
                 del compatible_params["top_p"]
             if "top_k" in compatible_params:
                 del compatible_params["top_k"]
-            # Force temperature to 1.0 for reasoning mode
             compatible_params["temperature"] = 1.0
             return compatible_params
         return api_params
 
     def _convert_content_to_anthropic_format(self, content) -> List[dict]:
-        """
-        Convert content to Anthropic format with cache controls, multimodal, and Files API support.
-        
-        Provider handles validation - let Anthropic API return clear error messages for invalid content.
-        """
         if isinstance(content, str):
             return [{"type": "text", "text": content}]
         
@@ -271,9 +248,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 anthropic_content.append(content_block)
                 
             elif isinstance(chunk, MultimodalChunk):
-                # Check if this is a Files API reference
                 if hasattr(chunk, 'file_id'):
-                    # Use Files API reference for documents
                     content_block = {
                         "type": "document",
                         "source": {
@@ -284,7 +259,6 @@ Please extract the relevant information from this reasoning and format it exactl
                     anthropic_content.append(content_block)
                     continue
                 
-                # Handle URL downloading (Anthropic doesn't support URLs directly)
                 if chunk.source_type == "url":
                     if session is None:
                         try:
@@ -308,7 +282,6 @@ Please extract the relevant information from this reasoning and format it exactl
                     }
                     anthropic_content.append(content_block)
                 elif media_type == "application/pdf":
-                    # PDF as document type
                     content_block = {
                         "type": "document", 
                         "source": {
@@ -322,12 +295,10 @@ Please extract the relevant information from this reasoning and format it exactl
         return anthropic_content
 
     def upload_file_to_anthropic(self, chunk: MultimodalChunk) -> str:
-        """Upload file to Anthropic Files API and return file_id."""
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=anthropic.api_key)
             
-            # Create temporary file for upload
             import tempfile
             import os
             
@@ -354,7 +325,6 @@ Please extract the relevant information from this reasoning and format it exactl
             raise
 
     def _convert_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to Anthropic format with cache handling."""
         anthropic_messages = []
         
         for message in messages:
@@ -371,7 +341,6 @@ Please extract the relevant information from this reasoning and format it exactl
         return anthropic_messages
 
     def _convert_system_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
-        """Convert system messages to Anthropic format with cache handling."""
         system_content = []
         
         for message in messages:
