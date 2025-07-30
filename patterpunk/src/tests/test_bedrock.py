@@ -477,7 +477,10 @@ def test_multimodal_pdf():
         chat
         .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
         .add_message(UserMessage(
-            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
+            content=[
+                CacheChunk(content="Please analyze this document and create a title.", cacheable=False),
+                MultimodalChunk.from_file(get_resource('research.pdf'))
+            ]
         ))
         .complete()
         .latest_message
