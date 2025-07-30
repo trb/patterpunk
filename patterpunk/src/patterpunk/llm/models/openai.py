@@ -9,6 +9,9 @@ from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 if openai:
@@ -106,30 +109,78 @@ class OpenAiModel(Model, ABC):
         self.reasoning_effort = reasoning_effort
         self.thinking_config = thinking_config
 
-    def _process_cache_chunks_for_openai(self, chunks: List[CacheChunk]) -> tuple[str, bool]:
-        """
-        Process cache chunks for OpenAI's automatic prefix caching.
-        Returns (concatenated_content, should_warn_about_caching)
-        """
-        content = "".join(chunk.content for chunk in chunks)
+    def _process_cache_chunks_for_openai(self, chunks: List[Union[TextChunk, CacheChunk]]) -> tuple[str, bool]:
+        content = "".join(chunk.content for chunk in chunks if isinstance(chunk, (TextChunk, CacheChunk)))
         
-        # Check for non-prefix cacheable patterns
-        cacheable_positions = [i for i, chunk in enumerate(chunks) if chunk.cacheable]
+        cacheable_positions = [i for i, chunk in enumerate(chunks) if isinstance(chunk, CacheChunk) and chunk.cacheable]
         
-        # Warn if we have cacheable content that's not at the prefix
         should_warn = False
         if cacheable_positions:
-            # Check if there are non-cacheable chunks before the last cacheable chunk
             last_cacheable = max(cacheable_positions)
             for i in range(last_cacheable):
-                if not chunks[i].cacheable:
+                if not (isinstance(chunks[i], CacheChunk) and chunks[i].cacheable):
                     should_warn = True
                     break
         
         return content, should_warn
 
+    def _convert_message_content_for_openai_responses(self, content) -> List[dict]:
+        if isinstance(content, str):
+            return [{"type": "input_text", "text": content}]
+        
+        openai_content = []
+        session = None
+        
+        for chunk in content:
+            if isinstance(chunk, TextChunk):
+                openai_content.append({
+                    "type": "input_text",
+                    "text": chunk.content
+                })
+            elif isinstance(chunk, CacheChunk):
+                openai_content.append({
+                    "type": "input_text",
+                    "text": chunk.content
+                })
+            elif isinstance(chunk, MultimodalChunk):
+                if chunk.media_type and chunk.media_type.startswith("image/"):
+                    if chunk.source_type == "url":
+                        openai_content.append({
+                            "type": "input_image",
+                            "image_url": chunk.get_url()
+                        })
+                    else:
+                        openai_content.append({
+                            "type": "input_image",
+                            "image_url": chunk.to_data_uri()
+                        })
+                elif chunk.media_type == "application/pdf":
+                    if chunk.source_type == "url":
+                        openai_content.append({
+                            "type": "input_file",
+                            "file_url": chunk.get_url()
+                        })
+                    elif hasattr(chunk, 'file_id'):
+                        openai_content.append({
+                            "type": "input_file", 
+                            "file_id": chunk.file_id
+                        })
+                    else:
+                        openai_content.append({
+                            "type": "input_file",
+                            "filename": chunk.filename or "document.pdf",
+                            "file_data": chunk.to_data_uri()
+                        })
+                else:
+                    openai_content.append({
+                        "type": "input_file",
+                        "filename": chunk.filename or "file",
+                        "file_data": chunk.to_data_uri()
+                    })
+        
+        return openai_content
+
     def _convert_messages_for_openai_cache(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to OpenAI format with cache handling."""
         openai_messages = []
         cache_warnings = []
         
@@ -146,51 +197,51 @@ class OpenAiModel(Model, ABC):
                 "content": content
             })
         
-        # Log warnings about suboptimal caching patterns
         for warning in cache_warnings:
             logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
         
         return openai_messages
 
     def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
-        """Convert patterpunk messages to Responses API input format with cache handling."""
         responses_input = []
         cache_warnings = []
         
         for message in messages:
-            # Handle cache chunks for optimal OpenAI caching
-            if isinstance(message.content, list):
-                content, should_warn = self._process_cache_chunks_for_openai(message.content)
-                if should_warn:
-                    cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+            if has_multimodal_content(message.content):
+                content_array = self._convert_message_content_for_openai_responses(message.content)
             else:
-                content = message.get_content_as_string()
-            
-            # Add structured output prompt if needed
-            if (prompt_for_structured_output 
-                and hasattr(message, 'structured_output') 
-                and message.structured_output 
-                and has_model_schema(message.structured_output)):
-                content = f"{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                if isinstance(message.content, list):
+                    content_text, should_warn = self._process_cache_chunks_for_openai(message.content)
+                    if should_warn:
+                        cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+                else:
+                    content_text = message.get_content_as_string()
+                
+                if (prompt_for_structured_output 
+                    and hasattr(message, 'structured_output') 
+                    and message.structured_output 
+                    and has_model_schema(message.structured_output)):
+                    content_text = f"{content_text}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                
+                content_array = [{"type": "input_text", "text": content_text}]
             
             if message.role == "system":
                 responses_input.append({
                     "role": "developer",
-                    "content": [{"type": "input_text", "text": content}]
+                    "content": content_array
                 })
             elif message.role == "user":
                 responses_input.append({
                     "role": "user", 
-                    "content": [{"type": "input_text", "text": content}]
+                    "content": content_array
                 })
             elif message.role == "assistant":
-                if content:
+                if content_array and any(item.get("text") for item in content_array if item.get("type") == "input_text"):
                     responses_input.append({
                         "role": "assistant",
-                        "content": [{"type": "input_text", "text": content}]
+                        "content": content_array
                     })
             elif message.role == "tool_call":
-                # Handle tool calls
                 if hasattr(message, 'tool_calls'):
                     responses_input.append({
                         "role": "assistant",
@@ -198,7 +249,6 @@ class OpenAiModel(Model, ABC):
                         "tool_calls": message.tool_calls  
                     })
         
-        # Log warnings about suboptimal caching patterns
         for warning in cache_warnings:
             logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
         
@@ -227,6 +277,7 @@ class OpenAiModel(Model, ABC):
         responses_parameters = {
             "model": self.model,
             "input": responses_input,
+            "store": False
         }
 
         if tools:

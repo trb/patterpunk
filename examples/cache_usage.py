@@ -6,7 +6,7 @@ across different LLM providers (OpenAI, Anthropic, Bedrock, Google, Ollama).
 """
 
 from datetime import timedelta
-from patterpunk.llm.types import CacheChunk
+from patterpunk.llm.types import CacheChunk, TextChunk
 from patterpunk.llm.messages import SystemMessage, UserMessage
 from patterpunk.llm.chat import Chat
 
@@ -18,15 +18,15 @@ def basic_caching_example():
     system_msg_old = SystemMessage("You are a helpful assistant.")
     user_msg_old = UserMessage("What is Python?")
     
-    # New approach with caching
+    # New approach with caching and TextChunk
     system_msg_new = SystemMessage([
-        CacheChunk("You are a helpful assistant with expertise in:", cacheable=False),
+        TextChunk("You are a helpful assistant with expertise in:"),
         CacheChunk("Python programming, data science, web development...", cacheable=True)
     ])
     
     user_msg_new = UserMessage([
         CacheChunk("Large document context goes here...", cacheable=True, ttl=timedelta(hours=1)),
-        CacheChunk("Question: What is Python?", cacheable=False)
+        TextChunk("Question: What is Python?")
     ])
     
     # Both approaches work the same way
@@ -53,15 +53,15 @@ def document_analysis_example():
     
     # Create a system message with cacheable instructions
     system_message = SystemMessage([
-        CacheChunk("You are an expert analyst. ", cacheable=False),
+        TextChunk("You are an expert analyst. "),
         CacheChunk(analysis_instructions, cacheable=True, ttl=timedelta(hours=2))
     ])
     
     # Create user message with cacheable document content
     user_message = UserMessage([
-        CacheChunk("Document to analyze:\n", cacheable=False),
+        TextChunk("Document to analyze:\n"),
         CacheChunk(large_document, cacheable=True, ttl=timedelta(hours=1)),
-        CacheChunk("\nPlease provide a comprehensive analysis.", cacheable=False)
+        TextChunk("\nPlease provide a comprehensive analysis.")
     ])
     
     chat = Chat().add_message(system_message).add_message(user_message)
@@ -79,7 +79,7 @@ def multi_query_example():
     
     # Cache the codebase context for reuse across multiple queries
     base_system = SystemMessage([
-        CacheChunk("You are a senior software engineer reviewing this codebase:\n", cacheable=False),
+        TextChunk("You are a senior software engineer reviewing this codebase:\n"),
         CacheChunk(codebase_context, cacheable=True, ttl=timedelta(hours=2))
     ])
     
@@ -95,8 +95,8 @@ def multi_query_example():
     
     for query in queries:
         user_message = UserMessage([
-            CacheChunk("Question: ", cacheable=False),
-            CacheChunk(query, cacheable=False)
+            TextChunk("Question: "),
+            TextChunk(query)
         ])
         
         query_chat = chat.add_message(user_message)

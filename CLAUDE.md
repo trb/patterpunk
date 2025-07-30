@@ -79,7 +79,15 @@ patterpunk/src/patterpunk/
 ## Code Style Requirements
 
 **CRITICAL RULES:**
-- **NEVER ADD COMMENTS** - Code must be self-documenting
+- **ABSOLUTELY NO COMMENTS IN CODE** - This means:
+  - NO docstrings (unless absolutely required by a framework)
+  - NO inline comments explaining what code does
+  - NO comment blocks
+  - NO TODO comments
+  - NO type hint comments
+  - NO disabled code comments
+  - The ONLY exception is copyright headers if required
+  - Code must be self-documenting through clear variable names and structure
 - **DO NOT CREATE documentation files** unless explicitly requested
 - Use functional programming principles with immutability
 - Minimize object-oriented programming and inheritance

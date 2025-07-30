@@ -1,10 +1,3 @@
-"""
-Core Message class with essential functionality only.
-
-This module contains the base Message class that provides fundamental message
-functionality while delegating complex operations to specialized modules.
-"""
-
 import copy
 from typing import Union, List, Optional, Any
 
@@ -12,6 +5,8 @@ from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.logger import logger
 from ..cache import CacheChunk
+from ..multimodal import MultimodalChunk
+from ..types import ContentType
 from .roles import ROLE_USER
 from .exceptions import BadParameterError
 from .templating import format_content
@@ -20,14 +15,8 @@ from .structured_output import parse_structured_output
 
 
 class Message:
-    """
-    Base message class providing core functionality for all message types.
     
-    Handles content management, model assignment, templating, and basic
-    dictionary conversion while delegating complex operations to specialized modules.
-    """
-    
-    def __init__(self, content: Union[str, List[CacheChunk]], role: str = ROLE_USER):
+    def __init__(self, content: ContentType, role: str = ROLE_USER):
         self.content = content
         self.role = role
         self._model = None
@@ -35,7 +24,6 @@ class Message:
         self._parsed_output = None
 
     def format_content(self, parameters):
-        """Format content with template parameters, delegating to templating module."""
         variables = {}
         for parameter_name in parameters:
             value = parameters[parameter_name]
@@ -49,25 +37,11 @@ class Message:
             format_content(self.content, variables)
 
     def set_model(self, model):
-        """
-        When using the chat feature, you can switch the model for later messages. This can be helpful to e.g. try
-        gpt3.5 to generate JSON and switch to gpt-4 if it fails, or so compare outputs, etc.
-
-        :param model: Model
-        :return: Message
-        """
         new_message = self.copy()
         new_message._model = model
         return new_message
 
     def prepare(self, parameters):
-        """
-        Prepares the message for sending to LLM.
-
-        Creates a copy of the message where all placeholders were replaced.
-        :param parameters:
-        :return: Message
-        """
         new_message = copy.deepcopy(self)
 
         try:
@@ -81,20 +55,16 @@ class Message:
         return new_message
 
     def get_content_as_string(self) -> str:
-        """Helper method to get content as string for backward compatibility."""
         return get_content_as_string(self.content)
     
     def has_cacheable_content(self) -> bool:
-        """Check if message contains any cacheable chunks."""
         return has_cacheable_content(self.content)
     
-    def get_cache_chunks(self) -> List[CacheChunk]:
-        """Get cache chunks, converting string content to non-cacheable chunk if needed."""
+    def get_cache_chunks(self) -> List[Union[CacheChunk, MultimodalChunk]]:
         return get_cache_chunks(self.content)
 
     @property
     def parsed_output(self):
-        """Parse structured output from message content, delegating to structured_output module."""
         return parse_structured_output(
             self.content, 
             self.structured_output, 
@@ -103,7 +73,6 @@ class Message:
         )
 
     def to_dict(self, prompt_for_structured_output: bool = False):
-        """Convert message to dictionary format for API consumption."""
         content = self.get_content_as_string()
         if (
             prompt_for_structured_output
@@ -116,11 +85,9 @@ class Message:
 
     @property
     def model(self):
-        """Get the assigned model for this message."""
         return self._model
 
     def __repr__(self, truncate=True):
-        """String representation of the message."""
         content_str = self.get_content_as_string()
         if content_str:
             content = (
@@ -133,5 +100,4 @@ class Message:
         return f'{self.role.capitalize()}Message("{content}")'
 
     def copy(self):
-        """Create a deep copy of the message."""
         return copy.deepcopy(self)

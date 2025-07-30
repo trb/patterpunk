@@ -24,6 +24,9 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
 
@@ -34,14 +37,11 @@ if anthropic:
 
 @dataclass
 class ThinkingConfig:
-    """Configuration for Claude reasoning mode."""
     type: Literal["enabled"] = "enabled"
     budget_tokens: int = 4000
 
 
 class AnthropicRateLimitError(Exception):
-    """Raised when all retry attempts for rate limit errors are exhausted"""
-
     pass
 
 
@@ -91,12 +91,6 @@ class AnthropicModel(Model, ABC):
         self.thinking_config = thinking_config
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
-        """
-        Convert OpenAI-style tool definitions to Anthropic format.
-
-        OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
-        Anthropic format: {"name": "...", "description": "...", "input_schema": {...}}
-        """
         anthropic_tools = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
@@ -110,10 +104,6 @@ class AnthropicModel(Model, ABC):
         return anthropic_tools
 
     def _create_structured_output_tool(self, structured_output: object) -> dict:
-        """
-        Create a tool definition for structured output using Pydantic model schema.
-        This follows Anthropic's recommended approach for forcing JSON output.
-        """
         if not has_model_schema(structured_output):
             raise ValueError("structured_output must be a Pydantic model with schema support")
         
@@ -127,22 +117,20 @@ class AnthropicModel(Model, ABC):
 
     def _format_reasoning_to_structured_output(self, reasoning_content: str, structured_output: object, original_messages: List[Message]) -> AssistantMessage:
         """
-        Use Claude 3.5 Haiku to format reasoning output into structured JSON.
-        This is part of the two-model approach to handle reasoning + structured output conflict.
+        Reasoning models can't use tool_choice constraints, so we use a two-model approach:
+        first the reasoning model generates analysis, then Haiku formats it to structured JSON.
+        We use Haiku because it's fast, cheap, and reliable for formatting tasks.
         """
         logger.info("[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku")
         
-        # Create the structured output tool
         structured_output_tool = self._create_structured_output_tool(structured_output)
         
-        # Get the original user message for context
         user_context = ""
         for msg in reversed(original_messages):
             if msg.role == ROLE_USER:
                 user_context = msg.get_content_as_string()
                 break
         
-        # Create formatting prompt
         formatting_prompt = f"""Based on the following reasoning and analysis, extract and format the information into the exact JSON structure specified by the tool schema.
 
 Original user request: {user_context}
@@ -152,12 +140,11 @@ Reasoning and analysis from Claude:
 
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
-        # Prepare API call for Claude 3.5 Haiku
         haiku_params = {
-            "model": "claude-3-5-haiku-20241022",  # Use stable Haiku model
+            "model": "claude-3-5-haiku-20241022",
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
-            "temperature": 0.1,  # Low temperature for consistent formatting
+            "temperature": 0.1,
             "tools": [structured_output_tool],
             "tool_choice": {
                 "type": "tool", 
@@ -166,17 +153,13 @@ Please extract the relevant information from this reasoning and format it exactl
         }
         
         try:
-            # Make the formatting call
             formatting_response = anthropic.messages.create(**haiku_params)
             
-            # Extract structured output from the tool call
             for block in formatting_response.content:
                 if block.type == "tool_use" and block.name == "provide_structured_response":
                     if hasattr(block, "input") and block.input:
                         try:
-                            # Parse the structured output
                             parsed_output = structured_output.model_validate(block.input)
-                            # Create content from the structured data  
                             structured_response_content = json.dumps(block.input, indent=2)
                             
                             logger.info("[ANTHROPIC] Successfully formatted reasoning output to structured JSON")
@@ -188,17 +171,14 @@ Please extract the relevant information from this reasoning and format it exactl
                         except Exception as e:
                             logger.error(f"[ANTHROPIC] Failed to parse structured output from Haiku formatting: {e}")
                             
-            # If we get here, something went wrong with the formatting
             logger.warning("[ANTHROPIC] Haiku formatting failed, falling back to reasoning content")
             return AssistantMessage(reasoning_content, structured_output=structured_output)
             
         except Exception as e:
             logger.error(f"[ANTHROPIC] Error in two-model structured output approach: {e}")
-            # Fall back to returning the reasoning content
             return AssistantMessage(reasoning_content, structured_output=structured_output)
 
     def _parse_model_version(self) -> tuple[int, int]:
-        """Parse major and minor version from model name. Returns (major, minor)."""
         import re
         
         # Claude 3.x format: claude-3-7-sonnet-20250219
@@ -216,10 +196,9 @@ Please extract the relevant information from this reasoning and format it exactl
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
             
-        return (0, 0)  # Unknown/unsupported format
+        return (0, 0)
 
     def _is_reasoning_model(self) -> bool:
-        """Check if the model supports reasoning mode (3.7+ or 4+)."""
         major, minor = self._parse_model_version()
         
         if major >= 4:
@@ -230,45 +209,122 @@ Please extract the relevant information from this reasoning and format it exactl
         return False
 
     def _get_compatible_params(self, api_params: dict) -> dict:
-        """Get parameters compatible with reasoning mode constraints."""
         if self.thinking:
-            # Reasoning mode constraints:
-            # - temperature must be exactly 1.0
-            # - top_p and top_k must be removed
             compatible_params = api_params.copy()
             if "top_p" in compatible_params:
                 del compatible_params["top_p"]
             if "top_k" in compatible_params:
                 del compatible_params["top_k"]
-            # Force temperature to 1.0 for reasoning mode
             compatible_params["temperature"] = 1.0
             return compatible_params
         return api_params
 
-    def _convert_content_to_anthropic_format(self, chunks: List[CacheChunk]) -> List[dict]:
-        """Convert cache chunks to Anthropic content format with cache controls."""
-        anthropic_content = []
+    def _convert_content_to_anthropic_format(self, content) -> List[dict]:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
         
-        for chunk in chunks:
-            content_block = {
-                "type": "text",
-                "text": chunk.content
-            }
-            
-            if chunk.cacheable:
-                cache_control = {"type": "ephemeral"}
-                if chunk.ttl:
-                    # Convert ttl to appropriate format if extended TTL is needed
-                    if chunk.ttl.total_seconds() > 300:  # More than 5 minutes
-                        cache_control["ttl"] = "1h"  # Use extended TTL
-                content_block["cache_control"] = cache_control
-            
-            anthropic_content.append(content_block)
+        anthropic_content = []
+        session = None
+        
+        for chunk in content:
+            if isinstance(chunk, TextChunk):
+                anthropic_content.append({
+                    "type": "text",
+                    "text": chunk.content
+                })
+                
+            elif isinstance(chunk, CacheChunk):
+                content_block = {
+                    "type": "text",
+                    "text": chunk.content
+                }
+                
+                if chunk.cacheable:
+                    cache_control = {"type": "ephemeral"}
+                    if chunk.ttl:
+                        cache_control["ttl"] = int(chunk.ttl.total_seconds())
+                    content_block["cache_control"] = cache_control
+                
+                anthropic_content.append(content_block)
+                
+            elif isinstance(chunk, MultimodalChunk):
+                if hasattr(chunk, 'file_id'):
+                    content_block = {
+                        "type": "document",
+                        "source": {
+                            "type": "file",
+                            "file_id": chunk.file_id
+                        }
+                    }
+                    anthropic_content.append(content_block)
+                    continue
+                
+                if chunk.source_type == "url":
+                    if session is None:
+                        try:
+                            import requests
+                            session = requests.Session()
+                        except ImportError:
+                            raise ImportError("requests library required for URL support with Anthropic")
+                    
+                    chunk = chunk.download(session)
+                
+                media_type = chunk.media_type or "application/octet-stream"
+                
+                if media_type.startswith("image/"):
+                    content_block = {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": chunk.to_base64()
+                        }
+                    }
+                    anthropic_content.append(content_block)
+                elif media_type == "application/pdf":
+                    content_block = {
+                        "type": "document", 
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": chunk.to_base64()
+                        }
+                    }
+                    anthropic_content.append(content_block)
         
         return anthropic_content
 
+    def upload_file_to_anthropic(self, chunk: MultimodalChunk) -> str:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic.api_key)
+            
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(
+                suffix=f".{chunk.media_type.split('/')[-1] if chunk.media_type else 'bin'}", 
+                delete=False
+            ) as tmp_file:
+                tmp_file.write(chunk.to_bytes())
+                tmp_file_path = tmp_file.name
+            
+            try:
+                with open(tmp_file_path, "rb") as f:
+                    file_response = client.files.create(
+                        file=f,
+                        purpose="vision"
+                    )
+                
+                return file_response.id
+            finally:
+                os.unlink(tmp_file_path)
+                
+        except Exception as e:
+            logger.error(f"Failed to upload file to Anthropic: {e}")
+            raise
+
     def _convert_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to Anthropic format with cache handling."""
         anthropic_messages = []
         
         for message in messages:
@@ -285,7 +341,6 @@ Please extract the relevant information from this reasoning and format it exactl
         return anthropic_messages
 
     def _convert_system_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
-        """Convert system messages to Anthropic format with cache handling."""
         system_content = []
         
         for message in messages:
@@ -303,12 +358,10 @@ Please extract the relevant information from this reasoning and format it exactl
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        # Convert system messages with cache handling
         system_content = self._convert_system_messages_for_anthropic(messages)
         system_prompt = None
         if system_content:
             if len(system_content) == 1 and system_content[0].get("type") == "text":
-                # Simple case: single text block without cache controls
                 if "cache_control" not in system_content[0]:
                     system_prompt = system_content[0]["text"]
                 else:
@@ -319,11 +372,10 @@ Please extract the relevant information from this reasoning and format it exactl
                 system_prompt = system_content
 
         retry_count = 0
-        wait_time = 60  # Initial wait time in seconds
+        wait_time = 60
 
         while True:
             try:
-                # Prepare API parameters
                 api_params = {
                     "model": self.model,
                     "messages": self._convert_messages_for_anthropic([
@@ -337,28 +389,22 @@ Please extract the relevant information from this reasoning and format it exactl
                     "timeout": self.timeout,
                 }
 
-                # Add system prompt if we have one
                 if system_prompt is not None:
                     api_params["system"] = system_prompt
 
-                # Add thinking parameter for reasoning models
                 if self.thinking and self._is_reasoning_model():
                     api_params["thinking"] = {
                         "type": self.thinking.type,
                         "budget_tokens": self.thinking.budget_tokens
                     }
-                    # Apply reasoning mode parameter constraints
                     api_params = self._get_compatible_params(api_params)
 
-                # Handle structured output with reasoning mode
                 if structured_output and has_model_schema(structured_output) and self.thinking and self._is_reasoning_model():
                     # Try reasoning model with auto tool choice first (compatible with thinking)
                     logger.info(f"[ANTHROPIC] Attempting reasoning model with auto tool choice for structured output")
                     
-                    # Create structured output tool
                     structured_output_tool = self._create_structured_output_tool(structured_output)
                     
-                    # Convert existing tools to Anthropic format
                     anthropic_tools = []
                     if tools:
                         anthropic_tools = self._convert_tools_to_anthropic_format(tools)
@@ -445,7 +491,6 @@ Please extract the relevant information from this reasoning and format it exactl
                     # Regular structured output approach for non-reasoning models
                     structured_output_tool = self._create_structured_output_tool(structured_output)
                     
-                    # Convert existing tools to Anthropic format
                     anthropic_tools = []
                     if tools:
                         anthropic_tools = self._convert_tools_to_anthropic_format(tools)
@@ -560,10 +605,10 @@ Please extract the relevant information from this reasoning and format it exactl
 
                     time.sleep(wait_time)
                     retry_count += 1
-                    wait_time = int(wait_time * 1.5)  # Increase wait time by 50%
+                    wait_time = int(wait_time * 1.5)
                     continue
 
-                raise  # Re-raise any other API errors
+                raise
         raise AnthropicAPIError(
             f"Unexpected outcome - out of retries, but neither error raised or message returned"
         )

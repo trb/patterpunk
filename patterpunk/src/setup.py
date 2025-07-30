@@ -21,7 +21,6 @@ setup(
     license="MPL-2.0",
     include_package_data=True,
     install_requires=[
-        # This reads the requirements from the requirements.txt file
         line.strip()
         for line in open(requirements_path, "r")
     ],

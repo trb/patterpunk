@@ -27,6 +27,9 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 
@@ -66,7 +69,6 @@ class BedrockModel(Model, ABC):
         )
 
     def _convert_tools_to_bedrock_format(self, tools: ToolDefinition) -> dict:
-        """Convert Patterpunk standard tools to Bedrock toolConfig format"""
         bedrock_tools = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
@@ -83,19 +85,19 @@ class BedrockModel(Model, ABC):
         return {"tools": bedrock_tools}
 
     def _get_thinking_params(self) -> dict:
-        """Convert unified thinking config to Bedrock additionalModelRequestFields format."""
         if not self.thinking_config:
             return {}
 
         additional_fields = {}
 
+        if "deepseek" in self.model_id.lower():
+            return {}
+
         if self.thinking_config.effort is not None:
-            # For OpenAI/DeepSeek models that use reasoning_effort
             additional_fields["reasoning_effort"] = self.thinking_config.effort
 
         if self.thinking_config.token_budget is not None:
-            # For Anthropic models that use reasoning_config with budget_tokens
-            budget_tokens = max(1024, self.thinking_config.token_budget)  # Minimum 1024
+            budget_tokens = max(1024, self.thinking_config.token_budget)
             additional_fields["reasoning_config"] = {
                 "type": "enabled",
                 "budget_tokens": budget_tokens,
@@ -103,31 +105,111 @@ class BedrockModel(Model, ABC):
 
         return additional_fields
 
-    def _convert_content_to_bedrock_format(self, chunks: List[CacheChunk]) -> List[dict]:
-        """Convert cache chunks to Bedrock content format with cache points."""
-        bedrock_content = []
+    def _convert_content_to_bedrock_format(self, content) -> List[dict]:
+        if isinstance(content, str):
+            return [{"text": content}]
         
-        for chunk in chunks:
-            content_block = {
-                "text": chunk.content
-            }
-            
-            if chunk.cacheable:
-                content_block["cachePoint"] = {}
-            
-            bedrock_content.append(content_block)
+        bedrock_content = []
+        session = None
+        
+        for chunk in content:
+            if isinstance(chunk, TextChunk):
+                bedrock_content.append({"text": chunk.content})
+                
+            elif isinstance(chunk, CacheChunk):
+                content_block = {"text": chunk.content}
+                if chunk.cacheable:
+                    content_block["cachePoint"] = {}
+                bedrock_content.append(content_block)
+                
+            elif isinstance(chunk, MultimodalChunk):
+                if chunk.source_type == "url":
+                    if session is None:
+                        try:
+                            import requests
+                            session = requests.Session()
+                        except ImportError:
+                            raise ImportError("requests library required for URL support with Bedrock")
+                    
+                    chunk = chunk.download(session)
+                
+                media_type = chunk.media_type or "application/octet-stream"
+                
+                if media_type.startswith("image/"):
+                    format_map = {
+                        "image/jpeg": "jpeg",
+                        "image/jpg": "jpeg", 
+                        "image/png": "png",
+                        "image/gif": "gif",
+                        "image/webp": "webp"
+                    }
+                    
+                    format = format_map.get(media_type, "jpeg")
+                    
+                    content_block = {
+                        "image": {
+                            "format": format,
+                            "source": {
+                                "bytes": chunk.to_bytes()
+                            }
+                        }
+                    }
+                    bedrock_content.append(content_block)
+                elif media_type in ["application/pdf", "text/plain", "text/html", "text/markdown",
+                                   "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                   "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]:
+                    format_map = {
+                        "application/pdf": "pdf",
+                        "text/plain": "txt",
+                        "text/html": "html", 
+                        "text/markdown": "md",
+                        "application/msword": "doc",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+                        "application/vnd.ms-excel": "xls",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx"
+                    }
+                    
+                    document_format = format_map.get(media_type, "pdf")
+                    raw_filename = getattr(chunk, 'filename', None) or f"document.{document_format}"
+                    import re
+                    document_name = re.sub(r'[^\w\s\-\(\)\[\]]', '', raw_filename)
+                    document_name = re.sub(r'\s+', ' ', document_name).strip()
+                    
+                    content_block = {
+                        "document": {
+                            "format": document_format,
+                            "name": document_name,
+                            "source": {
+                                "bytes": chunk.to_bytes()
+                            }
+                        }
+                    }
+                    bedrock_content.append(content_block)
+                else:
+                    raise ValueError(
+                        f"Bedrock does not support media type: {media_type}. "
+                        f"Supported types are: text, images (jpeg/png/gif/webp), and documents (pdf/csv/doc/docx/xls/xlsx/html/txt/md)."
+                    )
+        
         
         return bedrock_content
 
     def _convert_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to Bedrock format with cache handling."""
         bedrock_messages = []
         
         for message in messages:
             if isinstance(message.content, list):
                 content = self._convert_content_to_bedrock_format(message.content)
+                
+                has_text = any('text' in chunk for chunk in content)
+                has_document = any('document' in chunk for chunk in content)
+                
+                if has_document and not has_text:
+                    raise ValueError(
+                        "Bedrock requires at least one text block when documents are present. "
+                        "Please include text content along with your documents."
+                    )
             else:
-                # Add structured output prompt if needed
                 content_str = message.get_content_as_string()
                 if message.structured_output and has_model_schema(message.structured_output):
                     content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
@@ -141,14 +223,11 @@ class BedrockModel(Model, ABC):
         return bedrock_messages
 
     def _convert_system_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
-        """Convert system messages to Bedrock format with cache handling."""
         bedrock_system = []
         
         for message in messages:
             if message.role == ROLE_SYSTEM:
                 if isinstance(message.content, list):
-                    # For system messages with cache chunks, concatenate them
-                    # Bedrock system parameter expects simple text format
                     content_str = "".join(chunk.content for chunk in message.content)
                     bedrock_system.append({"text": content_str})
                 else:
@@ -172,22 +251,18 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        # Bedrock needs system messages to be handled with a special call parameter, not as a message
         system_messages = [
             message for message in messages if message.role == ROLE_SYSTEM
         ]
 
-        # Convert system messages with cache handling
         system_content = self._convert_system_messages_for_bedrock(system_messages)
 
-        # We'll have to investigate tool usage for bedrock to ensure that it's handled via regular messages
         user_assistant_messages = [
             message
             for message in messages
             if message.role in [ROLE_USER, ROLE_ASSISTANT]
         ]
 
-        # Convert messages with cache handling
         conversation = self._convert_messages_for_bedrock(user_assistant_messages)
 
         try:
@@ -195,16 +270,13 @@ class BedrockModel(Model, ABC):
             retry_sleep = random.randint(30, 60)
             while True:
                 try:
-                    # Build inference config
                     inference_config = {
                         "temperature": self.temperature,
                         "topP": self.top_p,
                     }
 
-                    # Get thinking parameters
                     thinking_params = self._get_thinking_params()
 
-                    # For Anthropic models with reasoning_config, top_p must be disabled
                     if thinking_params.get("reasoning_config"):
                         inference_config.pop("topP", None)
 
@@ -215,13 +287,11 @@ class BedrockModel(Model, ABC):
                         "inferenceConfig": inference_config,
                     }
 
-                    # Add thinking parameters if present
                     if thinking_params:
                         converse_params["additionalModelRequestFields"] = (
                             thinking_params
                         )
 
-                    # Add tools if provided
                     if tools:
                         tool_config = self._convert_tools_to_bedrock_format(tools)
                         if tool_config["tools"]:
@@ -259,7 +329,6 @@ class BedrockModel(Model, ABC):
             )
             raise
 
-        # Handle tool use responses
         if response.get("stopReason") == "tool_use":
             tool_calls = []
             for content_block in response["output"]["message"]["content"]:
@@ -278,12 +347,10 @@ class BedrockModel(Model, ABC):
             if tool_calls:
                 return ToolCallMessage(tool_calls)
 
-        # Handle regular text responses
         response_content = response["output"]["message"]["content"]
         response_text = ""
         reasoning_text = ""
 
-        # Extract both regular text and reasoning content
         for content_block in response_content:
             if "text" in content_block:
                 response_text += content_block["text"]
@@ -292,7 +359,6 @@ class BedrockModel(Model, ABC):
                 if "reasoningText" in reasoning_content:
                     reasoning_text += reasoning_content["reasoningText"]["text"]
 
-        # Include reasoning content if enabled
         if (
             reasoning_text
             and self.thinking_config

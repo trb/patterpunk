@@ -5,5 +5,4 @@ This module now re-exports function conversion functionality from focused module
 to maintain backward compatibility while providing better organization and maintainability.
 """
 
-# Re-export everything from the function_to_tool package for backward compatibility
 from .function_to_tool import *

@@ -5,7 +5,6 @@ This module now re-exports types from focused modules to maintain backward compa
 while providing better organization and maintainability.
 """
 
-# Re-export tool calling types for backward compatibility
 from .tool_types import (
     ToolFunctionParameters,
     ToolFunction,
@@ -16,5 +15,11 @@ from .tool_types import (
     ToolCallList,
 )
 
-# Re-export cache functionality for backward compatibility
 from .cache import CacheChunk
+
+from .multimodal import MultimodalChunk
+
+from .text import TextChunk
+
+from typing import Union, List
+ContentType = Union[str, List[Union[TextChunk, CacheChunk, MultimodalChunk]]]

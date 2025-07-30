@@ -36,12 +36,9 @@ def configure_tools(chat_instance, tools: Union[ToolDefinition, List[Callable]])
     """
     new_chat = chat_instance.copy()
 
-    # Check if tools is a list of functions or tool definitions
     if tools and isinstance(tools[0], dict):
-        # Legacy format: list of tool definitions
         new_chat.tools = tools
     else:
-        # New format: list of functions - convert them
         new_chat.tools = functions_to_tools(tools)
 
     return new_chat
