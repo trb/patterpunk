@@ -111,18 +111,16 @@ class OpenAiModel(Model, ABC):
 
     def _process_cache_chunks_for_openai(self, chunks: List[Union[TextChunk, CacheChunk]]) -> tuple[str, bool]:
         """
-        Process text and cache chunks for OpenAI's automatic prefix caching.
-        Returns (concatenated_content, should_warn_about_caching)
+        OpenAI only supports prefix caching (cacheable content must come first).
+        This approach differs from providers like Anthropic that support interleaved caching,
+        so we warn when non-prefix patterns are detected as they won't cache effectively.
         """
         content = "".join(chunk.content for chunk in chunks if isinstance(chunk, (TextChunk, CacheChunk)))
         
-        # Check for non-prefix cacheable patterns
         cacheable_positions = [i for i, chunk in enumerate(chunks) if isinstance(chunk, CacheChunk) and chunk.cacheable]
         
-        # Warn if we have cacheable content that's not at the prefix
         should_warn = False
         if cacheable_positions:
-            # Check if there are non-cacheable chunks before the last cacheable chunk
             last_cacheable = max(cacheable_positions)
             for i in range(last_cacheable):
                 if not (isinstance(chunks[i], CacheChunk) and chunks[i].cacheable):
@@ -133,16 +131,15 @@ class OpenAiModel(Model, ABC):
 
     def _convert_message_content_for_openai_responses(self, content) -> List[dict]:
         """
-        Convert message content to OpenAI Responses API format.
-        
-        Uses Responses API format with input_* content types,
-        supporting text, images, and files.
+        OpenAI's Responses API uses input_* prefixed content types unlike the Chat Completions API.
+        PDFs can be handled three ways: URL reference, Files API file_id, or base64 data.
+        We prioritize more efficient methods (URL/file_id) over base64 when available.
         """
         if isinstance(content, str):
             return [{"type": "input_text", "text": content}]
         
         openai_content = []
-        session = None  # For URL downloading
+        session = None
         
         for chunk in content:
             if isinstance(chunk, TextChunk):
@@ -157,39 +154,34 @@ class OpenAiModel(Model, ABC):
                 })
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.media_type and chunk.media_type.startswith("image/"):
-                    # Handle image content
                     if chunk.source_type == "url":
                         openai_content.append({
                             "type": "input_image",
                             "image_url": chunk.get_url()
                         })
                     else:
-                        # Convert to data URI for base64/file/bytes
                         openai_content.append({
                             "type": "input_image",
                             "image_url": chunk.to_data_uri()
                         })
                 elif chunk.media_type == "application/pdf":
-                    # Handle PDF files - OpenAI supports three methods
                     if chunk.source_type == "url":
                         openai_content.append({
                             "type": "input_file",
                             "file_url": chunk.get_url()
                         })
-                    elif hasattr(chunk, 'file_id'):  # From Files API upload
+                    elif hasattr(chunk, 'file_id'):
                         openai_content.append({
                             "type": "input_file", 
                             "file_id": chunk.file_id
                         })
                     else:
-                        # Convert to base64 data
                         openai_content.append({
                             "type": "input_file",
                             "filename": chunk.filename or "document.pdf",
                             "file_data": chunk.to_data_uri()
                         })
                 else:
-                    # Try to handle as generic file
                     openai_content.append({
                         "type": "input_file",
                         "filename": chunk.filename or "file",
@@ -199,7 +191,6 @@ class OpenAiModel(Model, ABC):
         return openai_content
 
     def _convert_messages_for_openai_cache(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to OpenAI format with cache handling."""
         openai_messages = []
         cache_warnings = []
         
@@ -216,24 +207,23 @@ class OpenAiModel(Model, ABC):
                 "content": content
             })
         
-        # Log warnings about suboptimal caching patterns
         for warning in cache_warnings:
             logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
         
         return openai_messages
 
     def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
-        """Convert patterpunk messages to Responses API input format with multimodal support."""
+        """
+        OpenAI Responses API maps system messages to developer role instead of system role.
+        For structured output fallback, we append the schema prompt to the message content.
+        """
         responses_input = []
         cache_warnings = []
         
         for message in messages:
-            # Check if message has multimodal content
             if has_multimodal_content(message.content):
-                # Use multimodal content conversion
                 content_array = self._convert_message_content_for_openai_responses(message.content)
             else:
-                # Handle traditional text/cache content
                 if isinstance(message.content, list):
                     content_text, should_warn = self._process_cache_chunks_for_openai(message.content)
                     if should_warn:
@@ -241,7 +231,6 @@ class OpenAiModel(Model, ABC):
                 else:
                     content_text = message.get_content_as_string()
                 
-                # Add structured output prompt if needed
                 if (prompt_for_structured_output 
                     and hasattr(message, 'structured_output') 
                     and message.structured_output 
@@ -267,7 +256,6 @@ class OpenAiModel(Model, ABC):
                         "content": content_array
                     })
             elif message.role == "tool_call":
-                # Handle tool calls
                 if hasattr(message, 'tool_calls'):
                     responses_input.append({
                         "role": "assistant",
@@ -275,7 +263,6 @@ class OpenAiModel(Model, ABC):
                         "tool_calls": message.tool_calls  
                     })
         
-        # Log warnings about suboptimal caching patterns
         for warning in cache_warnings:
             logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")
         

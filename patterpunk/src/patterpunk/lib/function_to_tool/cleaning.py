@@ -21,7 +21,6 @@ def clean_description(description: str) -> str:
     if not description:
         return ""
 
-    # Remove common docstring sections (case-insensitive, multiline)
     sections_pattern = r"\n\s*(Args?|Arguments?|Parameters?|Param|Returns?|Return|Yields?|Yield|Raises?|Raise|Examples?|Example|Notes?|Note)\s*:.*$"
     cleaned = re.sub(
         sections_pattern,
@@ -30,11 +29,8 @@ def clean_description(description: str) -> str:
         flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
     )
 
-    # Normalize whitespace - remove excessive newlines
     cleaned = re.sub(r"\n\s*\n", "\n", cleaned)
     
-    # Strip leading and trailing whitespace
     cleaned = re.sub(r"^\s+|\s+$", "", cleaned)
 
-    # Return cleaned text, falling back to original if cleaning made it empty
     return cleaned or description

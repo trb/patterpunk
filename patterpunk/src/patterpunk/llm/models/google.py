@@ -100,7 +100,6 @@ class GoogleModel(Model, ABC):
             credentials_info,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
-        # Refresh right away to detect errors early
         credentials.refresh(Request())
         project_id = credentials_info["project_id"]
 
@@ -111,7 +110,6 @@ class GoogleModel(Model, ABC):
             credentials=credentials,
         )
 
-    # Remember to make sure to update __deepcopy__ if you change the __init__ parameters
     def __init__(
         self,
         model: str,
@@ -120,7 +118,6 @@ class GoogleModel(Model, ABC):
         top_p: float = GOOGLE_DEFAULT_TOP_P,
         top_k: int = GOOGLE_DEFAULT_TOP_K,
         max_tokens: int = GOOGLE_DEFAULT_MAX_TOKENS,
-        # Either google_account_credentials OR client have to be set, but not both
         google_account_credentials: Optional[str] = None,
         client: Optional[genai.Client] = None,
         thinking_config: Optional[ThinkingConfig] = None,
@@ -173,11 +170,9 @@ class GoogleModel(Model, ABC):
         self.thinking_config = thinking_config
 
     def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
-        """Convert Patterpunk standard tools to Google genai format"""
         if not google_genai_available:
             return []
         
-        # Type mapping from JSON Schema to Google genai types
         type_mapping = {
             "string": "STRING",
             "number": "NUMBER", 
@@ -192,7 +187,6 @@ class GoogleModel(Model, ABC):
             if tool.get("type") == "function" and "function" in tool:
                 func = tool["function"]
                 
-                # Convert properties to Google Schema format
                 properties = {}
                 for prop_name, prop_def in func["parameters"].get("properties", {}).items():
                     json_type = prop_def.get("type", "string")
@@ -214,24 +208,21 @@ class GoogleModel(Model, ABC):
                 )
                 function_declarations.append(function_declaration)
         
-        # Wrap function declarations in a Tool object
         if function_declarations:
             return [types.Tool(function_declarations=function_declarations)]
         return []
 
     def _create_cache_objects_for_chunks(self, chunks: List[CacheChunk]) -> dict[str, str]:
-        """Pre-create cache objects for cacheable chunks that meet minimum requirements."""
         cache_mappings = {}
         
         if not google_genai_available:
             return cache_mappings
         
         for i, chunk in enumerate(chunks):
-            if chunk.cacheable and len(chunk.content) > 32000:  # Meet minimum token requirement
+            if chunk.cacheable and len(chunk.content) > 32000:
                 cache_id = f"cache_chunk_{i}_{hash(chunk.content)}"
                 
                 try:
-                    # Create cached content object
                     cached_content = self.client.caches.create(
                         config=types.CreateCachedContentConfig(
                             model=self.model,
@@ -248,11 +239,6 @@ class GoogleModel(Model, ABC):
         return cache_mappings
 
     def _convert_message_content_for_google(self, content) -> List:
-        """
-        Convert message content to Google format with multimodal support.
-        
-        Uses google-genai SDK with Part factory methods for different content types.
-        """
         if isinstance(content, str):
             return [types.Part.from_text(text=content)]
         
@@ -265,19 +251,15 @@ class GoogleModel(Model, ABC):
                 parts.append(types.Part.from_text(text=chunk.content))
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "gcs_uri":
-                    # Google Cloud Storage URI - native support
                     parts.append(types.Part.from_uri(
                         uri=chunk.get_url(),
                         mime_type=chunk.media_type or "application/octet-stream"
                     ))
                 elif hasattr(chunk, 'file_id'):
-                    # Files API upload reference
-                    parts.append(chunk.file_id)  # Direct file object reference
+                    parts.append(chunk.file_id)
                 else:
-                    # Convert to bytes for inline data
                     media_type = chunk.media_type or "application/octet-stream"
                     
-                    # Download URLs first
                     if chunk.source_type == "url":
                         chunk = chunk.download()
                     
@@ -289,8 +271,6 @@ class GoogleModel(Model, ABC):
         return parts
 
     def upload_file_to_google(self, chunk: MultimodalChunk):
-        """Upload file to Google Files API."""
-        # Create temporary file for upload
         import tempfile
         import os
         
@@ -308,7 +288,6 @@ class GoogleModel(Model, ABC):
             os.unlink(tmp_file_path)
 
     def _convert_messages_for_google_with_cache(self, messages: List[Message]) -> tuple[List[types.Content], dict[str, str]]:
-        """Convert patterpunk messages to Google format with multimodal and cache handling."""
         contents = []
         all_cache_mappings = {}
         
@@ -317,10 +296,8 @@ class GoogleModel(Model, ABC):
                 continue
             
             if isinstance(message.content, list):
-                # Check for multimodal content
                 if has_multimodal_content(message.content):
                     parts = self._convert_message_content_for_google(message.content)
-                    # Google requires at least one text part in every message
                     has_text = any(isinstance(chunk, (TextChunk, CacheChunk)) for chunk in message.content)
                     if not has_text:
                         raise ValueError(
@@ -328,11 +305,9 @@ class GoogleModel(Model, ABC):
                             "Please include text content along with your images or other media."
                         )
                 else:
-                    # Pre-create cache objects for cacheable chunks
                     cache_mappings = self._create_cache_objects_for_chunks(message.content)
                     all_cache_mappings.update(cache_mappings)
                     
-                    # Create separate Part objects for each chunk to enable individual caching
                     parts = []
                     for chunk in message.content:
                         parts.append(types.Part.from_text(text=chunk.content))
@@ -357,15 +332,11 @@ class GoogleModel(Model, ABC):
         return contents, all_cache_mappings
 
     def _convert_system_messages_for_google_with_cache(self, messages: List[Message]) -> str:
-        """Convert system messages to Google format with cache handling."""
         system_parts = []
         
         for message in messages:
             if message.role == ROLE_SYSTEM:
                 if isinstance(message.content, list):
-                    # For system messages with cache chunks, we need to handle them specially
-                    # Google's system_instruction expects a simple string, so we concatenate
-                    # but preserve chunk boundaries with proper spacing
                     content_str = "\n\n".join(chunk.content for chunk in message.content)
                     system_parts.append(content_str)
                 else:
@@ -379,10 +350,8 @@ class GoogleModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        # Convert system messages with cache handling
         system_prompt = self._convert_system_messages_for_google_with_cache(messages)
 
-        # Convert messages with cache handling
         contents, cache_mappings = self._convert_messages_for_google_with_cache(messages)
 
         config = types.GenerateContentConfig(
@@ -407,7 +376,6 @@ class GoogleModel(Model, ABC):
             google_tools = self._convert_tools_to_google_format(tools)
             if google_tools:
                 config.tools = google_tools
-                # Disable automatic function calling to handle manually
                 config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
 
         if structured_output:
@@ -426,18 +394,14 @@ class GoogleModel(Model, ABC):
                     model=self.model, contents=contents, config=config
                 )
 
-                # Process response candidates and parts
                 if hasattr(response, 'candidates') and response.candidates:
                     candidate = response.candidates[0]
                     if hasattr(candidate, 'content') and candidate.content.parts:
                         tool_calls = []
                         text_parts = []
                         
-                        # Iterate through all parts to collect both text and function calls
                         for part in candidate.content.parts:
-                            # Check for function calls with proper None handling
                             if hasattr(part, 'function_call') and part.function_call is not None:
-                                # Convert Google function call to standard format
                                 tool_call = {
                                     "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
                                     "type": "function",
@@ -448,22 +412,18 @@ class GoogleModel(Model, ABC):
                                 }
                                 tool_calls.append(tool_call)
                             
-                            # Check for text content (changed elif to if to handle parts with both text and function_call)
                             if hasattr(part, 'text') and part.text and part.text != 'None':
                                 text_parts.append(part.text)
                         
-                        # Return ToolCallMessage if function calls were found
                         if tool_calls:
                             return ToolCallMessage(tool_calls)
                         
-                        # Return AssistantMessage with text content
                         if text_parts:
                             content = "\n".join(text_parts)
                             return AssistantMessage(
                                 content, structured_output=structured_output
                             )
                 
-                # Fallback: try using response.text for simple responses
                 try:
                     if hasattr(response, "text") and response.text:
                         content = response.text
@@ -471,10 +431,8 @@ class GoogleModel(Model, ABC):
                             content, structured_output=structured_output
                         )
                 except Exception:
-                    # response.text failed, likely because it's a complex response
                     pass
                 
-                # If we get here, something went wrong
                 raise GoogleAPIError("No content found in Vertex AI response")
 
             except genai_errors.APIError as error:
@@ -528,12 +486,7 @@ class GoogleModel(Model, ABC):
                 else GoogleModel.client
             )
 
-            # Filter for Gemini models only
             gemini_models = []
-            # For whatever reason, some regions won't return any models (like northamerica-northeast1), even though
-            # gemini-1.0*/gemini-1.5* models are available. If I'd have to guess it's because google is deprecating
-            # those models without making the gemini-2* models available, so we just get no gemini models *sigh*
-            # if we truly receive no models, return a list of relatively safe (barring the deprecation...) models
             for model in client.models.list(config={"page_size": 100}):
                 model_name = model.name.lower()
                 if "gemini" in model_name:
@@ -550,7 +503,6 @@ class GoogleModel(Model, ABC):
         except Exception as e:
             logger.error(f"Error listing Vertex AI models: {str(e)}")
 
-            # Return a snapshot of known models if we can't fetch them
             return default_models
 
     @staticmethod

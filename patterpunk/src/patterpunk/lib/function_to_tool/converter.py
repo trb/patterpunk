@@ -29,25 +29,19 @@ def function_to_tool(func: Callable) -> Dict[str, Any]:
     :return: OpenAI-compatible tool definition dictionary
     :raises ValueError: If function cannot be analyzed or converted
     """
-    # Step 1: Analyze function signature and extract parameters
     signature, type_hints, fields = analyze_function_signature(func)
     function_name = get_function_name(func)
     
-    # Step 2: Create Pydantic model and generate schema
     model = create_pydantic_model_from_fields(function_name, fields)
     schema = generate_openai_compatible_schema(model)
     
-    # Step 3: Parse and clean function documentation
     description, param_descriptions = parse_function_docs(func)
     cleaned_description = clean_description(description)
     
-    # Step 4: Integrate parameter descriptions into schema
     if param_descriptions and "properties" in schema:
         for param_name, param_schema in schema["properties"].items():
             if param_name in param_descriptions:
                 param_schema["description"] = param_descriptions[param_name]
-    
-    # Step 5: Assemble final tool definition
     return {
         "type": "function",
         "function": {

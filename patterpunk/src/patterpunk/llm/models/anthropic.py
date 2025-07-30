@@ -95,8 +95,6 @@ class AnthropicModel(Model, ABC):
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         """
-        Convert OpenAI-style tool definitions to Anthropic format.
-
         OpenAI format: {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
         Anthropic format: {"name": "...", "description": "...", "input_schema": {...}}
         """
@@ -114,8 +112,8 @@ class AnthropicModel(Model, ABC):
 
     def _create_structured_output_tool(self, structured_output: object) -> dict:
         """
-        Create a tool definition for structured output using Pydantic model schema.
-        This follows Anthropic's recommended approach for forcing JSON output.
+        Anthropic's recommended approach for forcing JSON output is to use a tool call
+        rather than system prompts, as this provides more reliable structured responses.
         """
         if not has_model_schema(structured_output):
             raise ValueError("structured_output must be a Pydantic model with schema support")
@@ -130,22 +128,20 @@ class AnthropicModel(Model, ABC):
 
     def _format_reasoning_to_structured_output(self, reasoning_content: str, structured_output: object, original_messages: List[Message]) -> AssistantMessage:
         """
-        Use Claude 3.5 Haiku to format reasoning output into structured JSON.
-        This is part of the two-model approach to handle reasoning + structured output conflict.
+        Reasoning models can't use tool_choice constraints, so we use a two-model approach:
+        first the reasoning model generates analysis, then Haiku formats it to structured JSON.
+        We use Haiku because it's fast, cheap, and reliable for formatting tasks.
         """
         logger.info("[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku")
         
-        # Create the structured output tool
         structured_output_tool = self._create_structured_output_tool(structured_output)
         
-        # Get the original user message for context
         user_context = ""
         for msg in reversed(original_messages):
             if msg.role == ROLE_USER:
                 user_context = msg.get_content_as_string()
                 break
         
-        # Create formatting prompt
         formatting_prompt = f"""Based on the following reasoning and analysis, extract and format the information into the exact JSON structure specified by the tool schema.
 
 Original user request: {user_context}
@@ -155,12 +151,11 @@ Reasoning and analysis from Claude:
 
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
-        # Prepare API call for Claude 3.5 Haiku
         haiku_params = {
-            "model": "claude-3-5-haiku-20241022",  # Use stable Haiku model
+            "model": "claude-3-5-haiku-20241022",
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
-            "temperature": 0.1,  # Low temperature for consistent formatting
+            "temperature": 0.1,
             "tools": [structured_output_tool],
             "tool_choice": {
                 "type": "tool", 
@@ -169,17 +164,13 @@ Please extract the relevant information from this reasoning and format it exactl
         }
         
         try:
-            # Make the formatting call
             formatting_response = anthropic.messages.create(**haiku_params)
             
-            # Extract structured output from the tool call
             for block in formatting_response.content:
                 if block.type == "tool_use" and block.name == "provide_structured_response":
                     if hasattr(block, "input") and block.input:
                         try:
-                            # Parse the structured output
                             parsed_output = structured_output.model_validate(block.input)
-                            # Create content from the structured data  
                             structured_response_content = json.dumps(block.input, indent=2)
                             
                             logger.info("[ANTHROPIC] Successfully formatted reasoning output to structured JSON")
@@ -191,13 +182,11 @@ Please extract the relevant information from this reasoning and format it exactl
                         except Exception as e:
                             logger.error(f"[ANTHROPIC] Failed to parse structured output from Haiku formatting: {e}")
                             
-            # If we get here, something went wrong with the formatting
             logger.warning("[ANTHROPIC] Haiku formatting failed, falling back to reasoning content")
             return AssistantMessage(reasoning_content, structured_output=structured_output)
             
         except Exception as e:
             logger.error(f"[ANTHROPIC] Error in two-model structured output approach: {e}")
-            # Fall back to returning the reasoning content
             return AssistantMessage(reasoning_content, structured_output=structured_output)
 
     def _parse_model_version(self) -> tuple[int, int]:

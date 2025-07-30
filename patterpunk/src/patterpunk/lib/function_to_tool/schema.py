@@ -36,12 +36,10 @@ def generate_openai_compatible_schema(model: Any) -> Dict[str, Any]:
     """
     schema = model.model_json_schema()
 
-    # Clean up schema for OpenAI format
     if "title" in schema:
         del schema["title"]
     schema["additionalProperties"] = False
 
-    # Ensure required field is always present (even if empty)
     if "required" not in schema:
         schema["required"] = []
     

@@ -37,7 +37,6 @@ class Message:
         self._parsed_output = None
 
     def format_content(self, parameters):
-        """Format content with template parameters, delegating to templating module."""
         variables = {}
         for parameter_name in parameters:
             value = parameters[parameter_name]
@@ -83,20 +82,16 @@ class Message:
         return new_message
 
     def get_content_as_string(self) -> str:
-        """Helper method to get content as string for backward compatibility."""
         return get_content_as_string(self.content)
     
     def has_cacheable_content(self) -> bool:
-        """Check if message contains any cacheable chunks."""
         return has_cacheable_content(self.content)
     
     def get_cache_chunks(self) -> List[Union[CacheChunk, MultimodalChunk]]:
-        """Get cache chunks, converting string content to non-cacheable chunk if needed."""
         return get_cache_chunks(self.content)
 
     @property
     def parsed_output(self):
-        """Parse structured output from message content, delegating to structured_output module."""
         return parse_structured_output(
             self.content, 
             self.structured_output, 
@@ -105,7 +100,6 @@ class Message:
         )
 
     def to_dict(self, prompt_for_structured_output: bool = False):
-        """Convert message to dictionary format for API consumption."""
         content = self.get_content_as_string()
         if (
             prompt_for_structured_output
@@ -118,11 +112,9 @@ class Message:
 
     @property
     def model(self):
-        """Get the assigned model for this message."""
         return self._model
 
     def __repr__(self, truncate=True):
-        """String representation of the message."""
         content_str = self.get_content_as_string()
         if content_str:
             content = (
@@ -135,5 +127,4 @@ class Message:
         return f'{self.role.capitalize()}Message("{content}")'
 
     def copy(self):
-        """Create a deep copy of the message."""
         return copy.deepcopy(self)

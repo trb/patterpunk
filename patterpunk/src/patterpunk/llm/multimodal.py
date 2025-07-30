@@ -27,7 +27,7 @@ class MultimodalChunk:
         source: Union[str, bytes, BytesIO, Path],
         media_type: Optional[str] = None,
         source_type: Optional[str] = None,
-        filename: Optional[str] = None,  # For file uploads
+        filename: Optional[str] = None,
     ):
         self.source = source
         self.source_type = source_type or self._infer_source_type(source)
@@ -36,7 +36,6 @@ class MultimodalChunk:
         self._cached_bytes: Optional[bytes] = None
         
     def _infer_source_type(self, source) -> str:
-        """Infer the source type from the input with improved detection."""
         if isinstance(source, str):
             if source.startswith(('http://', 'https://')):
                 return "url"
@@ -56,11 +55,9 @@ class MultimodalChunk:
             raise ValueError(f"Unsupported source type: {type(source)}")
     
     def _is_base64(self, s: str) -> bool:
-        """Improved base64 detection with proper validation."""
         if len(s) < 4 or len(s) % 4 != 0:
             return False
         
-        # Check for valid base64 characters
         base64_pattern = re.compile(r'^[A-Za-z0-9+/]*={0,2}$')
         if not base64_pattern.match(s):
             return False
@@ -72,7 +69,6 @@ class MultimodalChunk:
             return False
     
     def _detect_media_type(self) -> Optional[str]:
-        """Enhanced media type detection."""
         if self.source_type == "file_path":
             path = Path(self.source) if isinstance(self.source, str) else self.source
             mime_type, _ = mimetypes.guess_type(str(path))
@@ -81,7 +77,6 @@ class MultimodalChunk:
             header = self.source.split(",", 1)[0]
             return header.split(";")[0].replace("data:", "")
         elif self.source_type == "gcs_uri":
-            # Extract from GCS URI path extension
             path = Path(self.source)
             mime_type, _ = mimetypes.guess_type(str(path))
             return mime_type
@@ -89,14 +84,13 @@ class MultimodalChunk:
         return None
     
     def to_bytes(self) -> bytes:
-        """Convert source to bytes with caching."""
         if self._cached_bytes is not None:
             return self._cached_bytes
             
         if self.source_type == "bytes":
             if isinstance(self.source, bytes):
                 self._cached_bytes = self.source
-            else:  # BytesIO
+            else:
                 self._cached_bytes = self.source.getvalue()
         elif self.source_type == "base64":
             self._cached_bytes = base64.b64decode(self.source)
@@ -117,7 +111,6 @@ class MultimodalChunk:
         return self._cached_bytes
     
     def download(self, session=None) -> 'MultimodalChunk':
-        """Download content from URL with improved error handling."""
         if self.source_type not in ["url", "gcs_uri"]:
             return self
         
@@ -137,7 +130,6 @@ class MultimodalChunk:
             
             response.raise_for_status()
             
-            # Get media type from response headers if not provided
             media_type = self.media_type
             if not media_type:
                 content_type = response.headers.get('content-type', '').split(';')[0]
@@ -155,7 +147,6 @@ class MultimodalChunk:
             raise ValueError(f"Failed to download from {self.source}: {str(e)}")
     
     def to_base64(self) -> str:
-        """Convert source to base64 string."""
         if self.source_type == "base64":
             return self.source
         elif self.source_type == "data_uri":
@@ -165,7 +156,6 @@ class MultimodalChunk:
             return base64.b64encode(self.to_bytes()).decode('utf-8')
     
     def to_data_uri(self) -> str:
-        """Convert to data URI format."""
         if self.source_type == "data_uri":
             return self.source
         base64_data = self.to_base64()
@@ -173,29 +163,24 @@ class MultimodalChunk:
         return f"data:{media_type};base64,{base64_data}"
     
     def get_file_path(self) -> Optional[Path]:
-        """Get file path if source is a file."""
         if self.source_type == "file_path":
             return Path(self.source) if isinstance(self.source, str) else self.source
         return None
     
     def get_url(self) -> Optional[str]:
-        """Get URL if source is a URL."""
         if self.source_type in ["url", "gcs_uri"]:
             return self.source
         return None
     
-    # Static Factory Methods (enhanced with validation)
     
     @classmethod
     def from_url(cls, url: str, media_type: Optional[str] = None) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from a URL with validation."""
         if not url.startswith(('http://', 'https://', 'gs://')):
             raise ValueError(f"Invalid URL format: {url}")
         return cls(source=url, media_type=media_type)
     
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from a file path with existence check."""
         path = Path(path) if isinstance(path, str) else path
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -205,14 +190,12 @@ class MultimodalChunk:
     
     @classmethod
     def from_bytes(cls, data: bytes, media_type: Optional[str] = None, filename: Optional[str] = None) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from raw bytes."""
         if not isinstance(data, bytes):
             raise TypeError("Data must be bytes")
         return cls(source=data, media_type=media_type, filename=filename)
     
     @classmethod
     def from_base64(cls, data: str, media_type: Optional[str] = None) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from base64-encoded string with validation."""
         chunk = cls(source=data, media_type=media_type, source_type="base64")
         if not chunk._is_base64(data):
             raise ValueError("Invalid base64 data")
@@ -220,7 +203,6 @@ class MultimodalChunk:
     
     @classmethod
     def from_data_uri(cls, data_uri: str) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from a data URI with validation."""
         if not data_uri.startswith("data:"):
             raise ValueError("Invalid data URI format - must start with 'data:'")
         
@@ -231,7 +213,6 @@ class MultimodalChunk:
     
     @classmethod
     def from_file_object(cls, file_obj, media_type: Optional[str] = None, filename: Optional[str] = None) -> 'MultimodalChunk':
-        """Create a MultimodalChunk from an open file object."""
         if not hasattr(file_obj, 'read'):
             raise TypeError("Object must have a 'read' method")
         

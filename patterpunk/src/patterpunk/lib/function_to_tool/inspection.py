@@ -27,7 +27,6 @@ def analyze_function_signature(func: Callable) -> Tuple[inspect.Signature, Dict[
     
     fields = {}
     for name, param in signature.parameters.items():
-        # Skip variadic parameters
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
