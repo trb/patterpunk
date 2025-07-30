@@ -3,9 +3,13 @@ from typing import List, Optional
 import pytest
 from pydantic import BaseModel, Field
 
+from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import SystemMessage, UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.thinking import ThinkingConfig
+from tests.test_utils import get_resource
 
 
 def test_basic():
@@ -317,3 +321,71 @@ def test_structured_output(model_name):
     # Genres might be extracted as ["American literature"] or similar, or might be None
     # We'll just check that it's either None or a list
     assert parsed_output.genres is None or isinstance(parsed_output.genres, list)
+
+
+def test_multimodal_image():
+    chat = Chat(
+        model=OpenAiModel(
+            model="gpt-4.1-nano",
+            temperature=0.1,
+        )
+    )
+
+    prepped_chat = (
+        chat
+        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
+
+    )
+
+    correct = (
+        prepped_chat
+        .add_message(UserMessage(
+            content=[
+                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
+            ])
+        )
+        .complete()
+        .latest_message
+        .content
+    )
+
+
+    incorrect = (
+        prepped_chat
+        .add_message(UserMessage(
+            content=[
+                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
+                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
+            ])
+        )
+        .complete()
+        .latest_message
+        .content
+    )
+
+    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
+    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+
+def test_multimodal_pdf():
+    chat = Chat(
+        model=OpenAiModel(
+            model="gpt-4.1-nano",
+            temperature=0.0
+        )
+    )
+
+    title = (
+        chat
+        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
+        .add_message(UserMessage(
+            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
+        ))
+        .complete()
+        .latest_message
+        .content
+    )
+
+    assert 'bank of canada' in title.lower()
+    assert 'research' in title.lower()
+    assert '2025' in title.lower()
