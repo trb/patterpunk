@@ -227,6 +227,7 @@ class OpenAiModel(Model, ABC):
         responses_parameters = {
             "model": self.model,
             "input": responses_input,
+            "store": False
         }
 
         if tools:
