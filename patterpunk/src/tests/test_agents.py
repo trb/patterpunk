@@ -214,7 +214,6 @@ def test_agent_chain_with_parallel():
     assert isinstance(uppercase_result, str)
     assert isinstance(lowercase_result, str)
 
-    # Check that one result is more uppercase-like and the other more lowercase-like
     has_uppercase = any("HELLO" in r.upper() for r in result)
     has_lowercase = any("hello" in r.lower() for r in result)
     assert has_uppercase or has_lowercase

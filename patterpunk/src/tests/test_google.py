@@ -134,7 +134,6 @@ def test_tool_calling():
     assert response.latest_message.content is not None
     
     if isinstance(response.latest_message, ToolCallMessage):
-        # Tool calling worked correctly - test passes
         pass
     else:
         content = response.latest_message.content.lower()
@@ -165,7 +164,6 @@ def test_simple_tool_calling():
     assert response.latest_message.content is not None
     
     if isinstance(response.latest_message, ToolCallMessage):
-        # Tool calling worked correctly - test passes
         pass
     else:
         content = response.latest_message.content.lower()

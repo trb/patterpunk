@@ -93,12 +93,11 @@ def test_text_chunk_provider_conversion(model_class):
         assert "cache_control" in anthropic_content[1]
         
         assert anthropic_content[2]["text"] == "!"
-        assert "cache_control" not in anthropic_content[2]  # TextChunk has no cache control
+        assert "cache_control" not in anthropic_content[2]
         
     elif model_class == OpenAiModel:
         model = model_class(model="gpt-4o")
         
-        # Test mixed content conversion for responses API
         content = [
             TextChunk("Hello "),
             CacheChunk("world", cacheable=False),

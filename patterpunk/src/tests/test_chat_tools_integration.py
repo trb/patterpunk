@@ -1,5 +1,3 @@
-# ai generated open-hands
-
 import pytest
 from typing import Dict, List, Optional
 

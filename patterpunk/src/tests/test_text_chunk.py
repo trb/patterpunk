@@ -72,7 +72,6 @@ def test_text_chunk_cache_chunks_conversion():
         TextChunk("More text")
     ])
     
-    # get_cache_chunks() should convert TextChunk to CacheChunk for cache processing
     chunks = message.get_cache_chunks()
     assert len(chunks) == 2
     assert all(isinstance(chunk, CacheChunk) for chunk in chunks)

@@ -38,7 +38,6 @@ def test_complex_json():
 ```"""
 
     jsons = extract_json(json_str)
-    # @todo add assertions that the decoded json correctly replicates all the fields from the json_str. Shorten the fields in the json since the length doesn't matter and they're pretty long right now.
 
     assert len(jsons) == 1
 
@@ -79,6 +78,4 @@ def test_complex_json():
 
     assert extracted_json["confidence_score"] == 0.85
     assert extracted_json["is_factual"] is True
-
-    # Check sentiment
     assert extracted_json["sentiment"] == "neutral"

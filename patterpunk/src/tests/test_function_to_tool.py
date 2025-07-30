@@ -1,4 +1,3 @@
-# ai generated open-hands
 import pytest
 from typing import Optional, List, Dict, Union
 from patterpunk.lib.function_to_tool import function_to_tool, functions_to_tools

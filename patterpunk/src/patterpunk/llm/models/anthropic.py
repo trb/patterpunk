@@ -196,7 +196,7 @@ Please extract the relevant information from this reasoning and format it exactl
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
             
-        return (0, 0)  # Unknown/unsupported format
+        return (0, 0)
 
     def _is_reasoning_model(self) -> bool:
         major, minor = self._parse_model_version()
@@ -372,7 +372,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 system_prompt = system_content
 
         retry_count = 0
-        wait_time = 60  # Initial wait time in seconds
+        wait_time = 60
 
         while True:
             try:
@@ -605,10 +605,10 @@ Please extract the relevant information from this reasoning and format it exactl
 
                     time.sleep(wait_time)
                     retry_count += 1
-                    wait_time = int(wait_time * 1.5)  # Increase wait time by 50%
+                    wait_time = int(wait_time * 1.5)
                     continue
 
-                raise  # Re-raise any other API errors
+                raise
         raise AnthropicAPIError(
             f"Unexpected outcome - out of retries, but neither error raised or message returned"
         )
