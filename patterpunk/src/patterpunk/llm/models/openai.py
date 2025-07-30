@@ -9,6 +9,8 @@ from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 if openai:
@@ -128,6 +130,68 @@ class OpenAiModel(Model, ABC):
         
         return content, should_warn
 
+    def _convert_message_content_for_openai_responses(self, content) -> List[dict]:
+        """
+        Convert message content to OpenAI Responses API format.
+        
+        Uses Responses API format with input_* content types,
+        supporting text, images, and files.
+        """
+        if isinstance(content, str):
+            return [{"type": "input_text", "text": content}]
+        
+        openai_content = []
+        session = None  # For URL downloading
+        
+        for chunk in content:
+            if isinstance(chunk, CacheChunk):
+                openai_content.append({
+                    "type": "input_text",
+                    "text": chunk.content
+                })
+            elif isinstance(chunk, MultimodalChunk):
+                if chunk.media_type and chunk.media_type.startswith("image/"):
+                    # Handle image content
+                    if chunk.source_type == "url":
+                        openai_content.append({
+                            "type": "input_image",
+                            "image_url": chunk.get_url()
+                        })
+                    else:
+                        # Convert to data URI for base64/file/bytes
+                        openai_content.append({
+                            "type": "input_image",
+                            "image_url": chunk.to_data_uri()
+                        })
+                elif chunk.media_type == "application/pdf":
+                    # Handle PDF files - OpenAI supports three methods
+                    if chunk.source_type == "url":
+                        openai_content.append({
+                            "type": "input_file",
+                            "file_url": chunk.get_url()
+                        })
+                    elif hasattr(chunk, 'file_id'):  # From Files API upload
+                        openai_content.append({
+                            "type": "input_file", 
+                            "file_id": chunk.file_id
+                        })
+                    else:
+                        # Convert to base64 data
+                        openai_content.append({
+                            "type": "input_file",
+                            "filename": chunk.filename or "document.pdf",
+                            "file_data": chunk.to_data_uri()
+                        })
+                else:
+                    # Try to handle as generic file
+                    openai_content.append({
+                        "type": "input_file",
+                        "filename": chunk.filename or "file",
+                        "file_data": chunk.to_data_uri()
+                    })
+        
+        return openai_content
+
     def _convert_messages_for_openai_cache(self, messages: List[Message]) -> List[dict]:
         """Convert patterpunk messages to OpenAI format with cache handling."""
         openai_messages = []
@@ -153,41 +217,48 @@ class OpenAiModel(Model, ABC):
         return openai_messages
 
     def _convert_messages_to_responses_input(self, messages: List[Message], prompt_for_structured_output: bool = False) -> List[dict]:
-        """Convert patterpunk messages to Responses API input format with cache handling."""
+        """Convert patterpunk messages to Responses API input format with multimodal support."""
         responses_input = []
         cache_warnings = []
         
         for message in messages:
-            # Handle cache chunks for optimal OpenAI caching
-            if isinstance(message.content, list):
-                content, should_warn = self._process_cache_chunks_for_openai(message.content)
-                if should_warn:
-                    cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+            # Check if message has multimodal content
+            if has_multimodal_content(message.content):
+                # Use multimodal content conversion
+                content_array = self._convert_message_content_for_openai_responses(message.content)
             else:
-                content = message.get_content_as_string()
-            
-            # Add structured output prompt if needed
-            if (prompt_for_structured_output 
-                and hasattr(message, 'structured_output') 
-                and message.structured_output 
-                and has_model_schema(message.structured_output)):
-                content = f"{content}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                # Handle traditional text/cache content
+                if isinstance(message.content, list):
+                    content_text, should_warn = self._process_cache_chunks_for_openai(message.content)
+                    if should_warn:
+                        cache_warnings.append(f"Non-prefix cacheable content detected in {message.role} message")
+                else:
+                    content_text = message.get_content_as_string()
+                
+                # Add structured output prompt if needed
+                if (prompt_for_structured_output 
+                    and hasattr(message, 'structured_output') 
+                    and message.structured_output 
+                    and has_model_schema(message.structured_output)):
+                    content_text = f"{content_text}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                
+                content_array = [{"type": "input_text", "text": content_text}]
             
             if message.role == "system":
                 responses_input.append({
                     "role": "developer",
-                    "content": [{"type": "input_text", "text": content}]
+                    "content": content_array
                 })
             elif message.role == "user":
                 responses_input.append({
                     "role": "user", 
-                    "content": [{"type": "input_text", "text": content}]
+                    "content": content_array
                 })
             elif message.role == "assistant":
-                if content:
+                if content_array and any(item.get("text") for item in content_array if item.get("type") == "input_text"):
                     responses_input.append({
                         "role": "assistant",
-                        "content": [{"type": "input_text", "text": content}]
+                        "content": content_array
                     })
             elif message.role == "tool_call":
                 # Handle tool calls

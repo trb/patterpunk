@@ -8,41 +8,49 @@ including content conversion and cache-related utility functions.
 from typing import Union, List
 
 from ..cache import CacheChunk
+from ..multimodal import MultimodalChunk
+from ..types import ContentType
 
 
-def get_content_as_string(content: Union[str, List[CacheChunk]]) -> str:
+def get_content_as_string(content: ContentType) -> str:
     """
-    Helper method to get content as string for backward compatibility.
-    
-    :param content: Message content (string or list of cache chunks)
+    Get content as string, handling both cache and multimodal chunks.
+
+    :param content: Message content (string or list of cache/multimodal chunks)
     :return: String representation of the content
     """
     if isinstance(content, str):
         return content
     elif isinstance(content, list):
-        return "".join(chunk.content for chunk in content)
+        # Only include text content from chunks
+        text_parts = []
+        for chunk in content:
+            if isinstance(chunk, CacheChunk):
+                text_parts.append(chunk.content)
+            # MultimodalChunk doesn't contribute to text representation
+        return "".join(text_parts)
     else:
         return str(content)
 
 
-def has_cacheable_content(content: Union[str, List[CacheChunk]]) -> bool:
+def has_cacheable_content(content: ContentType) -> bool:
     """
     Check if content contains any cacheable chunks.
-    
+
     :param content: Message content to check
     :return: True if any cache chunks are marked as cacheable
     """
     if isinstance(content, list):
-        return any(chunk.cacheable for chunk in content)
+        return any(isinstance(chunk, CacheChunk) and chunk.cacheable for chunk in content)
     return False
 
 
-def get_cache_chunks(content: Union[str, List[CacheChunk]]) -> List[CacheChunk]:
+def get_cache_chunks(content: ContentType) -> List[Union[CacheChunk, MultimodalChunk]]:
     """
-    Get cache chunks, converting string content to non-cacheable chunk if needed.
-    
+    Get content chunks, converting string content to CacheChunk if needed.
+
     :param content: Message content
-    :return: List of cache chunks representing the content
+    :return: List of chunks representing the content
     """
     if isinstance(content, str):
         return [CacheChunk(content=content, cacheable=False)]
@@ -50,3 +58,17 @@ def get_cache_chunks(content: Union[str, List[CacheChunk]]) -> List[CacheChunk]:
         return content
     else:
         return [CacheChunk(content=str(content), cacheable=False)]
+
+
+def has_multimodal_content(content: ContentType) -> bool:
+    """Check if content contains any multimodal chunks."""
+    if isinstance(content, str):
+        return False
+    return any(isinstance(chunk, MultimodalChunk) for chunk in content)
+
+
+def get_multimodal_chunks(content: ContentType) -> List[MultimodalChunk]:
+    """Extract only multimodal chunks from content."""
+    if isinstance(content, str):
+        return []
+    return [chunk for chunk in content if isinstance(chunk, MultimodalChunk)]

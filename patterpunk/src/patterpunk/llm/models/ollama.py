@@ -8,6 +8,8 @@ from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages import Message, AssistantMessage, ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 
 
 class OllamaModel(Model, ABC):
@@ -42,20 +44,106 @@ class OllamaModel(Model, ABC):
         
         return ollama_tools
 
-    def _convert_messages_for_ollama(self, messages: List[Message]) -> List[dict]:
-        """Convert patterpunk messages to Ollama format, ignoring cache settings."""
+    def _prepare_messages_for_ollama(self, messages: List[Message]) -> tuple[List[dict], List[str]]:
+        """
+        Prepare messages for Ollama API with multimodal support.
+        
+        CRITICAL: Ollama uses separate 'images' array, NOT content array embedding.
+        This is fundamentally different from other providers.
+        """
+        import tempfile
+        import os
+        
         ollama_messages = []
+        all_images = []
+        session = None
+        temp_files = []  # Track temp files for cleanup
         
-        for message in messages:
-            # Always convert to string, ignoring cache settings
-            content = message.get_content_as_string()
+        try:
+            for message in messages:
+                # Get text content only
+                if isinstance(message.content, str):
+                    content_text = message.content
+                else:
+                    # Extract only text chunks for content field
+                    text_parts = []
+                    for chunk in message.content:
+                        if isinstance(chunk, CacheChunk):
+                            text_parts.append(chunk.content)
+                    content_text = "".join(text_parts)
+                
+                # Extract images separately - Ollama's unique architecture
+                message_images = []
+                if isinstance(message.content, list):
+                    for chunk in message.content:
+                        if isinstance(chunk, MultimodalChunk) and chunk.media_type and chunk.media_type.startswith("image/"):
+                            
+                            if chunk.source_type == "file_path":
+                                # Direct file path - Ollama's preferred method
+                                message_images.append(str(chunk.get_file_path()))
+                            else:
+                                # Convert other sources to temp files (Ollama requirement)
+                                if chunk.source_type == "url":
+                                    if session is None:
+                                        try:
+                                            import requests
+                                            session = requests.Session()
+                                        except ImportError:
+                                            raise ImportError("requests library required for URL support")
+                                    
+                                    chunk = chunk.download(session)
+                                
+                                # Save to temporary file with proper extension
+                                media_type = chunk.media_type or "image/jpeg"
+                                suffix = self._get_file_extension(media_type)
+                                
+                                with tempfile.NamedTemporaryFile(
+                                    suffix=suffix, 
+                                    delete=False
+                                ) as tmp_file:
+                                    tmp_file.write(chunk.to_bytes())
+                                    temp_files.append(tmp_file.name)
+                                    message_images.append(tmp_file.name)
+                
+                # Create Ollama message with separate images array
+                ollama_message = {
+                    "role": message.role,
+                    "content": content_text
+                }
+                
+                # Add images to THIS message (not global array)
+                if message_images:
+                    ollama_message["images"] = message_images
+                
+                ollama_messages.append(ollama_message)
+                all_images.extend(message_images)
             
-            ollama_messages.append({
-                "role": message.role,
-                "content": content
-            })
+            # Store temp files for cleanup after completion
+            self._temp_files = temp_files
+            
+            return ollama_messages, all_images
         
-        return ollama_messages
+        except Exception:
+            # Clean up temp files if error occurs
+            for temp_file in temp_files:
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
+            raise
+
+    def _get_file_extension(self, media_type: str) -> str:
+        """Get file extension from media type."""
+        extension_map = {
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png", 
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+            "image/tiff": ".tiff"
+        }
+        return extension_map.get(media_type, ".jpg")
 
     def generate_assistant_message(
         self,
@@ -80,9 +168,12 @@ class OllamaModel(Model, ABC):
         if self.max_tokens is not None:
             options["num_predict"] = self.max_tokens
 
+        # Prepare messages with multimodal support
+        ollama_messages, all_images = self._prepare_messages_for_ollama(messages)
+        
         chat_params = {
             "model": self.model,
-            "messages": self._convert_messages_for_ollama(messages),
+            "messages": ollama_messages,  # Images already embedded per message
             "stream": False,
             "format": (
                 get_model_schema(structured_output)
@@ -98,7 +189,19 @@ class OllamaModel(Model, ABC):
             if ollama_tools:
                 chat_params["tools"] = ollama_tools
 
-        response = ollama.chat(**chat_params)
+        try:
+            response = ollama.chat(**chat_params)
+        except Exception as e:
+            # Clean up temp files if error occurs
+            if hasattr(self, '_temp_files'):
+                for temp_file in self._temp_files:
+                    try:
+                        import os
+                        os.unlink(temp_file)
+                    except:
+                        pass
+                del self._temp_files
+            raise
 
         # Check for tool calls first
         if response.get("message", {}).get("tool_calls"):
@@ -121,6 +224,16 @@ class OllamaModel(Model, ABC):
             
             if tool_calls:
                 return ToolCallMessage(tool_calls)
+
+        # Clean up temp files after successful completion
+        if hasattr(self, '_temp_files'):
+            for temp_file in self._temp_files:
+                try:
+                    import os
+                    os.unlink(temp_file)
+                except:
+                    pass
+            del self._temp_files
 
         # If no tool calls, return regular assistant message
         return AssistantMessage(

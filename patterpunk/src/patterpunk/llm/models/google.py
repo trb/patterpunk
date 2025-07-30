@@ -38,6 +38,8 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger
 
 
@@ -244,8 +246,66 @@ class GoogleModel(Model, ABC):
         
         return cache_mappings
 
+    def _convert_message_content_for_google(self, content) -> List:
+        """
+        Convert message content to Google format with multimodal support.
+        
+        Uses google-genai SDK with Part factory methods for different content types.
+        """
+        if isinstance(content, str):
+            return [types.Part.from_text(content)]
+        
+        parts = []
+        
+        for chunk in content:
+            if isinstance(chunk, CacheChunk):
+                parts.append(types.Part.from_text(chunk.content))
+            elif isinstance(chunk, MultimodalChunk):
+                if chunk.source_type == "gcs_uri":
+                    # Google Cloud Storage URI - native support
+                    parts.append(types.Part.from_uri(
+                        uri=chunk.get_url(),
+                        mime_type=chunk.media_type or "application/octet-stream"
+                    ))
+                elif hasattr(chunk, 'file_id'):
+                    # Files API upload reference
+                    parts.append(chunk.file_id)  # Direct file object reference
+                else:
+                    # Convert to bytes for inline data
+                    media_type = chunk.media_type or "application/octet-stream"
+                    
+                    # Download URLs first
+                    if chunk.source_type == "url":
+                        chunk = chunk.download()
+                    
+                    parts.append(types.Part.from_bytes(
+                        data=chunk.to_bytes(),
+                        mime_type=media_type
+                    ))
+        
+        return parts
+
+    def upload_file_to_google(self, chunk: MultimodalChunk):
+        """Upload file to Google Files API."""
+        # Create temporary file for upload
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(
+            suffix=f".{chunk.filename.split('.')[-1] if chunk.filename else 'bin'}", 
+            delete=False
+        ) as tmp_file:
+            tmp_file.write(chunk.to_bytes())
+            tmp_file_path = tmp_file.name
+        
+        try:
+            uploaded_file = self.client.files.upload(file=tmp_file_path)
+            return uploaded_file
+        finally:
+            os.unlink(tmp_file_path)
+
     def _convert_messages_for_google_with_cache(self, messages: List[Message]) -> tuple[List[types.Content], dict[str, str]]:
-        """Convert patterpunk messages to Google format with cache handling."""
+        """Convert patterpunk messages to Google format with multimodal and cache handling."""
         contents = []
         all_cache_mappings = {}
         
@@ -254,14 +314,18 @@ class GoogleModel(Model, ABC):
                 continue
             
             if isinstance(message.content, list):
-                # Pre-create cache objects for cacheable chunks
-                cache_mappings = self._create_cache_objects_for_chunks(message.content)
-                all_cache_mappings.update(cache_mappings)
-                
-                # Create separate Part objects for each chunk to enable individual caching
-                parts = []
-                for chunk in message.content:
-                    parts.append(types.Part.from_text(text=chunk.content))
+                # Check for multimodal content
+                if has_multimodal_content(message.content):
+                    parts = self._convert_message_content_for_google(message.content)
+                else:
+                    # Pre-create cache objects for cacheable chunks
+                    cache_mappings = self._create_cache_objects_for_chunks(message.content)
+                    all_cache_mappings.update(cache_mappings)
+                    
+                    # Create separate Part objects for each chunk to enable individual caching
+                    parts = []
+                    for chunk in message.content:
+                        parts.append(types.Part.from_text(text=chunk.content))
             else:
                 parts = [types.Part.from_text(text=message.get_content_as_string())]
             

@@ -18,3 +18,10 @@ from .tool_types import (
 
 # Re-export cache functionality for backward compatibility
 from .cache import CacheChunk
+
+# Re-export multimodal functionality
+from .multimodal import MultimodalChunk
+
+# Content can be a string, or a list of chunks (text/cache/multimodal)
+from typing import Union, List
+ContentType = Union[str, List[Union[CacheChunk, MultimodalChunk]]]

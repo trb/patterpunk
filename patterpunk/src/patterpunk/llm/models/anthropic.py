@@ -24,6 +24,8 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
 
@@ -245,27 +247,115 @@ Please extract the relevant information from this reasoning and format it exactl
             return compatible_params
         return api_params
 
-    def _convert_content_to_anthropic_format(self, chunks: List[CacheChunk]) -> List[dict]:
-        """Convert cache chunks to Anthropic content format with cache controls."""
-        anthropic_content = []
+    def _convert_content_to_anthropic_format(self, content) -> List[dict]:
+        """
+        Convert content to Anthropic format with cache controls, multimodal, and Files API support.
         
-        for chunk in chunks:
-            content_block = {
-                "type": "text",
-                "text": chunk.content
-            }
-            
-            if chunk.cacheable:
-                cache_control = {"type": "ephemeral"}
-                if chunk.ttl:
-                    # Convert ttl to appropriate format if extended TTL is needed
-                    if chunk.ttl.total_seconds() > 300:  # More than 5 minutes
-                        cache_control["ttl"] = "1h"  # Use extended TTL
-                content_block["cache_control"] = cache_control
-            
-            anthropic_content.append(content_block)
+        Provider handles validation - let Anthropic API return clear error messages for invalid content.
+        """
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        
+        anthropic_content = []
+        session = None
+        
+        for chunk in content:
+            if isinstance(chunk, CacheChunk):
+                content_block = {
+                    "type": "text",
+                    "text": chunk.content
+                }
+                
+                if chunk.cacheable:
+                    cache_control = {"type": "ephemeral"}
+                    if chunk.ttl:
+                        cache_control["ttl"] = int(chunk.ttl.total_seconds())
+                    content_block["cache_control"] = cache_control
+                
+                anthropic_content.append(content_block)
+                
+            elif isinstance(chunk, MultimodalChunk):
+                # Check if this is a Files API reference
+                if hasattr(chunk, 'file_id'):
+                    # Use Files API reference for documents
+                    content_block = {
+                        "type": "document",
+                        "source": {
+                            "type": "file",
+                            "file_id": chunk.file_id
+                        }
+                    }
+                    anthropic_content.append(content_block)
+                    continue
+                
+                # Handle URL downloading (Anthropic doesn't support URLs directly)
+                if chunk.source_type == "url":
+                    if session is None:
+                        try:
+                            import requests
+                            session = requests.Session()
+                        except ImportError:
+                            raise ImportError("requests library required for URL support with Anthropic")
+                    
+                    chunk = chunk.download(session)
+                
+                media_type = chunk.media_type or "application/octet-stream"
+                
+                if media_type.startswith("image/"):
+                    content_block = {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": chunk.to_base64()
+                        }
+                    }
+                    anthropic_content.append(content_block)
+                elif media_type == "application/pdf":
+                    # PDF as document type
+                    content_block = {
+                        "type": "document", 
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": chunk.to_base64()
+                        }
+                    }
+                    anthropic_content.append(content_block)
         
         return anthropic_content
+
+    def upload_file_to_anthropic(self, chunk: MultimodalChunk) -> str:
+        """Upload file to Anthropic Files API and return file_id."""
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=anthropic.api_key)
+            
+            # Create temporary file for upload
+            import tempfile
+            import os
+            
+            with tempfile.NamedTemporaryFile(
+                suffix=f".{chunk.media_type.split('/')[-1] if chunk.media_type else 'bin'}", 
+                delete=False
+            ) as tmp_file:
+                tmp_file.write(chunk.to_bytes())
+                tmp_file_path = tmp_file.name
+            
+            try:
+                with open(tmp_file_path, "rb") as f:
+                    file_response = client.files.create(
+                        file=f,
+                        purpose="vision"
+                    )
+                
+                return file_response.id
+            finally:
+                os.unlink(tmp_file_path)
+                
+        except Exception as e:
+            logger.error(f"Failed to upload file to Anthropic: {e}")
+            raise
 
     def _convert_messages_for_anthropic(self, messages: List[Message]) -> List[dict]:
         """Convert patterpunk messages to Anthropic format with cache handling."""

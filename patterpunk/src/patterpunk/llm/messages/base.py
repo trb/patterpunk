@@ -12,6 +12,8 @@ from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.logger import logger
 from ..cache import CacheChunk
+from ..multimodal import MultimodalChunk
+from ..types import ContentType
 from .roles import ROLE_USER
 from .exceptions import BadParameterError
 from .templating import format_content
@@ -27,7 +29,7 @@ class Message:
     dictionary conversion while delegating complex operations to specialized modules.
     """
     
-    def __init__(self, content: Union[str, List[CacheChunk]], role: str = ROLE_USER):
+    def __init__(self, content: ContentType, role: str = ROLE_USER):
         self.content = content
         self.role = role
         self._model = None

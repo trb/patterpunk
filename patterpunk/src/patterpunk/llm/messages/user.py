@@ -8,6 +8,7 @@ for structured output parsing and tool call configuration.
 from typing import Union, List, Optional, Any
 
 from ..cache import CacheChunk
+from ..types import ContentType
 from .base import Message
 from .roles import ROLE_USER
 
@@ -23,7 +24,7 @@ class UserMessage(Message):
     
     def __init__(
         self, 
-        content: Union[str, List[CacheChunk]], 
+        content: ContentType, 
         structured_output: Optional[Any] = None, 
         allow_tool_calls: bool = True
     ):

@@ -27,6 +27,8 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 
@@ -103,19 +105,63 @@ class BedrockModel(Model, ABC):
 
         return additional_fields
 
-    def _convert_content_to_bedrock_format(self, chunks: List[CacheChunk]) -> List[dict]:
-        """Convert cache chunks to Bedrock content format with cache points."""
-        bedrock_content = []
+    def _convert_content_to_bedrock_format(self, content) -> List[dict]:
+        """
+        Convert content to Bedrock format with multimodal support.
         
-        for chunk in chunks:
-            content_block = {
-                "text": chunk.content
-            }
-            
-            if chunk.cacheable:
-                content_block["cachePoint"] = {}
-            
-            bedrock_content.append(content_block)
+        Provider handles validation - let Bedrock API return clear error messages for invalid content.
+        """
+        if isinstance(content, str):
+            return [{"text": content}]
+        
+        bedrock_content = []
+        session = None
+        
+        for chunk in content:
+            if isinstance(chunk, CacheChunk):
+                content_block = {"text": chunk.content}
+                if chunk.cacheable:
+                    content_block["cachePoint"] = {}
+                bedrock_content.append(content_block)
+                
+            elif isinstance(chunk, MultimodalChunk):
+                # Bedrock requires bytes, download URLs if needed
+                if chunk.source_type == "url":
+                    if session is None:
+                        try:
+                            import requests
+                            session = requests.Session()
+                        except ImportError:
+                            raise ImportError("requests library required for URL support with Bedrock")
+                    
+                    chunk = chunk.download(session)
+                
+                media_type = chunk.media_type or "application/octet-stream"
+                
+                if media_type.startswith("image/"):
+                    # Enhanced format mapping for Bedrock
+                    format_map = {
+                        "image/jpeg": "jpeg",
+                        "image/jpg": "jpeg", 
+                        "image/png": "png",
+                        "image/gif": "gif",
+                        "image/webp": "webp"
+                    }
+                    
+                    format = format_map.get(media_type, "jpeg")
+                    
+                    content_block = {
+                        "image": {
+                            "format": format,
+                            "source": {
+                                "bytes": chunk.to_bytes()
+                            }
+                        }
+                    }
+                    bedrock_content.append(content_block)
+                else:
+                    # Bedrock primarily supports images
+                    logger.warning(f"Bedrock may not support media type: {media_type}")
         
         return bedrock_content
 
