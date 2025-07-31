@@ -271,7 +271,7 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
             )
         ).complete()
 
-            assert response.latest_message is not None
+        assert response.latest_message is not None
         assert response.latest_message.content is not None
 
         content = response.latest_message.content

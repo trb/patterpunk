@@ -7,6 +7,7 @@ from patterpunk.llm.messages import SystemMessage, UserMessage, ToolCallMessage
 from patterpunk.llm.models.google import GoogleModel
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.text import TextChunk
 from tests.test_utils import get_resource
 
 
@@ -363,7 +364,10 @@ def test_multimodal_pdf():
         chat
         .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
         .add_message(UserMessage(
-            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
+            content=[
+                TextChunk("Google requires at least one text block in a multimodal request"),
+                MultimodalChunk.from_file(get_resource('research.pdf'))
+            ]
         ))
         .complete()
         .latest_message
