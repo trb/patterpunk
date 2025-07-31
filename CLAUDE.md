@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 - Tests are located in `patterpunk/src/tests/` with provider-specific test files
-- Run tests with `docker-compose run --entrypoing '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
+- Run tests with `docker-compose run --entrypoint '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
 - Test files should be given relative to `patterpunk/src` prefixed with `/app` as that is the mount point in the container. E.g. for anthropic tests, the path would be `/app/tests/test_anthropic.py`
 - Dependencies: core (`requirements.txt`), testing (`test.requirements.txt`), build (`build.requirements.txt`)
 
@@ -18,6 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Coding Rules
 
 1. You MUST NOT mock any interface when writing tests unless VERY EXPLICTLY instructed to do so by the user. Our tests are all integration tests and should hit all services.
+2. Code MUST be expressive and easy to understand. Avoid complex code structures, long if-statements, long functions, etc - prefer composition instead of complex code structures
+3. Keep human working memory limitations in mind, humans can typically keep 3–5 chunks in their working memory. "Chunk" is a new piece of information—an unfamiliar variable, a new function interface, etc - aim to write code that requires less than 5 chunks to understand
 
 ## Architecture Overview
 
@@ -38,24 +40,53 @@ Patterpunk is an LLM provider abstraction library that provides a unified interf
 
 5. **MCP Protocol Support**: Full integration with Model Context Protocol for external tool execution via HTTP and stdio transports with automatic tool discovery and execution.
 
+6. **Reasoning Controls**: ThinkingConfig integration for providers supporting reasoning modes (OpenAI o3-mini, Anthropic Claude, Google Gemini) with effort levels and token budgets.
+
+7. **Multimodal Content Handling**: Unified interface for images, files, audio, and video content through MultimodalChunk with support for various sources (files, URLs, base64, data URIs, bytes).
+
+8. **Content Chunking System**: Polymorphic content support with TextChunk, CacheChunk, and MultimodalChunk for fine-grained control over message content and optimization.
+
 ### Key Components
 
-- **Chat Class** (`llm/chat.py`): Main entrypoint with conversation state management, chainable interface, and tool calling via `with_tools()` and `with_mcp_servers()` methods
-- **Message Types** (`llm/messages.py`): SystemMessage, UserMessage, AssistantMessage, ToolCallMessage with Jinja2 templating support and structured tool call data
-- **Tool Calling System** (`llm/types.py`, `lib/function_to_tool.py`): Automatic conversion of Python functions to OpenAI-compatible tool definitions with type introspection and docstring parsing
+- **Chat Class** (`llm/chat/core.py`): Core conversation management with chainable interface, delegating specialized operations to focused modules via `with_tools()` and `with_mcp_servers()` methods
+- **Message Types** (`llm/messages/`): Split into focused modules - SystemMessage, UserMessage, AssistantMessage, ToolCallMessage with Jinja2 templating support and structured tool call data
+- **Content Chunks** (`llm/cache.py`, `llm/text.py`, `llm/multimodal.py`): Polymorphic content system with CacheChunk for cacheable content with TTL, TextChunk for plain text, and MultimodalChunk for media files
+- **Reasoning Controls** (`llm/thinking.py`): ThinkingConfig class for controlling reasoning effort levels and token budgets across supported providers
+- **Tool Calling System** (`llm/types.py`, `lib/function_to_tool/`): Enhanced conversion of Python functions to OpenAI-compatible tool definitions with advanced docstring parsing and type introspection
 - **MCP Integration** (`lib/mcp/`): Complete Model Context Protocol implementation with HTTP/stdio transports, tool discovery, and execution
 - **Agent System** (`llm/agent.py`, `llm/chain.py`): Workflow abstractions with AgentChain for sequential execution and Parallel for concurrent execution
-- **Provider Models** (`llm/models/`): Each provider implements abstract Model base class with provider-specific API handling and tool calling support
+- **Provider Models** (`llm/models/`): Each provider implements abstract Model base class with provider-specific API handling, tool calling support, and reasoning integration
 
 ### File Structure
 ```
 patterpunk/src/patterpunk/
 ├── llm/
-│   ├── chat.py          # Main Chat class entrypoint with tool calling
-│   ├── messages.py      # Message type definitions including ToolCallMessage
+│   ├── chat.py          # Main Chat class entrypoint (imports from chat/)
+│   ├── chat/            # Chat functionality modules
+│   │   ├── core.py      # Core Chat class with conversation management
+│   │   ├── tools.py     # Tool calling and MCP server configuration
+│   │   ├── structured_output.py # Structured output parsing with retry
+│   │   └── exceptions.py # Chat-specific exceptions
+│   ├── messages/        # Message type definitions (split by type)
+│   │   ├── base.py      # Base Message class
+│   │   ├── system.py    # SystemMessage class
+│   │   ├── user.py      # UserMessage class
+│   │   ├── assistant.py # AssistantMessage class
+│   │   ├── tool_call.py # ToolCallMessage class
+│   │   ├── templating.py # Jinja2 templating support
+│   │   ├── cache.py     # Cache-related message utilities
+│   │   ├── structured_output.py # Structured output message handling
+│   │   ├── roles.py     # Message role constants
+│   │   └── exceptions.py # Message-specific exceptions
+│   ├── cache.py         # CacheChunk class for cacheable content
+│   ├── text.py          # TextChunk class for plain text content
+│   ├── multimodal.py    # MultimodalChunk class for media content
+│   ├── thinking.py      # ThinkingConfig for reasoning controls
 │   ├── types.py         # Tool calling type definitions and interfaces
+│   ├── tool_types.py    # Additional tool type definitions
 │   ├── agent.py         # Agent workflow abstraction
 │   ├── chain.py         # Agent chains and parallel execution
+│   ├── defaults.py      # Default configuration values
 │   └── models/          # Provider implementations
 │       ├── base.py      # Abstract Model base class
 │       ├── openai.py    # OpenAI provider with native tool calling
@@ -63,10 +94,26 @@ patterpunk/src/patterpunk/
 │       ├── bedrock.py   # AWS Bedrock provider with tool calling
 │       ├── google.py    # Google Vertex AI provider with tool calling
 │       └── ollama.py    # Ollama provider with tool calling
+├── config/              # Configuration modules
+│   ├── defaults.py      # Default configuration values
+│   └── providers/       # Provider-specific configurations
+│       ├── openai.py    # OpenAI configuration
+│       ├── anthropic.py # Anthropic configuration
+│       ├── bedrock.py   # AWS Bedrock configuration
+│       ├── google.py    # Google Vertex AI configuration
+│       └── ollama.py    # Ollama configuration
 ├── lib/                 # Utility libraries
 │   ├── extract_json.py  # JSON extraction utilities
 │   ├── structured_output.py # Structured output handling
-│   ├── function_to_tool.py # Python function to OpenAI tool conversion
+│   ├── function_to_tool/ # Python function to OpenAI tool conversion
+│   │   ├── converter.py # Main conversion logic
+│   │   ├── inspection.py # Function signature analysis
+│   │   ├── schema.py    # Schema generation utilities
+│   │   ├── cleaning.py  # Description cleaning utilities
+│   │   └── docstring/   # Docstring parsing modules
+│   │       ├── parser.py # Main docstring parser
+│   │       ├── simple.py # Regex-based parsing
+│   │       └── advanced.py # External parser integration
 │   └── mcp/             # Model Context Protocol implementation
 │       ├── client.py    # MCP client with HTTP/stdio transports
 │       ├── server_config.py # MCP server configuration
@@ -89,6 +136,7 @@ patterpunk/src/patterpunk/
   - The ONLY exception is copyright headers if required
   - Code must be self-documenting through clear variable names and structure
 - **DO NOT CREATE documentation files** unless explicitly requested
+- **DO NOT CREATE example files** unless explicitly requested
 - Use functional programming principles with immutability
 - Minimize object-oriented programming and inheritance
 - Never abbreviate variable names (use `signature` not `sig`)
@@ -102,11 +150,18 @@ patterpunk/src/patterpunk/
 - Default to functions and modules over classes
 - Use classes only for essential state management or abstractions
 
-**File Organization:**
-- One primary export per file
+**Module Organization:**
+- Split large modules into focused submodules (e.g., `chat/` and `messages/` directories)
+- One primary export per file with clear domain boundaries
 - Deep module nesting with focused responsibilities  
-- Separate files for distinct domain concepts
+- Separate files for distinct domain concepts (e.g., separate files for each message type)
 - Keep helper functions with their primary function when only used locally
+
+**Content Chunk Patterns:**
+- Use polymorphic content with TextChunk, CacheChunk, and MultimodalChunk for flexible message construction
+- Prefer content lists over simple strings when fine-grained control is needed
+- Implement consistent interfaces across chunk types (e.g., similar constructor patterns and repr methods)
+- Design chunk types to be provider-agnostic with provider-specific handling in model implementations
 
 ### MCP Server Configuration
 
@@ -135,10 +190,10 @@ MCP integration requires optional dependencies:
 - `requests` for HTTP transport
 - Subprocess servers run as separate processes
 
-## Research Guidelines
+## Research and Websearch Guidelines
 
 When performing web research:
-- Issue multiple highly divergent and constrasting search queries
+- Issue multiple highly divergent and contrasting search queries
 - Avoid multiple searches with slight wording variations
 - Search for very different terms to maximize coverage
 
@@ -149,26 +204,3 @@ When performing web research:
 - **AWS Bedrock**: Multiple model families (Claude, Llama, Mistral, Titan) with tool calling support
 - **Google**: Vertex AI integration with tool calling capabilities
 - **Ollama**: Local model serving with tool calling support
-
-## Tool Calling Usage
-
-**Function-based Tools**:
-```python
-def get_weather(location: str) -> str:
-    """Get current weather for a location."""
-    return f"Weather in {location}"
-
-chat = Chat().with_tools([get_weather])
-```
-
-**MCP Server Integration**:
-```python
-from patterpunk.lib.mcp import MCPServerConfig
-
-weather_mcp = MCPServerConfig(name="weather", url="http://weather-server:8000/mcp")
-chat = Chat().with_mcp_servers([weather_mcp]).with_tools([get_weather])
-
-response = chat.add_message(UserMessage("What's the weather?")).complete()
-```
-
-Tools are automatically executed after LLM completion when tool calls are detected.
