@@ -108,80 +108,90 @@ class BedrockModel(Model, ABC):
     def _convert_content_to_bedrock_format(self, content) -> List[dict]:
         if isinstance(content, str):
             return [{"text": content}]
-        
+
         bedrock_content = []
         session = None
-        
+
         for chunk in content:
             if isinstance(chunk, TextChunk):
                 bedrock_content.append({"text": chunk.content})
-                
+
             elif isinstance(chunk, CacheChunk):
                 content_block = {"text": chunk.content}
                 if chunk.cacheable:
                     content_block["cachePoint"] = {}
                 bedrock_content.append(content_block)
-                
+
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "url":
                     if session is None:
                         try:
                             import requests
+
                             session = requests.Session()
                         except ImportError:
-                            raise ImportError("requests library required for URL support with Bedrock")
-                    
+                            raise ImportError(
+                                "requests library required for URL support with Bedrock"
+                            )
+
                     chunk = chunk.download(session)
-                
+
                 media_type = chunk.media_type or "application/octet-stream"
-                
+
                 if media_type.startswith("image/"):
                     format_map = {
                         "image/jpeg": "jpeg",
-                        "image/jpg": "jpeg", 
+                        "image/jpg": "jpeg",
                         "image/png": "png",
                         "image/gif": "gif",
-                        "image/webp": "webp"
+                        "image/webp": "webp",
                     }
-                    
+
                     format = format_map.get(media_type, "jpeg")
-                    
+
                     content_block = {
                         "image": {
                             "format": format,
-                            "source": {
-                                "bytes": chunk.to_bytes()
-                            }
+                            "source": {"bytes": chunk.to_bytes()},
                         }
                     }
                     bedrock_content.append(content_block)
-                elif media_type in ["application/pdf", "text/plain", "text/html", "text/markdown",
-                                   "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                   "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]:
+                elif media_type in [
+                    "application/pdf",
+                    "text/plain",
+                    "text/html",
+                    "text/markdown",
+                    "application/msword",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ]:
                     format_map = {
                         "application/pdf": "pdf",
                         "text/plain": "txt",
-                        "text/html": "html", 
+                        "text/html": "html",
                         "text/markdown": "md",
                         "application/msword": "doc",
                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
                         "application/vnd.ms-excel": "xls",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx"
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
                     }
-                    
+
                     document_format = format_map.get(media_type, "pdf")
-                    raw_filename = getattr(chunk, 'filename', None) or f"document.{document_format}"
+                    raw_filename = (
+                        getattr(chunk, "filename", None)
+                        or f"document.{document_format}"
+                    )
                     import re
-                    document_name = re.sub(r'[^\w\s\-\(\)\[\]]', '', raw_filename)
-                    document_name = re.sub(r'\s+', ' ', document_name).strip()
-                    
+
+                    document_name = re.sub(r"[^\w\s\-\(\)\[\]]", "", raw_filename)
+                    document_name = re.sub(r"\s+", " ", document_name).strip()
+
                     content_block = {
                         "document": {
                             "format": document_format,
                             "name": document_name,
-                            "source": {
-                                "bytes": chunk.to_bytes()
-                            }
+                            "source": {"bytes": chunk.to_bytes()},
                         }
                     }
                     bedrock_content.append(content_block)
@@ -190,20 +200,19 @@ class BedrockModel(Model, ABC):
                         f"Bedrock does not support media type: {media_type}. "
                         f"Supported types are: text, images (jpeg/png/gif/webp), and documents (pdf/csv/doc/docx/xls/xlsx/html/txt/md)."
                     )
-        
-        
+
         return bedrock_content
 
     def _convert_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
         bedrock_messages = []
-        
+
         for message in messages:
             if isinstance(message.content, list):
                 content = self._convert_content_to_bedrock_format(message.content)
-                
-                has_text = any('text' in chunk for chunk in content)
-                has_document = any('document' in chunk for chunk in content)
-                
+
+                has_text = any("text" in chunk for chunk in content)
+                has_document = any("document" in chunk for chunk in content)
+
                 if has_document and not has_text:
                     raise ValueError(
                         "Bedrock requires at least one text block when documents are present. "
@@ -211,20 +220,21 @@ class BedrockModel(Model, ABC):
                     )
             else:
                 content_str = message.get_content_as_string()
-                if message.structured_output and has_model_schema(message.structured_output):
+                if message.structured_output and has_model_schema(
+                    message.structured_output
+                ):
                     content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
                 content = [{"text": content_str}]
-            
-            bedrock_messages.append({
-                "role": message.role,
-                "content": content
-            })
-        
+
+            bedrock_messages.append({"role": message.role, "content": content})
+
         return bedrock_messages
 
-    def _convert_system_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
+    def _convert_system_messages_for_bedrock(
+        self, messages: List[Message]
+    ) -> List[dict]:
         bedrock_system = []
-        
+
         for message in messages:
             if message.role == ROLE_SYSTEM:
                 if isinstance(message.content, list):
@@ -232,7 +242,7 @@ class BedrockModel(Model, ABC):
                     bedrock_system.append({"text": content_str})
                 else:
                     bedrock_system.append({"text": message.content})
-        
+
         return bedrock_system
 
     def generate_assistant_message(

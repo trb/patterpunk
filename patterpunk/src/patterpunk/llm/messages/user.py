@@ -7,12 +7,12 @@ from .roles import ROLE_USER
 
 
 class UserMessage(Message):
-    
+
     def __init__(
-        self, 
-        content: ContentType, 
-        structured_output: Optional[Any] = None, 
-        allow_tool_calls: bool = True
+        self,
+        content: ContentType,
+        structured_output: Optional[Any] = None,
+        allow_tool_calls: bool = True,
     ):
         super().__init__(content, ROLE_USER)
         self.structured_output = structured_output

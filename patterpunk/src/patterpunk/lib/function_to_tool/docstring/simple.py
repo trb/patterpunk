@@ -5,7 +5,7 @@ from typing import Callable, Tuple, Dict
 def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
     if not func.__doc__:
         return func.__name__, {}
-        
+
     docstring = func.__doc__.strip()
     lines = docstring.split("\n")
 
@@ -17,16 +17,17 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
 
     if args_start is None:
         from .cleaning import clean_description
+
         return clean_description(docstring), {}
 
     description_lines = lines[:args_start]
     description = "\n".join(description_lines).strip()
-    
+
     param_descriptions = {}
     current_param = None
     current_desc_lines = []
 
-    for line in lines[args_start + 1:]:
+    for line in lines[args_start + 1 :]:
         if re.match(r"^\s*\w+\s*:", line):
             if current_param and current_desc_lines:
                 desc = " ".join(current_desc_lines).strip()
@@ -49,4 +50,5 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
         param_descriptions[current_param] = desc
 
     from .cleaning import clean_description
+
     return clean_description(description) or func.__name__, param_descriptions

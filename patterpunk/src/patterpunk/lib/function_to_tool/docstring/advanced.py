@@ -2,6 +2,7 @@ from typing import Callable, Tuple, Dict
 
 try:
     from docstring_parser import parse as parse_docstring
+
     HAS_DOCSTRING_PARSER = True
 except ImportError:
     HAS_DOCSTRING_PARSER = False
@@ -10,10 +11,10 @@ except ImportError:
 def parse_with_docstring_parser(func: Callable) -> Tuple[str, Dict[str, str]]:
     if not HAS_DOCSTRING_PARSER:
         raise ImportError("docstring_parser library not available")
-    
+
     if not func.__doc__:
         return func.__name__, {}
-    
+
     try:
         parsed = parse_docstring(func.__doc__)
 
@@ -31,6 +32,7 @@ def parse_with_docstring_parser(func: Callable) -> Tuple[str, Dict[str, str]]:
             for param in parsed.params:
                 if param.description:
                     import re
+
                     clean_desc = re.sub(r"\s+", " ", param.description.strip())
                     param_descriptions[param.arg_name] = clean_desc
 

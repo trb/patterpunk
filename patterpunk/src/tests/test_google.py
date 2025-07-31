@@ -100,40 +100,41 @@ def test_available_models():
 
 def test_tool_calling():
     from patterpunk.llm.chat import Chat
-    
+
     def calculate_area(length: float, width: float) -> str:
         area = length * width
         return f"The area is {area} square units"
-    
+
     def get_math_fact(topic: str) -> str:
         facts = {
             "rectangle": "A rectangle has opposite sides that are equal and parallel",
             "area": "Area measures the amount of space inside a 2D shape",
-            "geometry": "Geometry is one of the oldest mathematical sciences"
+            "geometry": "Geometry is one of the oldest mathematical sciences",
         }
         return facts.get(topic.lower(), "Mathematics is the language of the universe")
-    
+
     model = GoogleModel(
-        model="gemini-1.5-pro-002", 
-        location="northamerica-northeast1", 
-        temperature=0.1
+        model="gemini-1.5-pro-002", location="northamerica-northeast1", temperature=0.1
     )
-    
+
     chat = Chat(model=model).with_tools([calculate_area, get_math_fact])
-    
+
     response = (
-        chat
-        .add_message(SystemMessage("You are a geometry helper. Use tools to solve problems."))
-        .add_message(UserMessage(
-            "I have a rectangle that is 5 units long and 3 units wide. "
-            "Calculate its area and give me an interesting fact about rectangles."
-        ))
+        chat.add_message(
+            SystemMessage("You are a geometry helper. Use tools to solve problems.")
+        )
+        .add_message(
+            UserMessage(
+                "I have a rectangle that is 5 units long and 3 units wide. "
+                "Calculate its area and give me an interesting fact about rectangles."
+            )
+        )
         .complete()
     )
-    
+
     assert response.latest_message is not None
     assert response.latest_message.content is not None
-    
+
     if isinstance(response.latest_message, ToolCallMessage):
         pass
     else:
@@ -143,27 +144,23 @@ def test_tool_calling():
 
 def test_simple_tool_calling():
     from patterpunk.llm.chat import Chat
-    
+
     def get_weather(location: str) -> str:
         return f"The weather in {location} is sunny and 22°C"
-    
+
     model = GoogleModel(
-        model="gemini-1.5-pro-002", 
-        location="northamerica-northeast1", 
-        temperature=0.1
+        model="gemini-1.5-pro-002", location="northamerica-northeast1", temperature=0.1
     )
-    
+
     chat = Chat(model=model).with_tools([get_weather])
-    
-    response = (
-        chat
-        .add_message(UserMessage("What's the weather like in Paris?"))
-        .complete()
-    )
-    
+
+    response = chat.add_message(
+        UserMessage("What's the weather like in Paris?")
+    ).complete()
+
     assert response.latest_message is not None
     assert response.latest_message.content is not None
-    
+
     if isinstance(response.latest_message, ToolCallMessage):
         pass
     else:
@@ -173,13 +170,14 @@ def test_simple_tool_calling():
 
 def test_thinking_mode_fixed_budget():
     from patterpunk.llm.thinking import ThinkingConfig
+
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1", 
+        location="northamerica-northeast1",
         temperature=0.1,
-        thinking_config=ThinkingConfig(token_budget=1024)
+        thinking_config=ThinkingConfig(token_budget=1024),
     )
-    
+
     response = (
         Chat(model=model)
         .add_message(SystemMessage("You are a helpful assistant."))
@@ -187,7 +185,7 @@ def test_thinking_mode_fixed_budget():
         .complete()
         .latest_message
     )
-    
+
     assert response.content is not None
     assert len(response.content) > 0
     content = response.content.lower()
@@ -196,21 +194,26 @@ def test_thinking_mode_fixed_budget():
 
 def test_thinking_mode_dynamic_budget():
     from patterpunk.llm.thinking import ThinkingConfig
+
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1", 
+        location="northamerica-northeast1",
         temperature=0.1,
-        thinking_config=ThinkingConfig(effort="high")
+        thinking_config=ThinkingConfig(effort="high"),
     )
-    
+
     response = (
         Chat(model=model)
         .add_message(SystemMessage("You are a helpful assistant."))
-        .add_message(UserMessage("Explain the concept of recursion in programming with an example."))
+        .add_message(
+            UserMessage(
+                "Explain the concept of recursion in programming with an example."
+            )
+        )
         .complete()
         .latest_message
     )
-    
+
     assert response.content is not None
     assert len(response.content) > 100
     content = response.content.lower()
@@ -219,13 +222,14 @@ def test_thinking_mode_dynamic_budget():
 
 def test_thinking_mode_disabled():
     from patterpunk.llm.thinking import ThinkingConfig
+
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1", 
+        location="northamerica-northeast1",
         temperature=0.1,
-        thinking_config=ThinkingConfig(token_budget=0)
+        thinking_config=ThinkingConfig(token_budget=0),
     )
-    
+
     response = (
         Chat(model=model)
         .add_message(SystemMessage("You are a helpful assistant."))
@@ -233,7 +237,7 @@ def test_thinking_mode_disabled():
         .complete()
         .latest_message
     )
-    
+
     assert response.content is not None
     assert len(response.content) > 0
     content = response.content.lower()
@@ -242,13 +246,14 @@ def test_thinking_mode_disabled():
 
 def test_thinking_mode_include_thoughts():
     from patterpunk.llm.thinking import ThinkingConfig
+
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1", 
+        location="northamerica-northeast1",
         temperature=0.1,
-        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=True)
+        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=True),
     )
-    
+
     response = (
         Chat(model=model)
         .add_message(SystemMessage("You are a helpful assistant."))
@@ -256,7 +261,7 @@ def test_thinking_mode_include_thoughts():
         .complete()
         .latest_message
     )
-    
+
     assert response.content is not None
     assert len(response.content) > 0
     content = response.content.lower()
@@ -265,13 +270,14 @@ def test_thinking_mode_include_thoughts():
 
 def test_thinking_mode_exclude_thoughts():
     from patterpunk.llm.thinking import ThinkingConfig
+
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1", 
+        location="northamerica-northeast1",
         temperature=0.1,
-        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=False)
+        thinking_config=ThinkingConfig(token_budget=512, include_thoughts=False),
     )
-    
+
     response = (
         Chat(model=model)
         .add_message(SystemMessage("You are a helpful assistant."))
@@ -279,7 +285,7 @@ def test_thinking_mode_exclude_thoughts():
         .complete()
         .latest_message
     )
-    
+
     assert response.content is not None
     assert len(response.content) > 0
     content = response.content.lower()
@@ -289,16 +295,16 @@ def test_thinking_mode_exclude_thoughts():
 def test_thinking_mode_deepcopy():
     import copy
     from patterpunk.llm.thinking import ThinkingConfig
-    
+
     thinking_config = ThinkingConfig(token_budget=1024, include_thoughts=True)
     original_model = GoogleModel(
         model="gemini-2.5-flash",
         location="northamerica-northeast1",
-        thinking_config=thinking_config
+        thinking_config=thinking_config,
     )
-    
+
     copied_model = copy.deepcopy(original_model)
-    
+
     assert copied_model.thinking_config == original_model.thinking_config
     assert copied_model.thinking_budget == original_model.thinking_budget
     assert copied_model.include_thoughts == original_model.include_thoughts
@@ -308,72 +314,80 @@ def test_thinking_mode_deepcopy():
 
 def test_multimodal_image():
     model = GoogleModel(
-        model="gemini-1.5-pro-002",
-        location="northamerica-northeast1",
-        temperature=0.1
+        model="gemini-1.5-pro-002", location="northamerica-northeast1", temperature=0.1
     )
-    
+
     chat = Chat(model=model)
 
-    prepped_chat = (
-        chat
-        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
-
+    prepped_chat = chat.add_message(
+        SystemMessage(
+            """Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""
+        )
     )
 
     correct = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
-
 
     incorrect = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(
+                        content="Are there tigers in a desert?", cacheable=False
+                    ),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
-    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+    assert (
+        "yes" in correct.lower() or "correct" in correct.lower()
+    ), "LLM is wrong: There are ducks in the image"
+    assert (
+        "no" in incorrect.lower() or "incorrect" in incorrect.lower()
+    ), "LLM is wrong: There are no tigers in the image"
+
 
 def test_multimodal_pdf():
     model = GoogleModel(
-        model="gemini-1.5-pro-002",
-        location="northamerica-northeast1",
-        temperature=0.0
+        model="gemini-1.5-pro-002", location="northamerica-northeast1", temperature=0.0
     )
-    
+
     chat = Chat(model=model)
 
     title = (
-        chat
-        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
-        .add_message(UserMessage(
-            content=[
-                TextChunk("Google requires at least one text block in a multimodal request"),
-                MultimodalChunk.from_file(get_resource('research.pdf'))
-            ]
-        ))
+        chat.add_message(
+            SystemMessage(
+                """Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[
+                    TextChunk(
+                        "Google requires at least one text block in a multimodal request"
+                    ),
+                    MultimodalChunk.from_file(get_resource("research.pdf")),
+                ]
+            )
+        )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'bank of canada' in title.lower()
-    assert 'research' in title.lower()
-    assert '2025' in title.lower()
+    assert "bank of canada" in title.lower()
+    assert "research" in title.lower()
+    assert "2025" in title.lower()

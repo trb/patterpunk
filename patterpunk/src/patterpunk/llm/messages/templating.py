@@ -5,7 +5,9 @@ from ..cache import CacheChunk
 from ..text import TextChunk
 
 
-def format_content(content: Union[str, List[Union[TextChunk, CacheChunk]]], parameters: Dict[str, Any]) -> None:
+def format_content(
+    content: Union[str, List[Union[TextChunk, CacheChunk]]], parameters: Dict[str, Any]
+) -> None:
     variables = {}
     for parameter_name in parameters:
         value = parameters[parameter_name]
@@ -22,5 +24,5 @@ def format_content(content: Union[str, List[Union[TextChunk, CacheChunk]]], para
                 template = Template(chunk.content)
                 chunk.content = template.render(variables)
         return content
-    
+
     return content

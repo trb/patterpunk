@@ -367,9 +367,7 @@ def test_thinking_mode_parameters():
     )
 
     thinking_params = bedrock_min._get_thinking_params()
-    assert (
-        thinking_params["reasoning_config"]["budget_tokens"] == 1024
-    )
+    assert thinking_params["reasoning_config"]["budget_tokens"] == 1024
 
     bedrock_none = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
     thinking_params = bedrock_none._get_thinking_params()
@@ -378,72 +376,81 @@ def test_thinking_mode_parameters():
 
 def test_multimodal_image():
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        temperature=0.1,
-        top_p=0.98
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.1, top_p=0.98
     )
-    
+
     chat = Chat(model=bedrock)
 
-    prepped_chat = (
-        chat
-        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
-
+    prepped_chat = chat.add_message(
+        SystemMessage(
+            """Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""
+        )
     )
 
     correct = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
-
 
     incorrect = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(
+                        content="Are there tigers in a desert?", cacheable=False
+                    ),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
-    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+    assert (
+        "yes" in correct.lower() or "correct" in correct.lower()
+    ), "LLM is wrong: There are ducks in the image"
+    assert (
+        "no" in incorrect.lower() or "incorrect" in incorrect.lower()
+    ), "LLM is wrong: There are no tigers in the image"
+
 
 def test_multimodal_pdf():
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        temperature=0.0,
-        top_p=0.98
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0, top_p=0.98
     )
-    
+
     chat = Chat(model=bedrock)
 
     title = (
-        chat
-        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Please analyze this document and create a title.", cacheable=False),
-                MultimodalChunk.from_file(get_resource('research.pdf'))
-            ]
-        ))
+        chat.add_message(
+            SystemMessage(
+                """Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(
+                        content="Please analyze this document and create a title.",
+                        cacheable=False,
+                    ),
+                    MultimodalChunk.from_file(get_resource("research.pdf")),
+                ]
+            )
+        )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'bank of canada' in title.lower()
-    assert 'research' in title.lower()
-    assert '2025' in title.lower()
+    assert "bank of canada" in title.lower()
+    assert "research" in title.lower()
+    assert "2025" in title.lower()

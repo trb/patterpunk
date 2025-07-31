@@ -21,11 +21,11 @@ from .structured_output import get_parsed_output_with_retry
 class Chat:
     """
     Core Chat class for conversation management.
-    
+
     Handles conversation flow, message sequences, and model coordination
     while delegating specialized functionality to focused modules.
     """
-    
+
     def __init__(
         self,
         messages: Optional[List[Message]] = None,
@@ -54,7 +54,7 @@ class Chat:
     def complete(self):
         """
         Complete the conversation by generating a response from the LLM.
-        
+
         Handles the core completion flow while delegating specialized operations
         to appropriate modules.
         """
@@ -72,10 +72,10 @@ class Chat:
         )
 
         new_chat = self.add_message(response_message)
-        
+
         if new_chat.is_latest_message_tool_call and new_chat._mcp_client:
             new_chat = execute_mcp_tool_calls(new_chat)
-            
+
         return new_chat
 
     def extract_json(self) -> Optional[List[str]]:

@@ -13,5 +13,5 @@ def parse_function_docs(func: Callable) -> Tuple[str, Dict[str, str]]:
             return parse_with_docstring_parser(func)
         except (ImportError, ValueError):
             pass
-    
+
     return parse_with_regex(func)

@@ -15,7 +15,7 @@ from .structured_output import parse_structured_output
 
 
 class Message:
-    
+
     def __init__(self, content: ContentType, role: str = ROLE_USER):
         self.content = content
         self.role = role
@@ -56,20 +56,17 @@ class Message:
 
     def get_content_as_string(self) -> str:
         return get_content_as_string(self.content)
-    
+
     def has_cacheable_content(self) -> bool:
         return has_cacheable_content(self.content)
-    
+
     def get_cache_chunks(self) -> List[Union[CacheChunk, MultimodalChunk]]:
         return get_cache_chunks(self.content)
 
     @property
     def parsed_output(self):
         return parse_structured_output(
-            self.content, 
-            self.structured_output, 
-            self.role, 
-            self._parsed_output
+            self.content, self.structured_output, self.role, self._parsed_output
         )
 
     def to_dict(self, prompt_for_structured_output: bool = False):

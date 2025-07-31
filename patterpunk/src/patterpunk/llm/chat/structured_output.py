@@ -13,10 +13,10 @@ from .exceptions import StructuredOutputParsingError
 def get_parsed_output_with_retry(chat_instance):
     """
     Get parsed output from the latest message with retry logic.
-    
+
     Implements sophisticated retry mechanism that prompts the LLM to fix
     invalid JSON responses when structured output parsing fails.
-    
+
     :param chat_instance: The Chat instance to parse output from
     :return: Parsed structured output object
     :raises StructuredOutputParsingError: If parsing fails after all retry attempts

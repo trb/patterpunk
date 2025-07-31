@@ -7,12 +7,15 @@ AWS_SECRET_ACCESS_KEY = os.getenv("PP_AWS_SECRET_ACCESS_KEY", None)
 
 _boto3 = None
 
+
 def get_boto3():
     global _boto3
     if _boto3 is None and AWS_REGION:
         import boto3
+
         _boto3 = boto3
     return _boto3
+
 
 def get_bedrock_client_by_region(
     client_type: Union[Literal["bedrock"], Literal["bedrock-runtime"]],
@@ -23,7 +26,7 @@ def get_bedrock_client_by_region(
     boto3_module = get_boto3()
     if not boto3_module:
         return None
-        
+
     if aws_access_key_id and aws_secret_access_key:
         access_key_id = aws_access_key_id
         secret_access_key = aws_secret_access_key
@@ -47,7 +50,9 @@ def get_bedrock_client_by_region(
             region_name=region,
         )
 
+
 def is_bedrock_available() -> bool:
     return AWS_REGION is not None
+
 
 boto3 = get_boto3()

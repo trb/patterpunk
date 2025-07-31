@@ -10,14 +10,18 @@ ANTHROPIC_DEFAULT_TIMEOUT = 600
 
 _anthropic_client = None
 
+
 def get_anthropic_client():
     global _anthropic_client
     if _anthropic_client is None and ANTHROPIC_API_KEY:
         from anthropic import Anthropic
+
         _anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
     return _anthropic_client
 
+
 def is_anthropic_available() -> bool:
     return ANTHROPIC_API_KEY is not None
+
 
 anthropic = get_anthropic_client()

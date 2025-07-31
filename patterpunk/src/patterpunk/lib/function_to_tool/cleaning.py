@@ -14,7 +14,7 @@ def clean_description(description: str) -> str:
     )
 
     cleaned = re.sub(r"\n\s*\n", "\n", cleaned)
-    
+
     cleaned = re.sub(r"^\s+|\s+$", "", cleaned)
 
     return cleaned or description

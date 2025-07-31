@@ -438,83 +438,83 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
 
 
 def test_reasoning_mode_version_parsing():
-    
+
     model_37 = AnthropicModel(model="claude-3-7-sonnet-20250219")
     assert model_37._parse_model_version() == (3, 7)
     assert model_37._is_reasoning_model() == True
-    
+
     model_35 = AnthropicModel(model="claude-3-5-sonnet-20240620")
     assert model_35._parse_model_version() == (3, 5)
     assert model_35._is_reasoning_model() == False
-    
+
     model_opus4 = AnthropicModel(model="claude-opus-4-20250514")
     assert model_opus4._parse_model_version() == (4, 0)
     assert model_opus4._is_reasoning_model() == True
-    
+
     model_sonnet4 = AnthropicModel(model="claude-sonnet-4-20250514")
     assert model_sonnet4._parse_model_version() == (4, 0)
     assert model_sonnet4._is_reasoning_model() == True
-    
+
     model_45 = AnthropicModel(model="claude-sonnet-4-5-20250614")
     assert model_45._parse_model_version() == (4, 5)
     assert model_45._is_reasoning_model() == True
-    
+
     model_5 = AnthropicModel(model="claude-opus-5-20250714")
     assert model_5._parse_model_version() == (5, 0)
     assert model_5._is_reasoning_model() == True
-    
+
     model_51 = AnthropicModel(model="claude-sonnet-5-1-20250814")
     assert model_51._parse_model_version() == (5, 1)
     assert model_51._is_reasoning_model() == True
-    
+
     model_unknown = AnthropicModel(model="some-unknown-model")
     assert model_unknown._parse_model_version() == (0, 0)
     assert model_unknown._is_reasoning_model() == False
 
 
 def test_reasoning_mode_parameter_compatibility():
-    
+
     model = AnthropicModel(model="claude-3-7-sonnet-20250219")
     api_params = {
         "model": "claude-3-7-sonnet-20250219",
         "temperature": 0.7,
         "top_p": 0.9,
         "top_k": 40,
-        "max_tokens": 1000
+        "max_tokens": 1000,
     }
-    
+
     filtered_params = model._get_compatible_params(api_params)
     assert filtered_params == api_params
-    
+
     model_with_thinking = AnthropicModel(
         model="claude-3-7-sonnet-20250219",
-        thinking_config=ThinkingConfig(token_budget=4000)
+        thinking_config=ThinkingConfig(token_budget=4000),
     )
-    
+
     filtered_params = model_with_thinking._get_compatible_params(api_params)
     expected_params = {
         "model": "claude-3-7-sonnet-20250219",
         "temperature": 1.0,
-        "max_tokens": 1000
+        "max_tokens": 1000,
     }
     assert filtered_params == expected_params
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
-    
+
     assert filtered_params["temperature"] == 1.0
 
 
 def test_reasoning_mode_initialization():
-    
+
     thinking_config = ThinkingConfig(token_budget=8000)
-    
+
     model = AnthropicModel(
         model="claude-sonnet-4-20250514",
         thinking_config=thinking_config,
         temperature=0.5,
-        max_tokens=2000
+        max_tokens=2000,
     )
-    
+
     assert model.thinking_config == thinking_config
     assert model.thinking.type == "enabled"
     assert model.thinking.budget_tokens == 8000
@@ -525,30 +525,30 @@ def test_reasoning_mode_initialization():
 
 
 def test_reasoning_mode_default_type():
-    
+
     thinking_config = ThinkingConfig(token_budget=6000)
-    
+
     model = AnthropicModel(
         model="claude-opus-4-20250514",
         thinking_config=thinking_config,
         temperature=0.3,
-        max_tokens=1500
+        max_tokens=1500,
     )
-    
+
     assert model.thinking.type == "enabled"
     assert model.thinking.budget_tokens == 6000
     assert model._is_reasoning_model() == True
-    
+
     api_params = {
         "model": "claude-opus-4-20250514",
         "temperature": 0.3,
         "top_p": 0.8,
         "top_k": 30,
-        "max_tokens": 1500
+        "max_tokens": 1500,
     }
-    
+
     filtered_params = model._get_compatible_params(api_params)
-    
+
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
     assert filtered_params["temperature"] == 1.0
@@ -556,9 +556,9 @@ def test_reasoning_mode_default_type():
 
 def test_reasoning_mode_with_claude_sonnet_4():
     from patterpunk.llm.chat import Chat
-    
+
     thinking_config = ThinkingConfig(token_budget=4000)
-    
+
     chat = Chat(
         model=AnthropicModel(
             model="claude-sonnet-4-20250514",
@@ -566,14 +566,14 @@ def test_reasoning_mode_with_claude_sonnet_4():
             temperature=0.7,
             top_p=0.9,
             top_k=40,
-            max_tokens=2000
+            max_tokens=2000,
         )
     )
-    
+
     assert chat.model.thinking_config == thinking_config
     assert chat.model._is_reasoning_model() == True
     assert chat.model._parse_model_version() == (4, 0)
-    
+
     api_params = {
         "model": "claude-sonnet-4-20250514",
         "temperature": 0.7,
@@ -581,46 +581,43 @@ def test_reasoning_mode_with_claude_sonnet_4():
         "top_k": 40,
         "max_tokens": 2000,
         "system": "You are a helpful assistant.",
-        "messages": []
+        "messages": [],
     }
-    
+
     filtered_params = chat.model._get_compatible_params(api_params)
-    
+
     assert "thinking" not in filtered_params
     assert "top_p" not in filtered_params
     assert "top_k" not in filtered_params
     assert "temperature" in filtered_params
     assert filtered_params["temperature"] == 1.0
     assert filtered_params["max_tokens"] == 2000
-    
+
     chat_37 = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
             thinking_config=ThinkingConfig(token_budget=2000),
-            temperature=0.5
+            temperature=0.5,
         )
     )
-    
+
     assert chat_37.model._is_reasoning_model() == True
     assert chat_37.model._parse_model_version() == (3, 7)
-    
+
     chat_35 = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620",
-            temperature=0.5,
-            top_p=0.8,
-            top_k=50
+            model="claude-3-5-sonnet-20240620", temperature=0.5, top_p=0.8, top_k=50
         )
     )
-    
+
     assert chat_35.model._is_reasoning_model() == False
     assert chat_35.model._parse_model_version() == (3, 5)
-    
+
     non_reasoning_params = {
         "temperature": 0.5,
         "top_p": 0.8,
         "top_k": 50,
-        "max_tokens": 1000
+        "max_tokens": 1000,
     }
     filtered_non_reasoning = chat_35.model._get_compatible_params(non_reasoning_params)
     assert filtered_non_reasoning == non_reasoning_params
@@ -628,63 +625,71 @@ def test_reasoning_mode_with_claude_sonnet_4():
 
 def test_reasoning_mode_plain_text_response():
     from patterpunk.llm.chat import Chat
-    
+
     chat = Chat(
         model=AnthropicModel(
             model="claude-sonnet-4-20250514",
             thinking_config=ThinkingConfig(token_budget=2000),
             max_tokens=4000,
-            temperature=1.0
+            temperature=1.0,
         )
     )
-    
+
     response = (
-        chat
-        .add_message(SystemMessage("You are a helpful math tutor."))
-        .add_message(UserMessage("Explain why 2 + 2 = 4 using basic mathematical principles."))
+        chat.add_message(SystemMessage("You are a helpful math tutor."))
+        .add_message(
+            UserMessage("Explain why 2 + 2 = 4 using basic mathematical principles.")
+        )
         .complete()
     )
-    
+
     assert response.latest_message is not None
     assert response.latest_message.content is not None
     assert len(response.latest_message.content.strip()) > 0
-    
+
     content_lower = response.latest_message.content.lower()
-    assert any(term in content_lower for term in ["addition", "sum", "math", "number", "equal"])
+    assert any(
+        term in content_lower for term in ["addition", "sum", "math", "number", "equal"]
+    )
 
 
 def test_reasoning_mode_structured_output():
     from patterpunk.llm.chat import Chat
-    
+
     class MathExplanation(BaseModel):
         concept: str = Field(description="The mathematical concept being explained")
         explanation: str = Field(description="Clear explanation of the concept")
         examples: List[str] = Field(description="2-3 simple examples")
         difficulty_level: str = Field(description="beginner, intermediate, or advanced")
-        confidence: float = Field(ge=0.0, le=1.0, description="Confidence in explanation accuracy")
-    
+        confidence: float = Field(
+            ge=0.0, le=1.0, description="Confidence in explanation accuracy"
+        )
+
     chat = Chat(
         model=AnthropicModel(
             model="claude-3-7-sonnet-20250219",
             thinking_config=ThinkingConfig(token_budget=3000),
             max_tokens=5000,
-            temperature=1.0
+            temperature=1.0,
         )
     )
-    
+
     response = (
-        chat
-        .add_message(SystemMessage("You are a math educator. Provide structured explanations."))
-        .add_message(UserMessage(
-            "Explain the concept of multiplication.",
-            structured_output=MathExplanation
-        ))
+        chat.add_message(
+            SystemMessage("You are a math educator. Provide structured explanations.")
+        )
+        .add_message(
+            UserMessage(
+                "Explain the concept of multiplication.",
+                structured_output=MathExplanation,
+            )
+        )
         .complete()
     )
-    
+
     assert response.parsed_output is not None
     assert isinstance(response.parsed_output, MathExplanation)
-    
+
     parsed = response.parsed_output
     assert parsed.concept
     assert "multiplication" in parsed.concept.lower()
@@ -696,41 +701,44 @@ def test_reasoning_mode_structured_output():
 
 def test_reasoning_mode_tool_calling():
     from patterpunk.llm.chat import Chat
-    
+
     def calculate_area(length: float, width: float) -> str:
         area = length * width
         return f"The area is {area} square units"
-    
+
     def get_math_fact(topic: str) -> str:
         facts = {
             "rectangle": "A rectangle has opposite sides that are equal and parallel",
             "area": "Area measures the amount of space inside a 2D shape",
-            "geometry": "Geometry is one of the oldest mathematical sciences"
+            "geometry": "Geometry is one of the oldest mathematical sciences",
         }
         return facts.get(topic.lower(), "Mathematics is the language of the universe")
-    
+
     chat = Chat(
         model=AnthropicModel(
             model="claude-opus-4-20250514",
             thinking_config=ThinkingConfig(token_budget=4000),
             max_tokens=6000,
-            temperature=1.0
+            temperature=1.0,
         )
     ).with_tools([calculate_area, get_math_fact])
-    
+
     response = (
-        chat
-        .add_message(SystemMessage("You are a geometry helper. Use tools to solve problems."))
-        .add_message(UserMessage(
-            "I have a rectangle that is 5 units long and 3 units wide. "
-            "Calculate its area and give me an interesting fact about rectangles."
-        ))
+        chat.add_message(
+            SystemMessage("You are a geometry helper. Use tools to solve problems.")
+        )
+        .add_message(
+            UserMessage(
+                "I have a rectangle that is 5 units long and 3 units wide. "
+                "Calculate its area and give me an interesting fact about rectangles."
+            )
+        )
         .complete()
     )
-    
+
     assert response.latest_message is not None
     assert response.latest_message.content is not None
-    
+
     if isinstance(response.latest_message, ToolCallMessage):
         pass
     else:
@@ -741,68 +749,74 @@ def test_reasoning_mode_tool_calling():
 def test_multimodal_image():
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620",
-            temperature=0.1,
-            max_tokens=4096
+            model="claude-3-5-sonnet-20240620", temperature=0.1, max_tokens=4096
         )
     )
 
-    prepped_chat = (
-        chat
-        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
-
+    prepped_chat = chat.add_message(
+        SystemMessage(
+            """Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""
+        )
     )
 
     correct = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
-
 
     incorrect = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(
+                        content="Are there tigers in a desert?", cacheable=False
+                    ),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
-    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+    assert (
+        "yes" in correct.lower() or "correct" in correct.lower()
+    ), "LLM is wrong: There are ducks in the image"
+    assert (
+        "no" in incorrect.lower() or "incorrect" in incorrect.lower()
+    ), "LLM is wrong: There are no tigers in the image"
+
 
 def test_multimodal_pdf():
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620",
-            temperature=0.0,
-            max_tokens=4096
+            model="claude-3-5-sonnet-20240620", temperature=0.0, max_tokens=4096
         )
     )
 
     title = (
-        chat
-        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
-        .add_message(UserMessage(
-            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
-        ))
+        chat.add_message(
+            SystemMessage(
+                """Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[MultimodalChunk.from_file(get_resource("research.pdf"))]
+            )
+        )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'bank of canada' in title.lower()
-    assert 'research' in title.lower()
-    assert '2025' in title.lower()
+    assert "bank of canada" in title.lower()
+    assert "research" in title.lower()
+    assert "2025" in title.lower()

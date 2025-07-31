@@ -21,7 +21,9 @@ def get_content_as_string(content: ContentType) -> str:
 
 def has_cacheable_content(content: ContentType) -> bool:
     if isinstance(content, list):
-        return any(isinstance(chunk, CacheChunk) and chunk.cacheable for chunk in content)
+        return any(
+            isinstance(chunk, CacheChunk) and chunk.cacheable for chunk in content
+        )
     return False
 
 

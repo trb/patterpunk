@@ -4,7 +4,7 @@ from .roles import ROLE_TOOL_CALL
 
 
 class ToolCallMessage(Message):
-    
+
     def __init__(self, tool_calls: ToolCallList):
         super().__init__("", ROLE_TOOL_CALL)
         self.tool_calls = tool_calls

@@ -12,10 +12,14 @@ class MCPServerConfig:
 
     def __post_init__(self) -> None:
         if not self.url and not self.command:
-            raise ValueError("MCPServerConfig must specify either 'url' for HTTP transport or 'command' for stdio transport")
-        
+            raise ValueError(
+                "MCPServerConfig must specify either 'url' for HTTP transport or 'command' for stdio transport"
+            )
+
         if self.url and self.command:
-            raise ValueError("MCPServerConfig cannot specify both 'url' and 'command' - choose one transport method")
+            raise ValueError(
+                "MCPServerConfig cannot specify both 'url' and 'command' - choose one transport method"
+            )
 
     @property
     def is_http_transport(self) -> bool:

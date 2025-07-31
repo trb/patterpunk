@@ -3,15 +3,18 @@ from typing import Union, List, Optional, Any
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.logger import logger
 from ..cache import CacheChunk
-from .exceptions import StructuredOutputNotPydanticLikeError, StructuredOutputFailedToParseError
+from .exceptions import (
+    StructuredOutputNotPydanticLikeError,
+    StructuredOutputFailedToParseError,
+)
 from .cache import get_content_as_string
 
 
 def parse_structured_output(
-    content: Union[str, List[CacheChunk]], 
+    content: Union[str, List[CacheChunk]],
     structured_output: Any,
     role: str,
-    cached_parsed_output: Optional[Any] = None
+    cached_parsed_output: Optional[Any] = None,
 ) -> Any:
     if cached_parsed_output is not None:
         return cached_parsed_output
@@ -28,7 +31,7 @@ def parse_structured_output(
 
     content_str = get_content_as_string(content)
     json_messages = extract_json(content_str)
-    
+
     for json_message in json_messages:
         try:
             if getattr(structured_output, "model_validate_json", None):

@@ -25,7 +25,7 @@ try:
 except ImportError:
     google_genai_available = False
 
-print('has it?', google_genai_available)
+print("has it?", google_genai_available)
 
 from patterpunk.llm.messages import (
     Message,
@@ -123,18 +123,14 @@ class GoogleModel(Model, ABC):
             raise ValueError(
                 "Cannot set both `google_account_credentials` and `client`"
             )
-        
+
         thinking_budget = None
         include_thoughts = False
         if thinking_config is not None:
             if thinking_config.token_budget is not None:
                 thinking_budget = min(thinking_config.token_budget, 24576)
             else:
-                effort_to_tokens = {
-                    "low": 1500,
-                    "medium": 4000,
-                    "high": 12000
-                }
+                effort_to_tokens = {"low": 1500, "medium": 4000, "high": 12000}
                 thinking_budget = effort_to_tokens[thinking_config.effort]
             include_thoughts = thinking_config.include_thoughts
 
@@ -164,78 +160,83 @@ class GoogleModel(Model, ABC):
     def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
         if not google_genai_available:
             return []
-        
+
         type_mapping = {
             "string": "STRING",
-            "number": "NUMBER", 
+            "number": "NUMBER",
             "integer": "INTEGER",
             "boolean": "BOOLEAN",
             "array": "ARRAY",
-            "object": "OBJECT"
+            "object": "OBJECT",
         }
-            
+
         function_declarations = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
                 func = tool["function"]
-                
+
                 properties = {}
-                for prop_name, prop_def in func["parameters"].get("properties", {}).items():
+                for prop_name, prop_def in (
+                    func["parameters"].get("properties", {}).items()
+                ):
                     json_type = prop_def.get("type", "string")
                     google_type = type_mapping.get(json_type.lower(), "STRING")
-                    
+
                     properties[prop_name] = types.Schema(
-                        type=google_type,
-                        description=prop_def.get("description", "")
+                        type=google_type, description=prop_def.get("description", "")
                     )
-                
+
                 function_declaration = types.FunctionDeclaration(
                     name=func["name"],
                     description=func["description"],
                     parameters=types.Schema(
                         type="OBJECT",
                         properties=properties,
-                        required=func["parameters"].get("required", [])
-                    )
+                        required=func["parameters"].get("required", []),
+                    ),
                 )
                 function_declarations.append(function_declaration)
-        
+
         if function_declarations:
             return [types.Tool(function_declarations=function_declarations)]
         return []
 
-    def _create_cache_objects_for_chunks(self, chunks: List[CacheChunk]) -> dict[str, str]:
+    def _create_cache_objects_for_chunks(
+        self, chunks: List[CacheChunk]
+    ) -> dict[str, str]:
         cache_mappings = {}
-        
+
         if not google_genai_available:
             return cache_mappings
-        
+
         for i, chunk in enumerate(chunks):
             if chunk.cacheable and len(chunk.content) > 32000:
                 cache_id = f"cache_chunk_{i}_{hash(chunk.content)}"
-                
+
                 try:
                     cached_content = self.client.caches.create(
                         config=types.CreateCachedContentConfig(
                             model=self.model,
-                            contents=[types.Content(
-                                parts=[types.Part.from_text(chunk.content)]
-                            )],
-                            ttl=chunk.ttl or types.Timedelta(hours=1)
+                            contents=[
+                                types.Content(
+                                    parts=[types.Part.from_text(chunk.content)]
+                                )
+                            ],
+                            ttl=chunk.ttl or types.Timedelta(hours=1),
                         )
                     )
                     cache_mappings[cache_id] = cached_content.name
                 except Exception as e:
                     logger.warning(f"Failed to create cache for chunk {i}: {e}")
-        
+
         return cache_mappings
 
     def _convert_message_content_for_google(self, content) -> List:
         if isinstance(content, str):
             return [types.Part.from_text(text=content)]
-        
+
         parts = []
-        
+
         for chunk in content:
             if isinstance(chunk, TextChunk):
                 parts.append(types.Part.from_text(text=chunk.content))
@@ -243,69 +244,79 @@ class GoogleModel(Model, ABC):
                 parts.append(types.Part.from_text(text=chunk.content))
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "gcs_uri":
-                    parts.append(types.Part.from_uri(
-                        uri=chunk.get_url(),
-                        mime_type=chunk.media_type or "application/octet-stream"
-                    ))
-                elif hasattr(chunk, 'file_id'):
+                    parts.append(
+                        types.Part.from_uri(
+                            uri=chunk.get_url(),
+                            mime_type=chunk.media_type or "application/octet-stream",
+                        )
+                    )
+                elif hasattr(chunk, "file_id"):
                     parts.append(chunk.file_id)
                 else:
                     media_type = chunk.media_type or "application/octet-stream"
-                    
+
                     if chunk.source_type == "url":
                         chunk = chunk.download()
-                    
-                    parts.append(types.Part.from_bytes(
-                        data=chunk.to_bytes(),
-                        mime_type=media_type
-                    ))
-        
+
+                    parts.append(
+                        types.Part.from_bytes(
+                            data=chunk.to_bytes(), mime_type=media_type
+                        )
+                    )
+
         return parts
 
     def upload_file_to_google(self, chunk: MultimodalChunk):
         import tempfile
         import os
-        
+
         with tempfile.NamedTemporaryFile(
-            suffix=f".{chunk.filename.split('.')[-1] if chunk.filename else 'bin'}", 
-            delete=False
+            suffix=f".{chunk.filename.split('.')[-1] if chunk.filename else 'bin'}",
+            delete=False,
         ) as tmp_file:
             tmp_file.write(chunk.to_bytes())
             tmp_file_path = tmp_file.name
-        
+
         try:
             uploaded_file = self.client.files.upload(file=tmp_file_path)
             return uploaded_file
         finally:
             os.unlink(tmp_file_path)
 
-    def _convert_messages_for_google_with_cache(self, messages: List[Message]) -> tuple[List[types.Content], dict[str, str]]:
+    def _convert_messages_for_google_with_cache(
+        self, messages: List[Message]
+    ) -> tuple[List[types.Content], dict[str, str]]:
         contents = []
         all_cache_mappings = {}
-        
+
         for message in messages:
             if message.role == ROLE_SYSTEM:
                 continue
-            
+
             if isinstance(message.content, list):
                 if has_multimodal_content(message.content):
                     parts = self._convert_message_content_for_google(message.content)
-                    has_text = any(isinstance(chunk, (TextChunk, CacheChunk)) for chunk in message.content)
+                    has_text = any(
+                        isinstance(chunk, (TextChunk, CacheChunk))
+                        for chunk in message.content
+                    )
                     if not has_text:
                         raise ValueError(
                             "Google requires at least one text block when multimodal content is present. "
                             "Please include text content along with your images or other media."
                         )
                 else:
-                    cache_mappings = self._create_cache_objects_for_chunks(message.content)
+                    cache_mappings = self._create_cache_objects_for_chunks(
+                        message.content
+                    )
                     all_cache_mappings.update(cache_mappings)
-                    
+
                     parts = []
                     for chunk in message.content:
                         parts.append(types.Part.from_text(text=chunk.content))
             else:
                 parts = [types.Part.from_text(text=message.get_content_as_string())]
-            
+
             if message.role == ROLE_USER:
                 contents.append(
                     types.Content(
@@ -314,26 +325,25 @@ class GoogleModel(Model, ABC):
                     )
                 )
             elif message.role == ROLE_ASSISTANT:
-                contents.append(
-                    types.Content(
-                        role="model", 
-                        parts=parts
-                    )
-                )
-        
+                contents.append(types.Content(role="model", parts=parts))
+
         return contents, all_cache_mappings
 
-    def _convert_system_messages_for_google_with_cache(self, messages: List[Message]) -> str:
+    def _convert_system_messages_for_google_with_cache(
+        self, messages: List[Message]
+    ) -> str:
         system_parts = []
-        
+
         for message in messages:
             if message.role == ROLE_SYSTEM:
                 if isinstance(message.content, list):
-                    content_str = "\n\n".join(chunk.content for chunk in message.content)
+                    content_str = "\n\n".join(
+                        chunk.content for chunk in message.content
+                    )
                     system_parts.append(content_str)
                 else:
                     system_parts.append(message.content)
-        
+
         return "\n\n".join(system_parts)
 
     def generate_assistant_message(
@@ -344,7 +354,9 @@ class GoogleModel(Model, ABC):
     ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = self._convert_system_messages_for_google_with_cache(messages)
 
-        contents, cache_mappings = self._convert_messages_for_google_with_cache(messages)
+        contents, cache_mappings = self._convert_messages_for_google_with_cache(
+            messages
+        )
 
         config = types.GenerateContentConfig(
             max_output_tokens=self.max_tokens,
@@ -356,9 +368,9 @@ class GoogleModel(Model, ABC):
         if self.thinking_budget is not None or self.include_thoughts:
             thinking_config_kwargs = {}
             if self.thinking_budget is not None:
-                thinking_config_kwargs['thinking_budget'] = self.thinking_budget
+                thinking_config_kwargs["thinking_budget"] = self.thinking_budget
             if self.include_thoughts:
-                thinking_config_kwargs['include_thoughts'] = self.include_thoughts
+                thinking_config_kwargs["include_thoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
 
         if system_prompt:
@@ -368,7 +380,9 @@ class GoogleModel(Model, ABC):
             google_tools = self._convert_tools_to_google_format(tools)
             if google_tools:
                 config.tools = google_tools
-                config.automatic_function_calling = types.AutomaticFunctionCallingConfig(disable=True)
+                config.automatic_function_calling = (
+                    types.AutomaticFunctionCallingConfig(disable=True)
+                )
 
         if structured_output:
             config.response_mime_type = "application/json"
@@ -386,36 +400,45 @@ class GoogleModel(Model, ABC):
                     model=self.model, contents=contents, config=config
                 )
 
-                if hasattr(response, 'candidates') and response.candidates:
+                if hasattr(response, "candidates") and response.candidates:
                     candidate = response.candidates[0]
-                    if hasattr(candidate, 'content') and candidate.content.parts:
+                    if hasattr(candidate, "content") and candidate.content.parts:
                         tool_calls = []
                         text_parts = []
-                        
+
                         for part in candidate.content.parts:
-                            if hasattr(part, 'function_call') and part.function_call is not None:
+                            if (
+                                hasattr(part, "function_call")
+                                and part.function_call is not None
+                            ):
                                 tool_call = {
                                     "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
                                     "type": "function",
                                     "function": {
                                         "name": part.function_call.name,
-                                        "arguments": json.dumps(dict(part.function_call.args))
-                                    }
+                                        "arguments": json.dumps(
+                                            dict(part.function_call.args)
+                                        ),
+                                    },
                                 }
                                 tool_calls.append(tool_call)
-                            
-                            if hasattr(part, 'text') and part.text and part.text != 'None':
+
+                            if (
+                                hasattr(part, "text")
+                                and part.text
+                                and part.text != "None"
+                            ):
                                 text_parts.append(part.text)
-                        
+
                         if tool_calls:
                             return ToolCallMessage(tool_calls)
-                        
+
                         if text_parts:
                             content = "\n".join(text_parts)
                             return AssistantMessage(
                                 content, structured_output=structured_output
                             )
-                
+
                 try:
                     if hasattr(response, "text") and response.text:
                         content = response.text
@@ -424,7 +447,7 @@ class GoogleModel(Model, ABC):
                         )
                 except Exception:
                     pass
-                
+
                 raise GoogleAPIError("No content found in Vertex AI response")
 
             except genai_errors.APIError as error:

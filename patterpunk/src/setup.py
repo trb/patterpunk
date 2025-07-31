@@ -20,10 +20,7 @@ setup(
     author_email="thomas.rubbert@yahoo.de",
     license="MPL-2.0",
     include_package_data=True,
-    install_requires=[
-        line.strip()
-        for line in open(requirements_path, "r")
-    ],
+    install_requires=[line.strip() for line in open(requirements_path, "r")],
     extras_require={
         "mcp": ["requests>=2.25.0"],
     },

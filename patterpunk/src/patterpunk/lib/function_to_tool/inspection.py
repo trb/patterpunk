@@ -2,7 +2,9 @@ import inspect
 from typing import get_type_hints, Callable, Dict, Any, Tuple
 
 
-def analyze_function_signature(func: Callable) -> Tuple[inspect.Signature, Dict[str, Any], Dict[str, Tuple]]:
+def analyze_function_signature(
+    func: Callable,
+) -> Tuple[inspect.Signature, Dict[str, Any], Dict[str, Tuple]]:
     try:
         signature = inspect.signature(func)
     except (ValueError, TypeError) as e:
@@ -10,7 +12,7 @@ def analyze_function_signature(func: Callable) -> Tuple[inspect.Signature, Dict[
         raise ValueError(f"Cannot inspect function signature for {func_name}: {e}")
 
     type_hints = get_type_hints(func)
-    
+
     fields = {}
     for name, param in signature.parameters.items():
         if param.kind in (
@@ -25,7 +27,7 @@ def analyze_function_signature(func: Callable) -> Tuple[inspect.Signature, Dict[
             fields[name] = (param_type, param.default)
         else:
             fields[name] = (param_type, ...)
-    
+
     return signature, type_hints, fields
 
 

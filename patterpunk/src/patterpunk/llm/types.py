@@ -22,4 +22,5 @@ from .multimodal import MultimodalChunk
 from .text import TextChunk
 
 from typing import Union, List
+
 ContentType = Union[str, List[Union[TextChunk, CacheChunk, MultimodalChunk]]]

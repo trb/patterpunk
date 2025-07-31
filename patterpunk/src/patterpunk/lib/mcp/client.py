@@ -7,6 +7,7 @@ from .server_config import MCPServerConfig
 
 try:
     import requests
+
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
@@ -39,7 +40,7 @@ class MCPClient:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
-        
+
         self._processes.clear()
         self._sessions.clear()
         self._connected = False
@@ -50,48 +51,53 @@ class MCPClient:
 
         for config in self._configs:
             try:
-                response = self._send_request(config, {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/list"
-                })
-                
+                response = self._send_request(
+                    config, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                )
+
                 if "result" in response and "tools" in response["result"]:
                     tools = response["result"]["tools"]
                     for tool in tools:
                         tool["_mcp_server"] = config.name
                     all_tools.extend(tools)
-                    
+
             except Exception as e:
                 raise MCPRequestError(config.name, "tools/list", str(e))
 
         return all_tools
 
-    def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Any:
+    def call_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        server_name: Optional[str] = None,
+    ) -> Any:
         self._ensure_connected()
-        
+
         config = self._find_server_for_tool(tool_name, server_name)
         if not config:
             raise MCPRequestError(
-                server_name or "unknown", 
-                "tools/call", 
-                f"Tool '{tool_name}' not found on any connected MCP server"
+                server_name or "unknown",
+                "tools/call",
+                f"Tool '{tool_name}' not found on any connected MCP server",
             )
 
         try:
-            response = self._send_request(config, {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments
-                }
-            })
+            response = self._send_request(
+                config,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                },
+            )
 
             if "error" in response:
                 error = response["error"]
-                raise MCPRequestError(config.name, "tools/call", f"Tool execution failed: {error}")
+                raise MCPRequestError(
+                    config.name, "tools/call", f"Tool execution failed: {error}"
+                )
 
             return response.get("result")
 
@@ -107,19 +113,20 @@ class MCPClient:
             raise MCPDependencyError("requests")
 
         try:
-            response = self._send_http_request(config.url, {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "patterpunk",
-                        "version": "1.0.0"
-                    }
-                }
-            }, timeout=config.timeout)
+            response = self._send_http_request(
+                config.url,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "patterpunk", "version": "1.0.0"},
+                    },
+                },
+                timeout=config.timeout,
+            )
 
             if "error" in response:
                 raise Exception(f"Initialize failed: {response['error']}")
@@ -138,24 +145,24 @@ class MCPClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=config.env
+                env=config.env,
             )
-            
+
             self._processes[config.name] = process
 
-            response = self._send_stdio_request(process, {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "patterpunk",
-                        "version": "1.0.0"
-                    }
-                }
-            })
+            response = self._send_stdio_request(
+                process,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "patterpunk", "version": "1.0.0"},
+                    },
+                },
+            )
 
             if "error" in response:
                 raise Exception(f"Initialize failed: {response['error']}")
@@ -163,20 +170,29 @@ class MCPClient:
         except subprocess.SubprocessError as e:
             raise MCPConnectionError(config.name, f"Stdio connection failed: {e}")
 
-    def _send_request(self, config: MCPServerConfig, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _send_request(
+        self, config: MCPServerConfig, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
         if config.is_http_transport:
-            return self._send_http_request(config.url, payload, 
-                                         session_id=self._sessions.get(config.name),
-                                         timeout=config.timeout)
+            return self._send_http_request(
+                config.url,
+                payload,
+                session_id=self._sessions.get(config.name),
+                timeout=config.timeout,
+            )
         elif config.is_stdio_transport:
             process = self._processes[config.name]
             return self._send_stdio_request(process, payload)
         else:
             raise ValueError(f"Unknown transport type for server {config.name}")
 
-    def _send_http_request(self, url: str, payload: Dict[str, Any], 
-                          session_id: Optional[str] = None, 
-                          timeout: float = 30.0) -> Dict[str, Any]:
+    def _send_http_request(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        session_id: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
         if not HAS_REQUESTS:
             raise MCPDependencyError("requests")
 
@@ -188,7 +204,9 @@ class MCPClient:
         response.raise_for_status()
         return response.json()
 
-    def _send_stdio_request(self, process: subprocess.Popen, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _send_stdio_request(
+        self, process: subprocess.Popen, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
         request_line = json.dumps(payload) + "\n"
         process.stdin.write(request_line)
         process.stdin.flush()
@@ -199,7 +217,9 @@ class MCPClient:
 
         return json.loads(response_line.strip())
 
-    def _find_server_for_tool(self, tool_name: str, preferred_server: Optional[str] = None) -> Optional[MCPServerConfig]:
+    def _find_server_for_tool(
+        self, tool_name: str, preferred_server: Optional[str] = None
+    ) -> Optional[MCPServerConfig]:
         if preferred_server:
             return next((c for c in self._configs if c.name == preferred_server), None)
 

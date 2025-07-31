@@ -23,42 +23,44 @@ def test_text_chunk_repr_long():
 
 
 def test_text_chunk_in_user_message():
-    message = UserMessage([
-        TextChunk("You are a helpful assistant."),
-        TextChunk("What is Python?")
-    ])
-    
+    message = UserMessage(
+        [TextChunk("You are a helpful assistant."), TextChunk("What is Python?")]
+    )
+
     content_str = message.get_content_as_string()
     assert content_str == "You are a helpful assistant.What is Python?"
 
 
 def test_text_chunk_with_cache_chunk():
     from patterpunk.llm.cache import CacheChunk
-    
-    message = UserMessage([
-        TextChunk("Instructions: "),
-        CacheChunk("Large context data", cacheable=True),
-        TextChunk("Question: What is the answer?")
-    ])
-    
+
+    message = UserMessage(
+        [
+            TextChunk("Instructions: "),
+            CacheChunk("Large context data", cacheable=True),
+            TextChunk("Question: What is the answer?"),
+        ]
+    )
+
     content_str = message.get_content_as_string()
-    assert content_str == "Instructions: Large context dataQuestion: What is the answer?"
+    assert (
+        content_str == "Instructions: Large context dataQuestion: What is the answer?"
+    )
 
 
 def test_text_chunk_import_from_types():
     chunk1 = TextChunk("test")
     chunk2 = TextChunkFromTypes("test")
-    
+
     assert type(chunk1) == type(chunk2)
     assert chunk1.content == chunk2.content
 
 
 def test_text_chunk_templating():
-    message = UserMessage([
-        TextChunk("Hello {{name}}, "),
-        TextChunk("your age is {{age}}")
-    ])
-    
+    message = UserMessage(
+        [TextChunk("Hello {{name}}, "), TextChunk("your age is {{age}}")]
+    )
+
     prepared = message.prepare({"name": "Alice", "age": 30})
     content_str = prepared.get_content_as_string()
     assert content_str == "Hello Alice, your age is 30"
@@ -66,39 +68,35 @@ def test_text_chunk_templating():
 
 def test_text_chunk_cache_chunks_conversion():
     from patterpunk.llm.cache import CacheChunk
-    
-    message = UserMessage([
-        TextChunk("Regular text"),
-        TextChunk("More text")
-    ])
-    
+
+    message = UserMessage([TextChunk("Regular text"), TextChunk("More text")])
+
     chunks = message.get_cache_chunks()
     assert len(chunks) == 2
     assert all(isinstance(chunk, CacheChunk) for chunk in chunks)
     assert chunks[0].content == "Regular text"
     assert chunks[0].cacheable is False
-    assert chunks[1].content == "More text"  
+    assert chunks[1].content == "More text"
     assert chunks[1].cacheable is False
 
 
 def test_text_chunk_no_cacheable_content():
-    message = UserMessage([
-        TextChunk("Text 1"),
-        TextChunk("Text 2")
-    ])
-    
+    message = UserMessage([TextChunk("Text 1"), TextChunk("Text 2")])
+
     assert not message.has_cacheable_content()
 
 
 def test_text_chunk_mixed_with_multimodal():
     from patterpunk.llm.multimodal import MultimodalChunk
     from tests.test_utils import get_resource
-    
-    message = UserMessage([
-        TextChunk("Analyze this image: "),
-        MultimodalChunk.from_file(get_resource('ducks_pond.jpg')),
-        TextChunk("What do you see?")
-    ])
-    
+
+    message = UserMessage(
+        [
+            TextChunk("Analyze this image: "),
+            MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+            TextChunk("What do you see?"),
+        ]
+    )
+
     content_str = message.get_content_as_string()
     assert content_str == "Analyze this image: What do you see?"

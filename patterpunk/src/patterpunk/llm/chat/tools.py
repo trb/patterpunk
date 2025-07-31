@@ -54,12 +54,12 @@ def configure_mcp_servers(chat_instance, server_configs):
 
     Examples:
         from patterpunk.lib.mcp import MCPServerConfig
-        
+
         weather_server = MCPServerConfig(
             name="weather",
             url="http://localhost:8000/mcp"
         )
-        
+
         chat = configure_mcp_servers(chat, [weather_server])
     """
     try:
@@ -70,63 +70,69 @@ def configure_mcp_servers(chat_instance, server_configs):
 
     new_chat = chat_instance.copy()
     new_chat._mcp_client = MCPClient(server_configs)
-    
+
     try:
         mcp_tools = new_chat._mcp_client.get_available_tools()
         patterpunk_tools = mcp_tools_to_patterpunk_tools(mcp_tools)
-        
+
         if new_chat.tools:
             new_chat.tools.extend(patterpunk_tools)
         else:
             new_chat.tools = patterpunk_tools
-            
+
     except Exception as e:
         logger.warning(f"Failed to initialize MCP servers: {e}")
-        
+
     return new_chat
 
 
 def execute_mcp_tool_calls(chat_instance):
     """
     Execute MCP tool calls from the latest ToolCallMessage.
-    
+
     :param chat_instance: The Chat instance with tool calls to execute
     :return: New Chat instance with tool execution results
     """
     if not isinstance(chat_instance.latest_message, ToolCallMessage):
         return chat_instance
-        
+
     if not chat_instance._mcp_client:
         return chat_instance
-        
+
     new_chat = chat_instance
-    
+
     for tool_call in chat_instance.latest_message.tool_calls:
         try:
             function_name = tool_call["function"]["name"]
             arguments_str = tool_call["function"]["arguments"]
             tool_call_id = tool_call["id"]
-            
+
             arguments = json.loads(arguments_str) if arguments_str else {}
-            
-            from patterpunk.lib.mcp.tool_converter import extract_mcp_server_from_tool_call
-            server_name = extract_mcp_server_from_tool_call(function_name, chat_instance.tools or [])
-            
-            result = chat_instance._mcp_client.call_tool(function_name, arguments, server_name)
-            
-            tool_result_message = UserMessage(
-                f"Tool '{function_name}' returned: {result}",
-                allow_tool_calls=True
+
+            from patterpunk.lib.mcp.tool_converter import (
+                extract_mcp_server_from_tool_call,
             )
-            
+
+            server_name = extract_mcp_server_from_tool_call(
+                function_name, chat_instance.tools or []
+            )
+
+            result = chat_instance._mcp_client.call_tool(
+                function_name, arguments, server_name
+            )
+
+            tool_result_message = UserMessage(
+                f"Tool '{function_name}' returned: {result}", allow_tool_calls=True
+            )
+
             new_chat = new_chat.add_message(tool_result_message)
-            
+
         except Exception as e:
             logger.error(f"Failed to execute MCP tool call '{function_name}': {e}")
             error_message = UserMessage(
                 f"Tool '{function_name}' failed with error: {str(e)}",
-                allow_tool_calls=True
+                allow_tool_calls=True,
             )
             new_chat = new_chat.add_message(error_message)
-    
+
     return new_chat.complete()

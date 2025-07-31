@@ -234,8 +234,13 @@ nager, WAMITAB
 
 def test_o1():
     from patterpunk.llm.thinking import ThinkingConfig
+
     chat = Chat(
-        model=OpenAiModel(model="o3-mini", temperature=0.1, thinking_config=ThinkingConfig(effort="medium"))
+        model=OpenAiModel(
+            model="o3-mini",
+            temperature=0.1,
+            thinking_config=ThinkingConfig(effort="medium"),
+        )
     )
 
     chat = (
@@ -320,61 +325,66 @@ def test_multimodal_image():
         )
     )
 
-    prepped_chat = (
-        chat
-        .add_message(SystemMessage("""Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""))
-
+    prepped_chat = chat.add_message(
+        SystemMessage(
+            """Carefully analyze the image. Answer in short, descriptive sentences. Answer questions clearly, directly and without flourish."""
+        )
     )
 
     correct = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there ducks by a pond?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="Are there ducks by a pond?", cacheable=False),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
-
 
     incorrect = (
-        prepped_chat
-        .add_message(UserMessage(
-            content=[
-                CacheChunk(content="Are there tigers in a desert?", cacheable=False),
-                MultimodalChunk.from_file(get_resource('ducks_pond.jpg'))
-            ])
+        prepped_chat.add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(
+                        content="Are there tigers in a desert?", cacheable=False
+                    ),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'yes' in correct.lower() or 'correct' in correct.lower(), 'LLM is wrong: There are ducks in the image'
-    assert 'no' in incorrect.lower() or 'incorrect' in incorrect.lower(), 'LLM is wrong: There are no tigers in the image'
+    assert (
+        "yes" in correct.lower() or "correct" in correct.lower()
+    ), "LLM is wrong: There are ducks in the image"
+    assert (
+        "no" in incorrect.lower() or "incorrect" in incorrect.lower()
+    ), "LLM is wrong: There are no tigers in the image"
+
 
 def test_multimodal_pdf():
-    chat = Chat(
-        model=OpenAiModel(
-            model="gpt-4.1-nano",
-            temperature=0.0
-        )
-    )
+    chat = Chat(model=OpenAiModel(model="gpt-4.1-nano", temperature=0.0))
 
     title = (
-        chat
-        .add_message(SystemMessage("""Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""))
-        .add_message(UserMessage(
-            content=[MultimodalChunk.from_file(get_resource('research.pdf'))]
-        ))
+        chat.add_message(
+            SystemMessage(
+                """Create a single-line title for the given document. It needs to be descriptive and short, and not copied from the document"""
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[MultimodalChunk.from_file(get_resource("research.pdf"))]
+            )
+        )
         .complete()
-        .latest_message
-        .content
+        .latest_message.content
     )
 
-    assert 'bank of canada' in title.lower()
-    assert 'research' in title.lower()
-    assert '2025' in title.lower()
+    assert "bank of canada" in title.lower()
+    assert "research" in title.lower()
+    assert "2025" in title.lower()

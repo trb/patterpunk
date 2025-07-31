@@ -20,5 +20,11 @@ from .assistant import AssistantMessage
 from .tool_call import ToolCallMessage
 
 from .templating import format_content
-from .cache import get_content_as_string, has_cacheable_content, get_cache_chunks, has_multimodal_content, get_multimodal_chunks
+from .cache import (
+    get_content_as_string,
+    has_cacheable_content,
+    get_cache_chunks,
+    has_multimodal_content,
+    get_multimodal_chunks,
+)
 from .structured_output import parse_structured_output
