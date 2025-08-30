@@ -1,6 +1,6 @@
 import enum
 from abc import ABC
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Set, Union
 
 from patterpunk.config import (
     DEFAULT_TEMPERATURE,
@@ -12,6 +12,7 @@ from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
@@ -278,6 +279,7 @@ class OpenAiModel(Model, ABC):
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[AssistantMessage, ToolCallMessage]:
         logger.info("Request to OpenAi made")
         logger_llm.debug(

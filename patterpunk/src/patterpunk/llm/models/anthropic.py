@@ -2,7 +2,7 @@ import json
 import time
 from abc import ABC
 from dataclasses import dataclass
-from typing import List, Optional, Callable, get_args, Union, Literal
+from typing import List, Optional, Callable, get_args, Set, Union, Literal
 
 from patterpunk.config import (
     anthropic,
@@ -24,6 +24,7 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
@@ -373,6 +374,7 @@ Please extract the relevant information from this reasoning and format it exactl
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         system_content = self._convert_system_messages_for_anthropic(messages)
         system_prompt = None

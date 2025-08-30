@@ -2,7 +2,7 @@ import json
 import random
 import time
 from abc import ABC
-from typing import List, Optional, Union
+from typing import List, Optional, Set, Union
 
 from patterpunk.config import (
     GOOGLE_APPLICATION_CREDENTIALS,
@@ -38,6 +38,7 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
@@ -157,6 +158,22 @@ class GoogleModel(Model, ABC):
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
 
+    def _translate_output_types_to_google_modalities(self, output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> Optional[List[str]]:
+        if not output_types:
+            return None
+        
+        modality_mapping = {
+            OutputType.TEXT: "TEXT",
+            OutputType.IMAGE: "IMAGE",
+        }
+        
+        modalities = []
+        for output_type in output_types:
+            if output_type in modality_mapping:
+                modalities.append(modality_mapping[output_type])
+        
+        return modalities if modalities else None
+
     def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
         if not google_genai_available:
             return []
@@ -202,7 +219,7 @@ class GoogleModel(Model, ABC):
         return []
 
     def _create_cache_objects_for_chunks(
-        self, chunks: List[CacheChunk]
+        self, chunks: List[Union[CacheChunk, TextChunk]]
     ) -> dict[str, str]:
         cache_mappings = {}
 
@@ -210,7 +227,7 @@ class GoogleModel(Model, ABC):
             return cache_mappings
 
         for i, chunk in enumerate(chunks):
-            if chunk.cacheable and len(chunk.content) > 32000:
+            if isinstance(chunk, CacheChunk) and chunk.cacheable and len(chunk.content) > 32000:
                 cache_id = f"cache_chunk_{i}_{hash(chunk.content)}"
 
                 try:
@@ -351,6 +368,7 @@ class GoogleModel(Model, ABC):
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = self._convert_system_messages_for_google_with_cache(messages)
 
@@ -364,6 +382,10 @@ class GoogleModel(Model, ABC):
             top_p=self.top_p,
             top_k=self.top_k,
         )
+
+        response_modalities = self._translate_output_types_to_google_modalities(output_types)
+        if response_modalities:
+            config.response_modalities = response_modalities
 
         if self.thinking_budget is not None or self.include_thoughts:
             thinking_config_kwargs = {}
@@ -404,7 +426,7 @@ class GoogleModel(Model, ABC):
                     candidate = response.candidates[0]
                     if hasattr(candidate, "content") and candidate.content.parts:
                         tool_calls = []
-                        text_parts = []
+                        chunks = []
 
                         for part in candidate.content.parts:
                             if (
@@ -423,21 +445,39 @@ class GoogleModel(Model, ABC):
                                 }
                                 tool_calls.append(tool_call)
 
-                            if (
+                            elif (
                                 hasattr(part, "text")
                                 and part.text
                                 and part.text != "None"
                             ):
-                                text_parts.append(part.text)
+                                chunks.append(TextChunk(part.text))
+
+                            elif hasattr(part, "inline_data") and part.inline_data:
+                                mime_type = getattr(part.inline_data, "mime_type", None)
+                                data = getattr(part.inline_data, "data", None)
+                                if data and mime_type:
+                                    if isinstance(data, bytes):
+                                        image_chunk = MultimodalChunk.from_bytes(
+                                            data, media_type=mime_type
+                                        )
+                                    else:
+                                        image_chunk = MultimodalChunk.from_base64(
+                                            data, media_type=mime_type
+                                        )
+                                    chunks.append(image_chunk)
 
                         if tool_calls:
                             return ToolCallMessage(tool_calls)
 
-                        if text_parts:
-                            content = "\n".join(text_parts)
-                            return AssistantMessage(
-                                content, structured_output=structured_output
-                            )
+                        if chunks:
+                            if len(chunks) == 1 and isinstance(chunks[0], TextChunk):
+                                return AssistantMessage(
+                                    chunks[0].content, structured_output=structured_output
+                                )
+                            else:
+                                return AssistantMessage(
+                                    chunks, structured_output=structured_output
+                                )
 
                 try:
                     if hasattr(response, "text") and response.text:

@@ -7,13 +7,14 @@ management, delegating complex operations to specialized modules.
 
 import copy
 import re
-from typing import List, Optional
+from typing import List, Optional, Set, Union
 
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.defaults import default_model
 from patterpunk.llm.tool_types import ToolDefinition
 from patterpunk.llm.messages import AssistantMessage, ToolCallMessage, Message
-from patterpunk.llm.models.openai import Model
+from patterpunk.llm.models.base import Model
+from patterpunk.llm.output_types import OutputType
 from .tools import configure_tools, configure_mcp_servers, execute_mcp_tool_calls
 from .structured_output import get_parsed_output_with_retry
 
@@ -51,7 +52,7 @@ class Chat:
     def with_mcp_servers(self, server_configs):
         return configure_mcp_servers(self, server_configs)
 
-    def complete(self):
+    def complete(self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None):
         """
         Complete the conversation by generating a response from the LLM.
 
@@ -69,6 +70,7 @@ class Chat:
             self.messages,
             tools_to_use,
             structured_output=getattr(message, "structured_output", None),
+            output_types=output_types,
         )
 
         new_chat = self.add_message(response_message)

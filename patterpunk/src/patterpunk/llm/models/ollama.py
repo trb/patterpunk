@@ -1,12 +1,13 @@
 import json
 import random
 from abc import ABC
-from typing import List, Optional, Callable, Union
+from typing import List, Optional, Callable, Set, Union
 
 from patterpunk.config import ollama
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages import Message, AssistantMessage, ToolCallMessage
 from patterpunk.llm.models.base import Model
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
@@ -136,6 +137,7 @@ class OllamaModel(Model, ABC):
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         options = {}
         if self.temperature is not None:

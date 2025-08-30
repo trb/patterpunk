@@ -1,7 +1,7 @@
 import json
 import random
 from abc import ABC
-from typing import List, Optional, Union
+from typing import List, Optional, Set, Union
 import time
 
 from patterpunk.config import (
@@ -27,6 +27,7 @@ from patterpunk.llm.messages import (
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
@@ -250,6 +251,7 @@ class BedrockModel(Model, ABC):
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[AssistantMessage, "ToolCallMessage"]:
         logger.info("Request to AWS Bedrock made")
         logger_llm.debug(

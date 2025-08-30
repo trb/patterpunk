@@ -53,6 +53,38 @@ response = Chat().add_message(
 ).complete()
 ```
 
+### Image Generation
+
+```python
+from patterpunk.llm.output_types import OutputType
+from patterpunk.llm.models.google import GoogleModel
+
+# Generate single image
+model = GoogleModel(model="gemini-2.5-flash-image-preview", location="global")
+response = Chat(model).add_message(
+    UserMessage("Create a futuristic city at sunset")
+).complete(output_types={OutputType.TEXT, OutputType.IMAGE})
+
+image_bytes = response.latest_message.images[0].to_bytes()
+
+# Generate multiple images with text
+response = Chat(model).add_message(
+    UserMessage("Create a 3-panel comic about a robot learning to cook")
+).complete(output_types={OutputType.TEXT, OutputType.IMAGE})
+
+for i, img in enumerate(response.latest_message.images):
+    with open(f"panel_{i}.png", "wb") as f:
+        f.write(img.to_bytes())
+
+# Edit existing image
+response = Chat(model).add_message(
+    UserMessage([
+        TextChunk("Replace the cars with flying vehicles"),
+        MultimodalChunk.from_file("city.jpg")
+    ])
+).complete(output_types={OutputType.TEXT, OutputType.IMAGE})
+```
+
 ### Structured Output & Reasoning
 
 ```python

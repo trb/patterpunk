@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Union
+from typing import List, Optional, Set, Union
 
 from patterpunk.llm.messages import Message
+from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition
 
 
@@ -16,6 +17,7 @@ class Model(ABC):
         messages: List[Message],
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         raise ModelNotImplemented("You need to use a LLM-specific model")
 

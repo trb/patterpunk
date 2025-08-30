@@ -2,9 +2,64 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Additional Information
+
+You MUST access the following files if you work on related features of patterpunk:
+
+- './AGENTS.md': Principles and design choices and goals for the agentic features in patterpunk, like the Agent base class or the agent chain functionality
+- './MULTIMODAL.md': Patterpunk supports multi-modal input like files, images, audio, video, etc - this file include information about how patterpunk handles multi-model content
+- './PROMPT_CACHING.md': Some providers support prompt caching for performance/cost-reduction reasons, this file details how patterpunk supports prompt caching
+- './TOOL_CALLING.md': Documentation on how patterpunk implements tool calling
+- './README.md': Developer-oriented documentation on how to use patterpunk, helpful to understand how patterpunk is intended to be used
+
+## Reviews
+
+You MUST review significant changes with the review council members! Each review council member is implement as a sub-agent that you should call as a task. You should call all members in parallel.
+
+<reviewInstructions>
+
+Initiate a review by creating a journal as the council-reviews/$REVIEW_NAME.md` file. Append to the journal everything related to the review - what you called the sub-agents with, their responses, iterations you performed, and the final decision.
+
+List of members:
+
+<councilMembers implementedAsSubAgents="true" callSubagents="true">
+You have access to the following council members. The council members are implemented as subagents. You must call these subagents when it's their turn to review the information.
+
+Each subagent has its own context. You have to provide all relevant information and context each time you call the subagent. It will not remember previous rounds!
+
+For each round of discussion you must call each subagent!
+
+<creativeCouncilMember>
+The creative council member is responsible for reviewing the creative aspects of the decision. It prefers novel and progressive solutions. The subagent is called `review-council-the-creative-member`.
+</creativeCouncilMember>
+<conservativeCouncilMember>
+The conservative council member is responsible for reviewing the conservative aspects of the decision. It prefers solutions that are well-established and well-understood. The subagent is called `review-council-the-conservative-member`.
+</conservativeCouncilMember>
+</councilMembers>
+
+Follow this review process:
+
+<reviewProcess>
+<step id="1">
+Call each sub-agent with the provided information and augmented information, instructing them to review the information and to provide a meaningful review. Do this in parallel. Add each response to the document. You MUST call the subagent as a tool call!
+</step>
+<step id="2">
+At least once, pass the provided information, the augmented information and the responses to each sub-agent, so they can respond to one another.
+</step>
+<step id="3">
+Append all responses to the logging document.
+Decide if another round of review would be useful. If so, repeat the process from step 1. Justify your decision and log it in the logging document.
+</step>
+<finalStep>
+Once you are satisfied that all sub-agents have provided meaningful feedback and further discussion is not necessary, compile the final report. Record this in the journal.
+</finalStep>
+</reviewProcess>
+
+</reviewInstructions>
+
 ## Development Commands
 - Tests are located in `patterpunk/src/tests/` with provider-specific test files
-- Run tests with `docker-compose run --entrypoint '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
+- Run tests with `docker compose run --entrypoint '/bin/bash -c' patterpunk /app/bin/test.dev $TEST_FILE`
 - Test files should be given relative to `patterpunk/src` prefixed with `/app` as that is the mount point in the container. E.g. for anthropic tests, the path would be `/app/tests/test_anthropic.py`
 - Dependencies: core (`requirements.txt`), testing (`test.requirements.txt`), build (`build.requirements.txt`)
 
