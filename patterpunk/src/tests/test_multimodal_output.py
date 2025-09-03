@@ -15,7 +15,9 @@ class MockModel(Model):
     def __init__(self, mock_response="Mock response"):
         self.mock_response = mock_response
 
-    def generate_assistant_message(self, messages, tools=None, structured_output=None, output_types=None):
+    def generate_assistant_message(
+        self, messages, tools=None, structured_output=None, output_types=None
+    ):
         return AssistantMessage(self.mock_response)
 
     @staticmethod
@@ -50,7 +52,7 @@ class TestAssistantMessageContentTypeSupport:
         chunks = [
             TextChunk("Text part"),
             CacheChunk("Cached content", ttl=300),
-            MultimodalChunk.from_file("/tmp/test.jpg")
+            MultimodalChunk.from_file("/tmp/test.jpg"),
         ]
         message = AssistantMessage(chunks)
         assert "Text part" in message.content
@@ -63,7 +65,7 @@ class TestAssistantMessageContentTypeSupport:
     def test_assistant_message_accepts_multimodal_chunk_list(self):
         chunks = [
             MultimodalChunk.from_file("/tmp/image.jpg"),
-            MultimodalChunk.from_file("/tmp/photo.png")
+            MultimodalChunk.from_file("/tmp/photo.png"),
         ]
         message = AssistantMessage(chunks)
         assert isinstance(message.content, str)
@@ -107,7 +109,7 @@ class TestChunksAccessor:
         chunks = [
             TextChunk("Text"),
             CacheChunk("Cache", ttl=300),
-            MultimodalChunk.from_file("/tmp/test.jpg")
+            MultimodalChunk.from_file("/tmp/test.jpg"),
         ]
         message = AssistantMessage(chunks)
         retrieved_chunks = message.chunks
@@ -122,7 +124,7 @@ class TestTypeSpecificAccessors:
             TextChunk("Hello"),
             MultimodalChunk.from_file("/tmp/image.jpg"),
             MultimodalChunk.from_file("/tmp/video.mp4"),
-            MultimodalChunk.from_file("/tmp/photo.png")
+            MultimodalChunk.from_file("/tmp/photo.png"),
         ]
         message = AssistantMessage(chunks)
         images = message.images
@@ -133,7 +135,7 @@ class TestTypeSpecificAccessors:
         chunks = [
             TextChunk("Hello"),
             MultimodalChunk.from_file("/tmp/video.mp4"),
-            MultimodalChunk.from_file("/tmp/movie.avi")
+            MultimodalChunk.from_file("/tmp/movie.avi"),
         ]
         message = AssistantMessage(chunks)
         videos = message.videos
@@ -144,7 +146,7 @@ class TestTypeSpecificAccessors:
         chunks = [
             MultimodalChunk.from_file("/tmp/audio.mp3"),
             MultimodalChunk.from_file("/tmp/sound.wav"),
-            TextChunk("Text content")
+            TextChunk("Text content"),
         ]
         message = AssistantMessage(chunks)
         audios = message.audios
@@ -156,7 +158,7 @@ class TestTypeSpecificAccessors:
             TextChunk("Text 1"),
             CacheChunk("Cached text", ttl=300),
             MultimodalChunk.from_file("/tmp/image.jpg"),
-            TextChunk("Text 2")
+            TextChunk("Text 2"),
         ]
         message = AssistantMessage(chunks)
         texts = message.texts
@@ -196,7 +198,7 @@ class TestChatCompleteWithOutputTypes:
     def test_complete_accepts_output_types_parameter(self):
         chat = Chat(model=MockModel())
         chat = chat.add_message(UserMessage("Generate an image"))
-        
+
         result_chat = chat.complete(output_types=[OutputType.IMAGE])
         assert result_chat is not None
         assert len(result_chat.messages) == 2
@@ -204,62 +206,68 @@ class TestChatCompleteWithOutputTypes:
     def test_complete_accepts_multiple_output_types(self):
         chat = Chat(model=MockModel())
         chat = chat.add_message(UserMessage("Generate content"))
-        
-        result_chat = chat.complete(output_types=[OutputType.TEXT, OutputType.IMAGE, OutputType.AUDIO])
+
+        result_chat = chat.complete(
+            output_types=[OutputType.TEXT, OutputType.IMAGE, OutputType.AUDIO]
+        )
         assert result_chat is not None
 
     def test_complete_accepts_empty_output_types_list(self):
         chat = Chat(model=MockModel())
         chat = chat.add_message(UserMessage("Hello"))
-        
+
         result_chat = chat.complete(output_types=[])
         assert result_chat is not None
 
     def test_complete_accepts_none_output_types(self):
         chat = Chat(model=MockModel())
         chat = chat.add_message(UserMessage("Hello"))
-        
+
         result_chat = chat.complete(output_types=None)
         assert result_chat is not None
 
     def test_complete_passes_output_types_to_model(self):
-        with patch.object(MockModel, 'generate_assistant_message') as mock_generate:
+        with patch.object(MockModel, "generate_assistant_message") as mock_generate:
             mock_generate.return_value = AssistantMessage("Response")
-            
+
             chat = Chat(model=MockModel())
             chat = chat.add_message(UserMessage("Test"))
-            
+
             chat.complete(output_types=[OutputType.IMAGE, OutputType.TEXT])
-            
+
             mock_generate.assert_called_once()
             call_args = mock_generate.call_args
             assert "output_types" in call_args.kwargs
-            assert call_args.kwargs["output_types"] == [OutputType.IMAGE, OutputType.TEXT]
+            assert call_args.kwargs["output_types"] == [
+                OutputType.IMAGE,
+                OutputType.TEXT,
+            ]
 
 
 class TestModelBaseClassSignature:
     def test_model_generate_assistant_message_accepts_output_types(self):
         model = MockModel()
         messages = [UserMessage("Test")]
-        
+
         result = model.generate_assistant_message(
             messages=messages,
             tools=None,
             structured_output=None,
-            output_types=[OutputType.TEXT]
+            output_types=[OutputType.TEXT],
         )
-        
+
         assert isinstance(result, AssistantMessage)
 
     def test_model_generate_assistant_message_output_types_optional(self):
         model = MockModel()
         messages = [UserMessage("Test")]
-        
+
         result = model.generate_assistant_message(messages=messages)
         assert isinstance(result, AssistantMessage)
 
     def test_model_signature_inspection(self):
         import inspect
+
         sig = inspect.signature(MockModel.generate_assistant_message)
         assert "output_types" in sig.parameters
         output_types_param = sig.parameters["output_types"]
@@ -271,7 +279,7 @@ class TestMultimodalOutputIntegration:
         mock_image_chunk = MultimodalChunk.from_file("/tmp/generated.jpg")
         chunks = [TextChunk("Here's your image:"), mock_image_chunk]
         message = AssistantMessage(chunks)
-        
+
         assert len(message.chunks) == 2
         assert len(message.images) == 1
         assert len(message.texts) == 1
@@ -282,10 +290,10 @@ class TestMultimodalOutputIntegration:
             TextChunk("Generated content:"),
             MultimodalChunk.from_file("/tmp/image.png"),
             MultimodalChunk.from_file("/tmp/audio.mp3"),
-            MultimodalChunk.from_file("/tmp/video.mp4")
+            MultimodalChunk.from_file("/tmp/video.mp4"),
         ]
         message = AssistantMessage(chunks)
-        
+
         assert len(message.images) == 1
         assert len(message.audios) == 1
         assert len(message.videos) == 1
@@ -294,17 +302,17 @@ class TestMultimodalOutputIntegration:
     def test_chat_workflow_with_multimodal_output(self):
         mock_chunks = [
             TextChunk("Generated image:"),
-            MultimodalChunk.from_file("/tmp/result.jpg")
+            MultimodalChunk.from_file("/tmp/result.jpg"),
         ]
-        
-        with patch.object(MockModel, 'generate_assistant_message') as mock_generate:
+
+        with patch.object(MockModel, "generate_assistant_message") as mock_generate:
             mock_generate.return_value = AssistantMessage(mock_chunks)
-            
+
             mock_model = MockModel()
             chat = Chat(model=mock_model)
             chat = chat.add_message(UserMessage("Create an image"))
             result = chat.complete(output_types=[OutputType.IMAGE])
-            
+
             assert len(result.latest_message.images) == 1
             assert len(result.latest_message.texts) == 1
             mock_generate.assert_called_once()

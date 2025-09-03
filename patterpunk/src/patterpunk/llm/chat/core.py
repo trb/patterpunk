@@ -52,7 +52,9 @@ class Chat:
     def with_mcp_servers(self, server_configs):
         return configure_mcp_servers(self, server_configs)
 
-    def complete(self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None):
+    def complete(
+        self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None
+    ):
         """
         Complete the conversation by generating a response from the LLM.
 

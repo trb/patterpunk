@@ -1,3 +1,4 @@
+import base64
 import enum
 from abc import ABC
 from typing import List, Literal, Optional, Set, Union
@@ -305,6 +306,16 @@ class OpenAiModel(Model, ABC):
 
         if tools:
             responses_parameters["tools"] = tools
+        
+        if output_types and OutputType.IMAGE in output_types:
+            image_generation_tool = {"type": "image_generation"}
+            if tools:
+                if isinstance(tools, list):
+                    responses_parameters["tools"] = tools + [image_generation_tool]
+                else:
+                    responses_parameters["tools"] = [tools, image_generation_tool]
+            else:
+                responses_parameters["tools"] = [image_generation_tool]
 
         if (
             structured_output
@@ -375,9 +386,18 @@ class OpenAiModel(Model, ABC):
         logger_llm.info(f"[Assistant]\n{response.output_text}")
 
         if hasattr(response, "output") and response.output:
+            chunks = []
+            tool_calls = []
+            
             for output_item in response.output:
-                if hasattr(output_item, "tool_calls") and output_item.tool_calls:
-                    tool_calls = []
+                if hasattr(output_item, "type") and output_item.type == "image_generation_call":
+                    if hasattr(output_item, "result") and output_item.result:
+                        image_chunk = MultimodalChunk.from_base64(
+                            output_item.result, 
+                            media_type="image/png"
+                        )
+                        chunks.append(image_chunk)
+                elif hasattr(output_item, "tool_calls") and output_item.tool_calls:
                     for tool_call in output_item.tool_calls:
                         tool_calls.append(
                             {
@@ -389,7 +409,18 @@ class OpenAiModel(Model, ABC):
                                 },
                             }
                         )
-                    return ToolCallMessage(tool_calls)
+            
+            if tool_calls:
+                return ToolCallMessage(tool_calls)
+            
+            if chunks:
+                text_content = response.output_text if response.output_text else ""
+                if text_content:
+                    chunks.insert(0, TextChunk(text_content))
+                return AssistantMessage(
+                    chunks, 
+                    structured_output=structured_output
+                )
 
         parsed_output = None
         if structured_output and has_model_schema(structured_output):

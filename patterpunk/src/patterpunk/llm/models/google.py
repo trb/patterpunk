@@ -158,20 +158,22 @@ class GoogleModel(Model, ABC):
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
 
-    def _translate_output_types_to_google_modalities(self, output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> Optional[List[str]]:
+    def _translate_output_types_to_google_modalities(
+        self, output_types: Optional[Union[List[OutputType], Set[OutputType]]]
+    ) -> Optional[List[str]]:
         if not output_types:
             return None
-        
+
         modality_mapping = {
             OutputType.TEXT: "TEXT",
             OutputType.IMAGE: "IMAGE",
         }
-        
+
         modalities = []
         for output_type in output_types:
             if output_type in modality_mapping:
                 modalities.append(modality_mapping[output_type])
-        
+
         return modalities if modalities else None
 
     def _convert_tools_to_google_format(self, tools: ToolDefinition) -> List:
@@ -227,7 +229,11 @@ class GoogleModel(Model, ABC):
             return cache_mappings
 
         for i, chunk in enumerate(chunks):
-            if isinstance(chunk, CacheChunk) and chunk.cacheable and len(chunk.content) > 32000:
+            if (
+                isinstance(chunk, CacheChunk)
+                and chunk.cacheable
+                and len(chunk.content) > 32000
+            ):
                 cache_id = f"cache_chunk_{i}_{hash(chunk.content)}"
 
                 try:
@@ -383,7 +389,9 @@ class GoogleModel(Model, ABC):
             top_k=self.top_k,
         )
 
-        response_modalities = self._translate_output_types_to_google_modalities(output_types)
+        response_modalities = self._translate_output_types_to_google_modalities(
+            output_types
+        )
         if response_modalities:
             config.response_modalities = response_modalities
 
@@ -472,7 +480,8 @@ class GoogleModel(Model, ABC):
                         if chunks:
                             if len(chunks) == 1 and isinstance(chunks[0], TextChunk):
                                 return AssistantMessage(
-                                    chunks[0].content, structured_output=structured_output
+                                    chunks[0].content,
+                                    structured_output=structured_output,
                                 )
                             else:
                                 return AssistantMessage(

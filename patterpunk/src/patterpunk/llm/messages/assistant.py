@@ -43,7 +43,11 @@ class AssistantMessage(Message):
         if isinstance(self._raw_content, str):
             return []
         elif isinstance(self._raw_content, list):
-            return [chunk for chunk in self._raw_content if isinstance(chunk, (TextChunk, CacheChunk))]
+            return [
+                chunk
+                for chunk in self._raw_content
+                if isinstance(chunk, (TextChunk, CacheChunk))
+            ]
         return []
 
     @property
@@ -51,7 +55,13 @@ class AssistantMessage(Message):
         if isinstance(self._raw_content, str):
             return []
         elif isinstance(self._raw_content, list):
-            return [chunk for chunk in self._raw_content if isinstance(chunk, MultimodalChunk) and chunk.media_type and chunk.media_type.startswith("image/")]
+            return [
+                chunk
+                for chunk in self._raw_content
+                if isinstance(chunk, MultimodalChunk)
+                and chunk.media_type
+                and chunk.media_type.startswith("image/")
+            ]
         return []
 
     @property
@@ -59,7 +69,13 @@ class AssistantMessage(Message):
         if isinstance(self._raw_content, str):
             return []
         elif isinstance(self._raw_content, list):
-            return [chunk for chunk in self._raw_content if isinstance(chunk, MultimodalChunk) and chunk.media_type and chunk.media_type.startswith("video/")]
+            return [
+                chunk
+                for chunk in self._raw_content
+                if isinstance(chunk, MultimodalChunk)
+                and chunk.media_type
+                and chunk.media_type.startswith("video/")
+            ]
         return []
 
     @property
@@ -67,5 +83,11 @@ class AssistantMessage(Message):
         if isinstance(self._raw_content, str):
             return []
         elif isinstance(self._raw_content, list):
-            return [chunk for chunk in self._raw_content if isinstance(chunk, MultimodalChunk) and chunk.media_type and chunk.media_type.startswith("audio/")]
+            return [
+                chunk
+                for chunk in self._raw_content
+                if isinstance(chunk, MultimodalChunk)
+                and chunk.media_type
+                and chunk.media_type.startswith("audio/")
+            ]
         return []
