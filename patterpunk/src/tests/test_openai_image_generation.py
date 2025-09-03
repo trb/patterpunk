@@ -95,7 +95,7 @@ def test_openai_generate_new_image():
     assert hasattr(
         message, "_raw_content"
     ), "AssistantMessage should have _raw_content attribute"
-    
+
     if isinstance(message._raw_content, list):
         text_chunks = message.texts
         image_chunks = message.images
@@ -109,7 +109,9 @@ def test_openai_generate_new_image():
                 assert isinstance(
                     image_chunk, MultimodalChunk
                 ), f"Image chunk should be MultimodalChunk, got {type(image_chunk)}"
-                assert image_chunk.media_type is not None, "Image should have a media type"
+                assert (
+                    image_chunk.media_type is not None
+                ), "Image should have a media type"
                 assert image_chunk.media_type.startswith(
                     "image/"
                 ), f"Media type should be image/*, got {image_chunk.media_type}"
@@ -176,32 +178,31 @@ def test_openai_generate_abstract_art():
     model = OpenAiModel(model="gpt-4o", temperature=0.9)
     chat = Chat(model=model)
 
-    response = (
-        chat.add_message(
-            UserMessage(
-                """Generate an abstract art piece with:
+    response = chat.add_message(
+        UserMessage(
+            """Generate an abstract art piece with:
                 - Vibrant, contrasting colors
                 - Geometric shapes and patterns
                 - A sense of movement and energy
                 - Modern art style inspired by Kandinsky
                 
                 Create a visually striking abstract composition."""
-            )
         )
-        .complete(output_types=[OutputType.IMAGE])
-    )
+    ).complete(output_types=[OutputType.IMAGE])
 
     message = response.latest_message
     assert isinstance(message, AssistantMessage)
 
     if hasattr(message, "_raw_content") and isinstance(message._raw_content, list):
         image_chunks = message.images
-        
+
         if len(image_chunks) > 0:
             for idx, image_chunk in enumerate(image_chunks):
                 assert isinstance(image_chunk, MultimodalChunk)
                 image_bytes = image_chunk.to_bytes()
-                assert len(image_bytes) > 1000, f"Abstract art image should have substantial data"
+                assert (
+                    len(image_bytes) > 1000
+                ), f"Abstract art image should have substantial data"
 
                 with open(f"/tmp/abstract_art_{idx}.png", "wb") as f:
                     f.write(image_bytes)
@@ -238,7 +239,9 @@ def test_openai_mixed_text_and_image_generation():
 
     response = (
         chat.add_message(
-            SystemMessage("You are a creative educator who uses visuals to explain concepts.")
+            SystemMessage(
+                "You are a creative educator who uses visuals to explain concepts."
+            )
         )
         .add_message(
             UserMessage(
@@ -264,19 +267,19 @@ def test_openai_mixed_text_and_image_generation():
 
         if len(text_chunks) > 0:
             combined_text = " ".join(
-                chunk.content if isinstance(chunk, TextChunk) else chunk 
+                chunk.content if isinstance(chunk, TextChunk) else chunk
                 for chunk in text_chunks
             )
             assert (
-                "water" in combined_text.lower() or 
-                "cycle" in combined_text.lower() or
-                "evaporation" in combined_text.lower()
+                "water" in combined_text.lower()
+                or "cycle" in combined_text.lower()
+                or "evaporation" in combined_text.lower()
             ), "Text should describe the water cycle"
 
         if len(image_chunks) > 0:
             for image_chunk in image_chunks:
                 image_bytes = image_chunk.to_bytes()
-                
+
                 with open("/tmp/water_cycle_diagram.png", "wb") as f:
                     f.write(image_bytes)
                 print("Saved water cycle diagram to /tmp/water_cycle_diagram.png")
@@ -300,4 +303,5 @@ def test_openai_mixed_text_and_image_generation():
 
 if __name__ == "__main__":
     import sys
+
     pytest.main([__file__, "-v", "-s"] + sys.argv[1:])
