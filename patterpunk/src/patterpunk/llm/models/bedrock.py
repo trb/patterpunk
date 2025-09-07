@@ -317,23 +317,24 @@ class BedrockModel(Model, ABC):
     def _process_converse_response(
         self, output: dict, structured_output: Optional[object] = None
     ) -> Union[AssistantMessage, ToolCallMessage]:
-        if output.get("stopReason") == "tool_use":
-            tool_calls = []
-            for content_block in output["message"]["content"]:
-                if "toolUse" in content_block:
-                    tool_use = content_block["toolUse"]
-                    tool_call = {
-                        "id": tool_use["toolUseId"],
-                        "type": "function",
-                        "function": {
-                            "name": tool_use["name"],
-                            "arguments": json.dumps(tool_use["input"]),
-                        },
-                    }
-                    tool_calls.append(tool_call)
+        # Check for tool use in content blocks regardless of stopReason
+        # Some models return tool calls in content without setting stopReason to "tool_use"
+        tool_calls = []
+        for content_block in output.get("message", {}).get("content", []):
+            if "toolUse" in content_block:
+                tool_use = content_block["toolUse"]
+                tool_call = {
+                    "id": tool_use["toolUseId"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_use["name"],
+                        "arguments": json.dumps(tool_use["input"]),
+                    },
+                }
+                tool_calls.append(tool_call)
 
-            if tool_calls:
-                return ToolCallMessage(tool_calls)
+        if tool_calls:
+            return ToolCallMessage(tool_calls)
 
         response_content = output["message"]["content"]
         response_text = ""

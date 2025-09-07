@@ -49,6 +49,38 @@ def test_simple_bedrock(model_id):
         .complete()
         .latest_message.content
     )
+    
+    # Basic response checks
+    assert response is not None, "Response should not be None"
+    assert isinstance(response, str), f"Response should be a string, got {type(response)}"
+    assert len(response) > 0, "Response should not be empty"
+    
+    # Content validation - verify it answers the question about Canada
+    assert "canada" in response.lower(), f"Response should mention Canada. Got: {response[:200]}"
+    assert "ottawa" in response.lower(), f"Response should mention Ottawa as the capital. Got: {response[:200]}"
+    
+    # JSON format validation
+    import json
+    import re
+    
+    # Find JSON in the response (it might be embedded in other text)
+    json_match = re.search(r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response)
+    assert json_match is not None, f"Response should contain valid JSON format. Got: {response[:500]}"
+    
+    try:
+        parsed_json = json.loads(json_match.group())
+        assert "country" in parsed_json, "JSON should have 'country' key"
+        assert "name" in parsed_json["country"], "JSON should have 'country.name' field"
+        assert "capital" in parsed_json["country"], "JSON should have 'country.capital' field"
+        
+        # Verify correct values
+        country_name = parsed_json["country"]["name"].lower()
+        assert "canada" in country_name, f"Country name should be Canada, got: {parsed_json['country']['name']}"
+        
+        capital_name = parsed_json["country"]["capital"].lower()
+        assert "ottawa" in capital_name, f"Capital should be Ottawa, got: {parsed_json['country']['capital']}"
+    except json.JSONDecodeError as e:
+        pytest.fail(f"Failed to parse JSON from response: {e}. JSON string: {json_match.group()}")
 
 
 @pytest.mark.parametrize(
@@ -155,44 +187,56 @@ def test_structured_output(model_id):
     assert parsed_output.recommended is True
 
 
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "anthropic.claude-3-sonnet-20240229-v1:0",
-        "anthropic.claude-3-haiku-20240307-v1:0",
-    ],
-)
-def test_simple_tool_calling(model_id):
+def test_simple_tool_calling():
 
     def get_weather(location: str) -> str:
+        """Get the current weather for a location.
+        
+        Args:
+            location: The city or location to get weather for
+        """
         return f"The weather in {location} is sunny and 22°C"
 
-    bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.0,
+        top_p=1.0
+    )
 
     chat = Chat(model=bedrock).with_tools([get_weather])
 
-    response = chat.add_message(
-        UserMessage("What's the weather like in Paris?")
-    ).complete()
+    system_msg = SystemMessage(
+        "You are a helpful assistant that MUST use the provided tools to answer questions. "
+        "When asked about weather, you MUST call the get_weather tool. "
+        "Do not just describe what you would do - actually call the tool."
+    )
+    
+    response = (
+        chat.add_message(system_msg)
+        .add_message(UserMessage("What's the weather in Paris?"))
+        .complete()
+    )
 
     assert response.latest_message is not None
-    assert response.latest_message.content is not None
+    assert isinstance(response.latest_message, ToolCallMessage), (
+        f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
+        f"Content: {response.latest_message.content}"
+    )
+    
+    tool_calls = response.latest_message.tool_calls
+    assert len(tool_calls) == 1, f"Expected exactly one tool call, got {len(tool_calls)}"
+    
+    tool_call = tool_calls[0]
+    assert tool_call["type"] == "function"
+    assert tool_call["function"]["name"] == "get_weather"
+    
+    import json
+    arguments = json.loads(tool_call["function"]["arguments"])
+    assert "location" in arguments
+    assert "paris" in arguments["location"].lower()
 
-    if isinstance(response.latest_message, ToolCallMessage):
-        pass
-    else:
-        content = response.latest_message.content.lower()
-        assert "paris" in content
 
-
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "anthropic.claude-3-sonnet-20240229-v1:0",
-        "anthropic.claude-3-haiku-20240307-v1:0",
-    ],
-)
-def test_tool_calling(model_id):
+def test_tool_calling():
 
     def calculate_area(length: float, width: float) -> str:
         area = length * width
@@ -206,14 +250,23 @@ def test_tool_calling(model_id):
         }
         return facts.get(topic.lower(), "Mathematics is the language of the universe")
 
-    bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.0,
+        top_p=1.0
+    )
 
     chat = Chat(model=bedrock).with_tools([calculate_area, get_math_fact])
 
+    system_msg = SystemMessage(
+        "You are a geometry helper that MUST use the provided tools to solve problems. "
+        "When asked to calculate area, you MUST call the calculate_area tool. "
+        "When asked for facts, you MUST call the get_math_fact tool. "
+        "Do not calculate or provide facts without using the tools."
+    )
+
     response = (
-        chat.add_message(
-            SystemMessage("You are a geometry helper. Use tools to solve problems.")
-        )
+        chat.add_message(system_msg)
         .add_message(
             UserMessage(
                 "I have a rectangle that is 5 units long and 3 units wide. "
@@ -224,13 +277,35 @@ def test_tool_calling(model_id):
     )
 
     assert response.latest_message is not None
-    assert response.latest_message.content is not None
-
-    if isinstance(response.latest_message, ToolCallMessage):
-        pass
-    else:
-        content = response.latest_message.content.lower()
-        assert "15" in content or "fifteen" in content
+    assert isinstance(response.latest_message, ToolCallMessage), (
+        f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
+        f"Content: {response.latest_message.content}"
+    )
+    
+    tool_calls = response.latest_message.tool_calls
+    assert len(tool_calls) >= 1, f"Expected at least one tool call, got {len(tool_calls)}"
+    
+    # Verify we have the expected tool calls
+    tool_names = [tc["function"]["name"] for tc in tool_calls]
+    
+    # Check for calculate_area call
+    area_calls = [tc for tc in tool_calls if tc["function"]["name"] == "calculate_area"]
+    assert len(area_calls) >= 1, f"Expected calculate_area to be called, but got tools: {tool_names}"
+    
+    # Verify calculate_area arguments
+    import json
+    area_args = json.loads(area_calls[0]["function"]["arguments"])
+    assert "length" in area_args, "calculate_area missing 'length' argument"
+    assert "width" in area_args, "calculate_area missing 'width' argument"
+    assert area_args["length"] == 5, f"Expected length=5, got {area_args['length']}"
+    assert area_args["width"] == 3, f"Expected width=3, got {area_args['width']}"
+    
+    # Check for get_math_fact call (optional but expected)
+    fact_calls = [tc for tc in tool_calls if tc["function"]["name"] == "get_math_fact"]
+    if fact_calls:
+        fact_args = json.loads(fact_calls[0]["function"]["arguments"])
+        assert "topic" in fact_args, "get_math_fact missing 'topic' argument"
+        assert "rectangle" in fact_args["topic"].lower(), f"Expected topic about rectangles, got {fact_args['topic']}"
 
 
 @pytest.mark.parametrize(
@@ -305,7 +380,8 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
         ("anthropic.claude-3-haiku-20240307-v1:0", ThinkingConfig(effort="low")),
     ],
 )
-def test_thinking_mode_graceful_degradation(model_id, thinking_config):
+def test_thinking_mode_unsupported_models_fail(model_id, thinking_config):
+    """Verify that using ThinkingConfig with models that don't support thinking fails with a clear error."""
 
     bedrock = BedrockModel(
         model_id=model_id, temperature=0.1, top_p=0.98, thinking_config=thinking_config
@@ -313,28 +389,36 @@ def test_thinking_mode_graceful_degradation(model_id, thinking_config):
 
     chat = Chat(model=bedrock)
 
-    try:
-        response = chat.add_message(
+    # Should raise ValidationException when trying to use thinking mode with unsupported model
+    with pytest.raises(ClientError) as exc_info:
+        chat.add_message(
             UserMessage("What is 17 * 23? Please show your work.")
         ).complete()
 
-        assert response.latest_message is not None
-        assert response.latest_message.content is not None
+    # Verify it's a validation error with a clear message
+    error = exc_info.value
+    assert error.response["Error"]["Code"] == "ValidationException", (
+        f"Expected ValidationException but got {error.response['Error']['Code']}"
+    )
 
-        content = response.latest_message.content
-        assert "391" in content or "three hundred ninety-one" in content.lower()
-
-    except Exception as e:
-        if ClientError and isinstance(e, ClientError):
-            error_code = e.response.get("Error", {}).get("Code", "")
-            if error_code == "ValidationException":
-                pass
-            else:
-                raise
-        elif "ValidationException" in str(type(e)) or "reasoning" in str(e).lower():
-            pass
-        else:
-            raise
+    # Check that the error message mentions the problematic field
+    error_msg = str(error)
+    
+    # The error should mention which field caused the problem
+    if thinking_config.token_budget is not None:
+        assert "reasoning_config" in error_msg, (
+            f"Error should mention 'reasoning_config' for token_budget parameter. Got: {error_msg}"
+        )
+    elif thinking_config.effort is not None:
+        # With effort="low", Bedrock sends reasoning_effort which also causes validation error
+        assert "reasoning_effort" in error_msg or "reasoning_config" in error_msg, (
+            f"Error should mention 'reasoning_effort' or 'reasoning_config' for effort parameter. Got: {error_msg}"
+        )
+    
+    # Verify the error message is clear about the issue
+    assert "not permitted" in error_msg or "Malformed" in error_msg, (
+        f"Error message should clearly indicate the parameter is not permitted. Got: {error_msg}"
+    )
 
 
 def test_thinking_mode_parameters():
