@@ -243,6 +243,312 @@ Please extract the relevant information from this reasoning and format it exactl
             return compatible_params
         return api_params
 
+    def _prepare_system_prompt(self, messages: List[Message]) -> Optional[Union[str, List[dict]]]:
+        system_content = self._convert_system_messages_for_anthropic(messages)
+        system_prompt = None
+        if system_content:
+            if len(system_content) == 1 and system_content[0].get("type") == "text":
+                if "cache_control" not in system_content[0]:
+                    system_prompt = system_content[0]["text"]
+                else:
+                    system_prompt = system_content
+            else:
+                system_prompt = system_content
+        return system_prompt
+
+    def _build_base_api_parameters(self, messages: List[Message], system_prompt: Optional[Union[str, List[dict]]]) -> dict:
+        api_params = {
+            "model": self.model,
+            "messages": self._convert_messages_for_anthropic(
+                [
+                    message
+                    for message in messages
+                    if message.role in [ROLE_USER, ROLE_ASSISTANT]
+                ]
+            ),
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "timeout": self.timeout,
+        }
+
+        if system_prompt is not None:
+            api_params["system"] = system_prompt
+
+        return api_params
+
+    def _apply_thinking_configuration(self, api_params: dict) -> dict:
+        if self.thinking and self._is_reasoning_model():
+            api_params["thinking"] = {
+                "type": self.thinking.type,
+                "budget_tokens": self.thinking.budget_tokens,
+            }
+            api_params = self._get_compatible_params(api_params)
+        return api_params
+
+    def _initialize_retry_state(self) -> tuple[int, int]:
+        retry_count = 0
+        wait_time = 60
+        return retry_count, wait_time
+
+    def _handle_api_error(self, error: "APIError", retry_count: int, wait_time: int) -> tuple[bool, int, int]:
+        if (
+            getattr(error, "status_code", None) == 429
+            or "rate_limit_error" in str(error).lower()
+        ):
+            if retry_count >= MAX_RETRIES:
+                raise AnthropicRateLimitError(
+                    f"Rate limit exceeded after {retry_count} retries"
+                ) from error
+
+            logger.warning(
+                f"Rate limit hit, attempt {retry_count + 1}/{MAX_RETRIES}. "
+                f"Waiting {wait_time} seconds before retry."
+            )
+
+            time.sleep(wait_time)
+            new_retry_count = retry_count + 1
+            new_wait_time = int(wait_time * 1.5)
+            return True, new_retry_count, new_wait_time
+        else:
+            raise error
+
+    def _configure_regular_tools(self, api_params: dict, tools: Optional[ToolDefinition]) -> dict:
+        if tools:
+            anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+            if anthropic_tools:
+                api_params["tools"] = anthropic_tools
+        return api_params
+
+    def _configure_structured_output_non_reasoning(self, api_params: dict, tools: Optional[ToolDefinition], structured_output: object) -> dict:
+        structured_output_tool = self._create_structured_output_tool(structured_output)
+        
+        anthropic_tools = []
+        if tools:
+            anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+
+        anthropic_tools.append(structured_output_tool)
+        api_params["tools"] = anthropic_tools
+
+        api_params["tool_choice"] = {
+            "type": "tool",
+            "name": "provide_structured_response",
+        }
+        return api_params
+
+    def _configure_reasoning_structured_output_auto(self, api_params: dict, tools: Optional[ToolDefinition], structured_output: object) -> dict:
+        structured_output_tool = self._create_structured_output_tool(structured_output)
+
+        anthropic_tools = []
+        if tools:
+            anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+
+        anthropic_tools.append(structured_output_tool)
+        api_params["tools"] = anthropic_tools
+
+        api_params["tool_choice"] = {"type": "auto"}
+        return api_params
+
+    def _configure_reasoning_tools_fallback(self, api_params: dict, tools: Optional[ToolDefinition]) -> dict:
+        if tools:
+            anthropic_tools = self._convert_tools_to_anthropic_format(tools)
+            api_params["tools"] = anthropic_tools
+            api_params["tool_choice"] = {"type": "auto"}
+        return api_params
+
+    def _configure_tools_and_structured_output(self, api_params: dict, tools: Optional[ToolDefinition], structured_output: Optional[object]) -> dict:
+        if structured_output and has_model_schema(structured_output):
+            if self.thinking and self._is_reasoning_model():
+                return self._configure_reasoning_structured_output_auto(api_params, tools, structured_output)
+            else:
+                return self._configure_structured_output_non_reasoning(api_params, tools, structured_output)
+        else:
+            return self._configure_regular_tools(api_params, tools)
+
+    def _extract_reasoning_content(self, response) -> str:
+        reasoning_parts = []
+        for block in response.content:
+            if block.type == "text":
+                reasoning_parts.append(block.text)
+            elif block.type == "tool_use" and block.name != "provide_structured_response":
+                reasoning_parts.append(
+                    f"Tool call: {block.name} with arguments: {json.dumps(block.input)}"
+                )
+        return "\n".join(reasoning_parts)
+
+    def _parse_structured_output_from_tool_call(self, block, structured_output: object) -> Optional[AssistantMessage]:
+        if (
+            block.name == "provide_structured_response"
+            and structured_output
+        ):
+            if hasattr(block, "input") and block.input:
+                try:
+                    parsed_output = structured_output.model_validate(block.input)
+                    structured_response_content = json.dumps(block.input, indent=2)
+
+                    return AssistantMessage(
+                        structured_response_content,
+                        structured_output=structured_output,
+                        parsed_output=parsed_output,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to parse structured output from tool call: {e}"
+                    )
+        return None
+
+    def _convert_tool_call_block(self, block) -> dict:
+        arguments = "{}"
+        if hasattr(block, "input") and block.input:
+            try:
+                arguments = json.dumps(block.input)
+            except (TypeError, ValueError):
+                arguments = str(block.input)
+
+        tool_call = {
+            "id": block.id,
+            "type": "function",
+            "function": {
+                "name": block.name,
+                "arguments": arguments,
+            },
+        }
+        return tool_call
+
+    def _assemble_text_content(self, response, structured_output: Optional[object]) -> AssistantMessage:
+        content = "\n".join(
+            [
+                block.text
+                for block in response.content
+                if block.type == "text"
+            ]
+        )
+        return AssistantMessage(content, structured_output=structured_output)
+
+    def _validate_stop_reason(self, response) -> None:
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "Anthropic response was cut off as the model hit MAX_TOKENS"
+            )
+        elif response.stop_reason == "refusal":
+            logger.warning(
+                "Anthropic model refused to generate content for safety reasons"
+            )
+
+    def _execute_with_retry_loop(self, messages: List[Message], tools: Optional[ToolDefinition], structured_output: Optional[object]) -> Union[Message, "ToolCallMessage"]:
+        system_prompt = self._prepare_system_prompt(messages)
+        retry_count, wait_time = self._initialize_retry_state()
+
+        while True:
+            try:
+                api_params = self._build_base_api_parameters(messages, system_prompt)
+                api_params = self._apply_thinking_configuration(api_params)
+
+                if (
+                    structured_output
+                    and has_model_schema(structured_output)
+                    and self.thinking
+                    and self._is_reasoning_model()
+                ):
+                    logger.info(
+                        f"[ANTHROPIC] Attempting reasoning model with auto tool choice for structured output"
+                    )
+
+                    api_params = self._configure_reasoning_structured_output_auto(api_params, tools, structured_output)
+
+                    try:
+                        reasoning_response = anthropic.messages.create(**api_params)
+
+                        for block in reasoning_response.content:
+                            if (
+                                block.type == "tool_use"
+                                and block.name == "provide_structured_response"
+                            ):
+                                if hasattr(block, "input") and block.input:
+                                    try:
+                                        parsed_output = structured_output.model_validate(block.input)
+                                        structured_response_content = json.dumps(block.input, indent=2)
+
+                                        logger.info(
+                                            "[ANTHROPIC] Successfully got structured output from reasoning model with auto tool choice"
+                                        )
+                                        return AssistantMessage(
+                                            structured_response_content,
+                                            structured_output=structured_output,
+                                            parsed_output=parsed_output,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"[ANTHROPIC] Failed to parse structured output from reasoning model: {e}"
+                                        )
+                                        break
+
+                        logger.info(
+                            "[ANTHROPIC] Reasoning model didn't use structured output tool, falling back to two-model approach"
+                        )
+
+                        reasoning_content = self._extract_reasoning_content(reasoning_response)
+                        return self._format_reasoning_to_structured_output(
+                            reasoning_content, structured_output, messages
+                        )
+
+                    except Exception as e:
+                        logger.warning(
+                            f"[ANTHROPIC] Error with reasoning model auto tool choice: {e}, falling back to two-model approach"
+                        )
+
+                        api_params = self._configure_reasoning_tools_fallback(api_params, tools)
+                        reasoning_response = anthropic.messages.create(**api_params)
+                        reasoning_content = self._extract_reasoning_content(reasoning_response)
+                        return self._format_reasoning_to_structured_output(
+                            reasoning_content, structured_output, messages
+                        )
+
+                else:
+                    api_params = self._configure_tools_and_structured_output(api_params, tools, structured_output)
+
+                response = anthropic.messages.create(**api_params)
+
+                if response.stop_reason in [
+                    "end_turn",
+                    "stop_sequence",
+                    "max_tokens",
+                    "refusal",
+                ]:
+                    self._validate_stop_reason(response)
+                    return self._assemble_text_content(response, structured_output)
+                elif response.stop_reason == "tool_use":
+                    tool_calls = []
+
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            structured_result = self._parse_structured_output_from_tool_call(block, structured_output)
+                            if structured_result:
+                                return structured_result
+
+                            tool_call = self._convert_tool_call_block(block)
+                            tool_calls.append(tool_call)
+
+                    if tool_calls:
+                        return ToolCallMessage(tool_calls)
+                    else:
+                        raise AnthropicAPIError(
+                            "Tool use stop reason but no tool use blocks found in response"
+                        )
+                else:
+                    raise AnthropicAPIError(
+                        f"Unknown stop reason: {response.stop_reason}"
+                    )
+
+            except APIError as e:
+                should_retry, retry_count, wait_time = self._handle_api_error(e, retry_count, wait_time)
+                if should_retry:
+                    continue
+        raise AnthropicAPIError(
+            f"Unexpected outcome - out of retries, but neither error raised or message returned"
+        )
+
     def _convert_content_to_anthropic_format(self, content) -> List[dict]:
         if isinstance(content, str):
             return [{"type": "text", "text": content}]
@@ -376,316 +682,15 @@ Please extract the relevant information from this reasoning and format it exactl
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
-        system_content = self._convert_system_messages_for_anthropic(messages)
-        system_prompt = None
-        if system_content:
-            if len(system_content) == 1 and system_content[0].get("type") == "text":
-                if "cache_control" not in system_content[0]:
-                    system_prompt = system_content[0]["text"]
-                else:
-                    # Has cache controls, use content array format
-                    system_prompt = system_content
-            else:
-                # Multiple blocks or complex content, use content array format
-                system_prompt = system_content
+        return self._execute_with_retry_loop(messages, tools, structured_output)
 
-        retry_count = 0
-        wait_time = 60
-
-        while True:
-            try:
-                api_params = {
-                    "model": self.model,
-                    "messages": self._convert_messages_for_anthropic(
-                        [
-                            message
-                            for message in messages
-                            if message.role in [ROLE_USER, ROLE_ASSISTANT]
-                        ]
-                    ),
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                    "top_p": self.top_p,
-                    "top_k": self.top_k,
-                    "timeout": self.timeout,
-                }
-
-                if system_prompt is not None:
-                    api_params["system"] = system_prompt
-
-                if self.thinking and self._is_reasoning_model():
-                    api_params["thinking"] = {
-                        "type": self.thinking.type,
-                        "budget_tokens": self.thinking.budget_tokens,
-                    }
-                    api_params = self._get_compatible_params(api_params)
-
-                if (
-                    structured_output
-                    and has_model_schema(structured_output)
-                    and self.thinking
-                    and self._is_reasoning_model()
-                ):
-                    # Try reasoning model with auto tool choice first (compatible with thinking)
-                    logger.info(
-                        f"[ANTHROPIC] Attempting reasoning model with auto tool choice for structured output"
-                    )
-
-                    structured_output_tool = self._create_structured_output_tool(
-                        structured_output
-                    )
-
-                    anthropic_tools = []
-                    if tools:
-                        anthropic_tools = self._convert_tools_to_anthropic_format(tools)
-
-                    # Add the structured output tool
-                    anthropic_tools.append(structured_output_tool)
-                    api_params["tools"] = anthropic_tools
-
-                    # Use auto tool choice (compatible with reasoning mode)
-                    api_params["tool_choice"] = {"type": "auto"}
-
-                    # Make the reasoning call with auto tool choice
-                    try:
-                        reasoning_response = anthropic.messages.create(**api_params)
-
-                        # Check if the model used the structured output tool
-                        for block in reasoning_response.content:
-                            if (
-                                block.type == "tool_use"
-                                and block.name == "provide_structured_response"
-                            ):
-                                if hasattr(block, "input") and block.input:
-                                    try:
-                                        # Parse the structured output
-                                        parsed_output = (
-                                            structured_output.model_validate(
-                                                block.input
-                                            )
-                                        )
-                                        # Create content from the structured data
-                                        structured_response_content = json.dumps(
-                                            block.input, indent=2
-                                        )
-
-                                        logger.info(
-                                            "[ANTHROPIC] Successfully got structured output from reasoning model with auto tool choice"
-                                        )
-                                        return AssistantMessage(
-                                            structured_response_content,
-                                            structured_output=structured_output,
-                                            parsed_output=parsed_output,
-                                        )
-                                    except Exception as e:
-                                        logger.warning(
-                                            f"[ANTHROPIC] Failed to parse structured output from reasoning model: {e}"
-                                        )
-                                        break
-
-                        # If we get here, the reasoning model didn't use the structured output tool
-                        # Fall back to two-model approach
-                        logger.info(
-                            "[ANTHROPIC] Reasoning model didn't use structured output tool, falling back to two-model approach"
-                        )
-
-                        # Extract the reasoning content (handle both text and tool calls)
-                        reasoning_parts = []
-                        for block in reasoning_response.content:
-                            if block.type == "text":
-                                reasoning_parts.append(block.text)
-                            elif (
-                                block.type == "tool_use"
-                                and block.name != "provide_structured_response"
-                            ):
-                                # Include other tool calls in the reasoning context
-                                reasoning_parts.append(
-                                    f"Tool call: {block.name} with arguments: {json.dumps(block.input)}"
-                                )
-
-                        reasoning_content = "\n".join(reasoning_parts)
-
-                        # Second call: use Claude 3.5 Haiku to format the reasoning into structured output
-                        return self._format_reasoning_to_structured_output(
-                            reasoning_content, structured_output, messages
-                        )
-
-                    except Exception as e:
-                        logger.warning(
-                            f"[ANTHROPIC] Error with reasoning model auto tool choice: {e}, falling back to two-model approach"
-                        )
-
-                        # Fall back to two-model approach without structured output tool
-                        if tools:
-                            anthropic_tools = self._convert_tools_to_anthropic_format(
-                                tools
-                            )
-                            api_params["tools"] = anthropic_tools
-                            api_params["tool_choice"] = {"type": "auto"}
-
-                        # Make the reasoning call
-                        reasoning_response = anthropic.messages.create(**api_params)
-
-                        # Extract the reasoning content
-                        reasoning_parts = []
-                        for block in reasoning_response.content:
-                            if block.type == "text":
-                                reasoning_parts.append(block.text)
-                            elif block.type == "tool_use":
-                                reasoning_parts.append(
-                                    f"Tool call: {block.name} with arguments: {json.dumps(block.input)}"
-                                )
-
-                        reasoning_content = "\n".join(reasoning_parts)
-
-                        # Second call: use Claude 3.5 Haiku to format the reasoning into structured output
-                        return self._format_reasoning_to_structured_output(
-                            reasoning_content, structured_output, messages
-                        )
-
-                elif structured_output and has_model_schema(structured_output):
-                    # Regular structured output approach for non-reasoning models
-                    structured_output_tool = self._create_structured_output_tool(
-                        structured_output
-                    )
-
-                    anthropic_tools = []
-                    if tools:
-                        anthropic_tools = self._convert_tools_to_anthropic_format(tools)
-
-                    # Add the structured output tool
-                    anthropic_tools.append(structured_output_tool)
-                    api_params["tools"] = anthropic_tools
-
-                    # Force the model to use the structured output tool
-                    api_params["tool_choice"] = {
-                        "type": "tool",
-                        "name": "provide_structured_response",
-                    }
-                elif tools:
-                    # Regular tool handling when no structured output
-                    anthropic_tools = self._convert_tools_to_anthropic_format(tools)
-                    if anthropic_tools:
-                        api_params["tools"] = anthropic_tools
-
-                response = anthropic.messages.create(**api_params)
-
-                if response.stop_reason in [
-                    "end_turn",
-                    "stop_sequence",
-                    "max_tokens",
-                    "refusal",
-                ]:
-                    if response.stop_reason == "max_tokens":
-                        logger.warning(
-                            "Anthropic response was cut off as the model hit MAX_TOKENS"
-                        )
-                    elif response.stop_reason == "refusal":
-                        logger.warning(
-                            "Anthropic model refused to generate content for safety reasons"
-                        )
-                    content = "\n".join(
-                        [
-                            block.text
-                            for block in response.content
-                            if block.type == "text"
-                        ]
-                    )
-                    return AssistantMessage(
-                        content, structured_output=structured_output
-                    )
-                elif response.stop_reason == "tool_use":
-                    # Handle tool use response
-                    tool_calls = []
-                    structured_response_content = None
-
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            # Check if this is our structured output tool
-                            if (
-                                block.name == "provide_structured_response"
-                                and structured_output
-                            ):
-                                # Extract the structured output directly from the tool call
-                                if hasattr(block, "input") and block.input:
-                                    try:
-                                        # Parse the structured output
-                                        parsed_output = (
-                                            structured_output.model_validate(
-                                                block.input
-                                            )
-                                        )
-                                        # Create content from the structured data
-                                        structured_response_content = json.dumps(
-                                            block.input, indent=2
-                                        )
-
-                                        return AssistantMessage(
-                                            structured_response_content,
-                                            structured_output=structured_output,
-                                            parsed_output=parsed_output,
-                                        )
-                                    except Exception as e:
-                                        logger.warning(
-                                            f"Failed to parse structured output from tool call: {e}"
-                                        )
-                                        # Fall back to regular tool call handling
-
-                            # Regular tool call handling
-                            # Convert Anthropic tool use format to patterpunk standard format
-                            # Anthropic returns input as a dict, we need to convert to JSON string
-                            arguments = "{}"
-                            if hasattr(block, "input") and block.input:
-                                try:
-                                    arguments = json.dumps(block.input)
-                                except (TypeError, ValueError):
-                                    arguments = str(block.input)
-
-                            tool_call = {
-                                "id": block.id,
-                                "type": "function",
-                                "function": {
-                                    "name": block.name,
-                                    "arguments": arguments,
-                                },
-                            }
-                            tool_calls.append(tool_call)
-
-                    if tool_calls:
-                        return ToolCallMessage(tool_calls)
-                    else:
-                        raise AnthropicAPIError(
-                            "Tool use stop reason but no tool use blocks found in response"
-                        )
-                else:
-                    raise AnthropicAPIError(
-                        f"Unknown stop reason: {response.stop_reason}"
-                    )
-
-            except APIError as e:
-                if (
-                    getattr(e, "status_code", None) == 429
-                    or "rate_limit_error" in str(e).lower()
-                ):
-                    if retry_count >= MAX_RETRIES:
-                        raise AnthropicRateLimitError(
-                            f"Rate limit exceeded after {retry_count} retries"
-                        ) from e
-
-                    logger.warning(
-                        f"Rate limit hit, attempt {retry_count + 1}/{MAX_RETRIES}. "
-                        f"Waiting {wait_time} seconds before retry."
-                    )
-
-                    time.sleep(wait_time)
-                    retry_count += 1
-                    wait_time = int(wait_time * 1.5)
-                    continue
-
-                raise
-        raise AnthropicAPIError(
-            f"Unexpected outcome - out of retries, but neither error raised or message returned"
-        )
+    def _prepare_streaming_parameters(self, messages: List[Message], tools: Optional[ToolDefinition], structured_output: Optional[object]) -> dict:
+        system_prompt = self._prepare_system_prompt(messages)
+        api_params = self._build_base_api_parameters(messages, system_prompt)
+        api_params = self._apply_thinking_configuration(api_params)
+        api_params = self._configure_tools_and_structured_output(api_params, tools, structured_output)
+        api_params["stream"] = True
+        return api_params
 
     @staticmethod
     def get_available_models() -> List[str]:

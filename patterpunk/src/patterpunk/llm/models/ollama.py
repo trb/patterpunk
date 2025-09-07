@@ -35,7 +35,7 @@ class OllamaModel(Model, ABC):
         self.num_ctx = num_ctx
         self.max_tokens = max_tokens
 
-    def _convert_tools_to_ollama_format(self, tools: ToolDefinition) -> List[dict]:
+    def _prepare_tools(self, tools: ToolDefinition) -> List[dict]:
         ollama_tools = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
@@ -43,7 +43,7 @@ class OllamaModel(Model, ABC):
 
         return ollama_tools
 
-    def _prepare_messages_for_ollama(
+    def _prepare_messages(
         self, messages: List[Message]
     ) -> tuple[List[dict], List[str]]:
         import tempfile
@@ -132,17 +132,10 @@ class OllamaModel(Model, ABC):
         }
         return extension_map.get(media_type, ".jpg")
 
-    def generate_assistant_message(
-        self,
-        messages: List[Message],
-        tools: Optional[ToolDefinition] = None,
-        structured_output: Optional[object] = None,
-        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
-    ) -> Union[Message, "ToolCallMessage"]:
+    def _prepare_options(self) -> dict:
         options = {}
         if self.temperature is not None:
             options["temperature"] = self.temperature
-
         if self.top_p is not None:
             options["top_p"] = self.top_p
         if self.top_k is not None:
@@ -155,73 +148,128 @@ class OllamaModel(Model, ABC):
             options["num_ctx"] = self.num_ctx
         if self.max_tokens is not None:
             options["num_predict"] = self.max_tokens
+        return options
 
-        ollama_messages, all_images = self._prepare_messages_for_ollama(messages)
-
+    def _build_chat_params(
+        self,
+        ollama_messages: List[dict],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        stream: bool = False,
+    ) -> dict:
+        from patterpunk.lib.structured_output import get_model_schema, has_model_schema
+        
         chat_params = {
             "model": self.model,
             "messages": ollama_messages,
-            "stream": False,
+            "stream": stream,
             "format": (
                 get_model_schema(structured_output)
                 if has_model_schema(structured_output)
                 else None
             ),
-            "options": options,
+            "options": self._prepare_options(),
         }
 
         if tools:
-            ollama_tools = self._convert_tools_to_ollama_format(tools)
+            ollama_tools = self._prepare_tools(tools)
             if ollama_tools:
                 chat_params["tools"] = ollama_tools
 
-        try:
-            response = ollama.chat(**chat_params)
-        except Exception as e:
-            if hasattr(self, "_temp_files"):
-                for temp_file in self._temp_files:
-                    try:
-                        import os
+        return chat_params
 
-                        os.unlink(temp_file)
-                    except:
-                        pass
-                del self._temp_files
-            raise
+    def _execute_chat_request(self, chat_params: dict) -> dict:
+        from patterpunk.config import ollama
+        
+        return ollama.chat(**chat_params)
 
-        if response.get("message", {}).get("tool_calls"):
-            tool_calls = []
-            for tool_call in response["message"]["tool_calls"]:
-                call_id = tool_call.get("id")
-                if not call_id:
-                    call_id = f"call_{tool_call['function']['name']}_{random.randint(1000, 9999)}"
+    def _process_tool_calls(self, response: dict) -> Optional[ToolCallMessage]:
+        if not response.get("message", {}).get("tool_calls"):
+            return None
 
-                formatted_tool_call = {
-                    "id": call_id,
-                    "type": tool_call.get("type", "function"),
-                    "function": {
-                        "name": tool_call["function"]["name"],
-                        "arguments": tool_call["function"]["arguments"],
-                    },
-                }
-                tool_calls.append(formatted_tool_call)
+        tool_calls = []
+        for tool_call in response["message"]["tool_calls"]:
+            call_id = tool_call.get("id")
+            if not call_id:
+                call_id = f"call_{tool_call['function']['name']}_{random.randint(1000, 9999)}"
 
-            if tool_calls:
-                return ToolCallMessage(tool_calls)
+            formatted_tool_call = {
+                "id": call_id,
+                "type": tool_call.get("type", "function"),
+                "function": {
+                    "name": tool_call["function"]["name"],
+                    "arguments": tool_call["function"]["arguments"],
+                },
+            }
+            tool_calls.append(formatted_tool_call)
 
+        if tool_calls:
+            return ToolCallMessage(tool_calls)
+        
+        return None
+
+    def _create_assistant_response(self, response: dict, structured_output: Optional[object] = None) -> AssistantMessage:
+        return AssistantMessage(
+            response["message"]["content"], structured_output=structured_output
+        )
+
+    def _cleanup_temp_files(self):
         if hasattr(self, "_temp_files"):
             for temp_file in self._temp_files:
                 try:
                     import os
-
                     os.unlink(temp_file)
                 except:
                     pass
             del self._temp_files
 
-        return AssistantMessage(
-            response["message"]["content"], structured_output=structured_output
+    def _handle_response_errors(self, exception: Exception):
+        self._cleanup_temp_files()
+        raise exception
+
+    def _validate_response(self, response: dict) -> bool:
+        if not isinstance(response, dict):
+            return False
+        
+        message = response.get("message")
+        if not isinstance(message, dict):
+            return False
+            
+        if "content" not in message and not message.get("tool_calls"):
+            return False
+            
+        return True
+
+    def generate_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> Union[Message, "ToolCallMessage"]:
+        ollama_messages, all_images = self._prepare_messages(messages)
+        
+        chat_params = self._build_chat_params(
+            ollama_messages=ollama_messages,
+            tools=tools,
+            structured_output=structured_output,
+            stream=False
         )
+
+        try:
+            response = self._execute_chat_request(chat_params)
+        except Exception as e:
+            self._handle_response_errors(e)
+
+        if not self._validate_response(response):
+            self._handle_response_errors(ValueError(f"Invalid response format: {response}"))
+
+        tool_call_response = self._process_tool_calls(response)
+        if tool_call_response is not None:
+            return tool_call_response
+
+        self._cleanup_temp_files()
+        return self._create_assistant_response(response, structured_output)
 
     @staticmethod
     def get_name():

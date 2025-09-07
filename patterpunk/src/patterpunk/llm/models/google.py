@@ -369,19 +369,13 @@ class GoogleModel(Model, ABC):
 
         return "\n\n".join(system_parts)
 
-    def generate_assistant_message(
+    def _build_generation_config(
         self,
-        messages: List[Message],
-        tools: Optional[ToolDefinition] = None,
-        structured_output: Optional[object] = None,
-        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
-    ) -> Union[Message, "ToolCallMessage"]:
-        system_prompt = self._convert_system_messages_for_google_with_cache(messages)
-
-        contents, cache_mappings = self._convert_messages_for_google_with_cache(
-            messages
-        )
-
+        tools: Optional[ToolDefinition],
+        structured_output: Optional[object],
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]],
+        system_instruction: Optional[str],
+    ) -> types.GenerateContentConfig:
         config = types.GenerateContentConfig(
             max_output_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -403,8 +397,8 @@ class GoogleModel(Model, ABC):
                 thinking_config_kwargs["include_thoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
 
-        if system_prompt:
-            config.system_instruction = system_prompt
+        if system_instruction:
+            config.system_instruction = system_instruction
 
         if tools:
             google_tools = self._convert_tools_to_google_format(tools)
@@ -421,6 +415,110 @@ class GoogleModel(Model, ABC):
             else:
                 config.response_schema = structured_output
 
+        return config
+
+    def _prepare_generation_request(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> tuple[List[types.Content], types.GenerateContentConfig, dict[str, str]]:
+        system_instruction = self._convert_system_messages_for_google_with_cache(messages)
+        
+        contents, cache_mappings = self._convert_messages_for_google_with_cache(
+            messages
+        )
+        
+        config = self._build_generation_config(
+            tools, structured_output, output_types, system_instruction
+        )
+        
+        return contents, config, cache_mappings
+
+    def _process_generation_response(
+        self, response, structured_output: Optional[object]
+    ) -> Union[Message, "ToolCallMessage"]:
+        if hasattr(response, "candidates") and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, "content") and candidate.content.parts:
+                tool_calls = []
+                chunks = []
+
+                for part in candidate.content.parts:
+                    if (
+                        hasattr(part, "function_call")
+                        and part.function_call is not None
+                    ):
+                        tool_call = {
+                            "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
+                            "type": "function",
+                            "function": {
+                                "name": part.function_call.name,
+                                "arguments": json.dumps(
+                                    dict(part.function_call.args)
+                                ),
+                            },
+                        }
+                        tool_calls.append(tool_call)
+
+                    elif (
+                        hasattr(part, "text")
+                        and part.text
+                        and part.text != "None"
+                    ):
+                        chunks.append(TextChunk(part.text))
+
+                    elif hasattr(part, "inline_data") and part.inline_data:
+                        mime_type = getattr(part.inline_data, "mime_type", None)
+                        data = getattr(part.inline_data, "data", None)
+                        if data and mime_type:
+                            if isinstance(data, bytes):
+                                image_chunk = MultimodalChunk.from_bytes(
+                                    data, media_type=mime_type
+                                )
+                            else:
+                                image_chunk = MultimodalChunk.from_base64(
+                                    data, media_type=mime_type
+                                )
+                            chunks.append(image_chunk)
+
+                if tool_calls:
+                    return ToolCallMessage(tool_calls)
+
+                if chunks:
+                    if len(chunks) == 1 and isinstance(chunks[0], TextChunk):
+                        return AssistantMessage(
+                            chunks[0].content,
+                            structured_output=structured_output,
+                        )
+                    else:
+                        return AssistantMessage(
+                            chunks, structured_output=structured_output
+                        )
+
+        try:
+            if hasattr(response, "text") and response.text:
+                content = response.text
+                return AssistantMessage(
+                    content, structured_output=structured_output
+                )
+        except Exception:
+            pass
+
+        raise GoogleAPIError("No content found in Vertex AI response")
+
+    def generate_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> Union[Message, "ToolCallMessage"]:
+        contents, config, cache_mappings = self._prepare_generation_request(
+            messages, tools, structured_output, output_types
+        )
+
         retry_count = 0
         wait_time = 60
 
@@ -430,74 +528,7 @@ class GoogleModel(Model, ABC):
                     model=self.model, contents=contents, config=config
                 )
 
-                if hasattr(response, "candidates") and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, "content") and candidate.content.parts:
-                        tool_calls = []
-                        chunks = []
-
-                        for part in candidate.content.parts:
-                            if (
-                                hasattr(part, "function_call")
-                                and part.function_call is not None
-                            ):
-                                tool_call = {
-                                    "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": part.function_call.name,
-                                        "arguments": json.dumps(
-                                            dict(part.function_call.args)
-                                        ),
-                                    },
-                                }
-                                tool_calls.append(tool_call)
-
-                            elif (
-                                hasattr(part, "text")
-                                and part.text
-                                and part.text != "None"
-                            ):
-                                chunks.append(TextChunk(part.text))
-
-                            elif hasattr(part, "inline_data") and part.inline_data:
-                                mime_type = getattr(part.inline_data, "mime_type", None)
-                                data = getattr(part.inline_data, "data", None)
-                                if data and mime_type:
-                                    if isinstance(data, bytes):
-                                        image_chunk = MultimodalChunk.from_bytes(
-                                            data, media_type=mime_type
-                                        )
-                                    else:
-                                        image_chunk = MultimodalChunk.from_base64(
-                                            data, media_type=mime_type
-                                        )
-                                    chunks.append(image_chunk)
-
-                        if tool_calls:
-                            return ToolCallMessage(tool_calls)
-
-                        if chunks:
-                            if len(chunks) == 1 and isinstance(chunks[0], TextChunk):
-                                return AssistantMessage(
-                                    chunks[0].content,
-                                    structured_output=structured_output,
-                                )
-                            else:
-                                return AssistantMessage(
-                                    chunks, structured_output=structured_output
-                                )
-
-                try:
-                    if hasattr(response, "text") and response.text:
-                        content = response.text
-                        return AssistantMessage(
-                            content, structured_output=structured_output
-                        )
-                except Exception:
-                    pass
-
-                raise GoogleAPIError("No content found in Vertex AI response")
+                return self._process_generation_response(response, structured_output)
 
             except genai_errors.APIError as error:
                 if error.code == 429:

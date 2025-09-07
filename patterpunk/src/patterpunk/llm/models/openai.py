@@ -275,54 +275,44 @@ class OpenAiModel(Model, ABC):
 
         return responses_input
 
-    def generate_assistant_message(
-        self,
-        messages: List[Message],
-        tools: Optional[ToolDefinition] = None,
-        structured_output: Optional[object] = None,
-        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
-    ) -> Union[AssistantMessage, ToolCallMessage]:
-        logger.info("Request to OpenAi made")
-        logger_llm.debug(
-            "\n---\n".join(
-                [f"{message.__repr__(truncate=False)}" for message in messages]
-            )
-        )
-
+    def _should_prompt_for_structured_output(self, structured_output: Optional[object]) -> bool:
         prompt_for_structured_output = False
-
         if structured_output and has_model_schema(structured_output):
             prompt_for_structured_output = True
+        return prompt_for_structured_output
 
-        responses_input = self._convert_messages_to_responses_input(
-            messages, prompt_for_structured_output
-        )
+    def _log_request_parameters(self, responses_parameters: dict) -> None:
+        log_params = {k: v for k, v in responses_parameters.items() if k != "input"}
+        param_strings = []
+        for key, value in log_params.items():
+            param_strings.append(f"{key}: {value}")
+        logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
 
-        responses_parameters = {
-            "model": self.model,
-            "input": responses_input,
-            "store": False,
-        }
+    def _is_reasoning_model(self, model: str) -> bool:
+        return model.startswith("o")
 
+    def _setup_tools_parameter(self, tools: Optional[ToolDefinition], output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> Optional[List[dict]]:
+        tools_list = None
+        
         if tools:
-            responses_parameters["tools"] = tools
-
+            tools_list = tools if isinstance(tools, list) else [tools]
+        
         if output_types and OutputType.IMAGE in output_types:
             image_generation_tool = {"type": "image_generation"}
-            if tools:
-                if isinstance(tools, list):
-                    responses_parameters["tools"] = tools + [image_generation_tool]
-                else:
-                    responses_parameters["tools"] = [tools, image_generation_tool]
+            if tools_list:
+                tools_list = tools_list + [image_generation_tool]
             else:
-                responses_parameters["tools"] = [image_generation_tool]
+                tools_list = [image_generation_tool]
+        
+        return tools_list
 
+    def _setup_structured_output_parameter(self, structured_output: Optional[object], prompt_for_structured_output: bool) -> Optional[dict]:
         if (
             structured_output
             and has_model_schema(structured_output)
             and not prompt_for_structured_output
         ):
-            responses_parameters["response_format"] = {
+            return {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "structured_response",
@@ -330,27 +320,128 @@ class OpenAiModel(Model, ABC):
                     "strict": True,
                 },
             }
+        return None
 
-        if self.model.startswith("o"):
-            responses_parameters["reasoning"] = {
-                "effort": self.reasoning_effort.name.lower()
+    def _setup_model_parameters(self, model: str, temperature: float, top_p: float, frequency_penalty: float, presence_penalty: float, logit_bias: dict, reasoning_effort: OpenAiReasoningEffort) -> dict:
+        model_params = {}
+        
+        if self._is_reasoning_model(model):
+            model_params["reasoning"] = {
+                "effort": reasoning_effort.name.lower()
             }
         else:
-            responses_parameters["temperature"] = self.temperature
-            responses_parameters["top_p"] = self.top_p
-            if self.frequency_penalty != 0.0:
-                responses_parameters["frequency_penalty"] = self.frequency_penalty
-            if self.presence_penalty != 0.0:
-                responses_parameters["presence_penalty"] = self.presence_penalty
-            if self.logit_bias:
-                responses_parameters["logit_bias"] = self.logit_bias
+            model_params["temperature"] = temperature
+            model_params["top_p"] = top_p
+            if frequency_penalty != 0.0:
+                model_params["frequency_penalty"] = frequency_penalty
+            if presence_penalty != 0.0:
+                model_params["presence_penalty"] = presence_penalty
+            if logit_bias:
+                model_params["logit_bias"] = logit_bias
+        
+        return model_params
 
-        log_params = {k: v for k, v in responses_parameters.items() if k != "input"}
-        param_strings = []
-        for key, value in log_params.items():
-            param_strings.append(f"{key}: {value}")
-        logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
+    def _process_image_generation_output(self, output_item) -> Optional[MultimodalChunk]:
+        if (
+            hasattr(output_item, "type")
+            and output_item.type == "image_generation_call"
+        ):
+            if hasattr(output_item, "result") and output_item.result:
+                image_chunk = MultimodalChunk.from_base64(
+                    output_item.result, media_type="image/png"
+                )
+                return image_chunk
+        return None
 
+    def _process_tool_calls_output(self, output_item) -> List[dict]:
+        tool_calls = []
+        if hasattr(output_item, "tool_calls") and output_item.tool_calls:
+            for tool_call in output_item.tool_calls:
+                tool_calls.append(
+                    {
+                        "id": tool_call.id,
+                        "type": tool_call.type,
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        },
+                    }
+                )
+        return tool_calls
+
+    def _parse_structured_output(self, response_text: str, structured_output: Optional[object]) -> Optional[object]:
+        parsed_output = None
+        if structured_output and has_model_schema(structured_output):
+            try:
+                parsed_output = structured_output.model_validate_json(
+                    response_text
+                )
+            except Exception as e:
+                logger.warning(f"Failed to parse structured output: {e}")
+                try:
+                    json_content = extract_json(response_text)
+                    if json_content:
+                        parsed_output = structured_output.model_validate(json_content)
+                except Exception as fallback_error:
+                    logger.warning(
+                        f"Fallback JSON parsing also failed: {fallback_error}"
+                    )
+        return parsed_output
+
+    def _process_response_output(self, response, structured_output: Optional[object]) -> Union[AssistantMessage, ToolCallMessage, None]:
+        if hasattr(response, "output") and response.output:
+            chunks = []
+            tool_calls = []
+
+            for output_item in response.output:
+                image_chunk = self._process_image_generation_output(output_item)
+                if image_chunk:
+                    chunks.append(image_chunk)
+                else:
+                    output_tool_calls = self._process_tool_calls_output(output_item)
+                    tool_calls.extend(output_tool_calls)
+
+            if tool_calls:
+                return ToolCallMessage(tool_calls)
+
+            if chunks:
+                text_content = response.output_text if response.output_text else ""
+                if text_content:
+                    chunks.insert(0, TextChunk(text_content))
+                return AssistantMessage(chunks, structured_output=structured_output)
+
+        return None
+
+    def _build_base_request_parameters(self, model: str, responses_input: List[dict]) -> dict:
+        return {
+            "model": model,
+            "input": responses_input,
+            "store": False,
+        }
+
+    def _prepare_request_parameters(self, messages: List[Message], tools: Optional[ToolDefinition], structured_output: Optional[object], output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> dict:
+        prompt_for_structured_output = self._should_prompt_for_structured_output(structured_output)
+        
+        responses_input = self._convert_messages_to_responses_input(
+            messages, prompt_for_structured_output
+        )
+        
+        responses_parameters = self._build_base_request_parameters(self.model, responses_input)
+        
+        tools_parameter = self._setup_tools_parameter(tools, output_types)
+        if tools_parameter:
+            responses_parameters["tools"] = tools_parameter
+        
+        structured_output_parameter = self._setup_structured_output_parameter(structured_output, prompt_for_structured_output)
+        if structured_output_parameter:
+            responses_parameters["response_format"] = structured_output_parameter
+        
+        model_params = self._setup_model_parameters(self.model, self.temperature, self.top_p, self.frequency_penalty, self.presence_penalty, self.logit_bias, self.reasoning_effort)
+        responses_parameters.update(model_params)
+        
+        return responses_parameters
+
+    def _execute_with_retry(self, responses_parameters: dict) -> object:
         retry_count = 0
         done = False
         response = False
@@ -383,66 +474,47 @@ class OpenAiModel(Model, ABC):
                 "OpenAi Responses API is returning too many api errors"
             )
 
+        return response
+
+    def _process_response(self, response, structured_output: Optional[object]) -> Union[AssistantMessage, ToolCallMessage]:
         logger_llm.info(f"[Assistant]\n{response.output_text}")
 
-        if hasattr(response, "output") and response.output:
-            chunks = []
-            tool_calls = []
+        response_message = self._process_response_output(response, structured_output)
+        if response_message:
+            return response_message
 
-            for output_item in response.output:
-                if (
-                    hasattr(output_item, "type")
-                    and output_item.type == "image_generation_call"
-                ):
-                    if hasattr(output_item, "result") and output_item.result:
-                        image_chunk = MultimodalChunk.from_base64(
-                            output_item.result, media_type="image/png"
-                        )
-                        chunks.append(image_chunk)
-                elif hasattr(output_item, "tool_calls") and output_item.tool_calls:
-                    for tool_call in output_item.tool_calls:
-                        tool_calls.append(
-                            {
-                                "id": tool_call.id,
-                                "type": tool_call.type,
-                                "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments,
-                                },
-                            }
-                        )
-
-            if tool_calls:
-                return ToolCallMessage(tool_calls)
-
-            if chunks:
-                text_content = response.output_text if response.output_text else ""
-                if text_content:
-                    chunks.insert(0, TextChunk(text_content))
-                return AssistantMessage(chunks, structured_output=structured_output)
-
-        parsed_output = None
-        if structured_output and has_model_schema(structured_output):
-            try:
-                parsed_output = structured_output.model_validate_json(
-                    response.output_text
-                )
-            except Exception as e:
-                logger.warning(f"Failed to parse structured output: {e}")
-                try:
-                    json_content = extract_json(response.output_text)
-                    if json_content:
-                        parsed_output = structured_output.model_validate(json_content)
-                except Exception as fallback_error:
-                    logger.warning(
-                        f"Fallback JSON parsing also failed: {fallback_error}"
-                    )
+        parsed_output = self._parse_structured_output(response.output_text, structured_output)
 
         return AssistantMessage(
             response.output_text,
             structured_output=structured_output,
             parsed_output=parsed_output,
         )
+
+    def _log_request_start(self, messages: List[Message]) -> None:
+        logger.info("Request to OpenAi made")
+        logger_llm.debug(
+            "\n---\n".join(
+                [f"{message.__repr__(truncate=False)}" for message in messages]
+            )
+        )
+
+    def generate_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> Union[AssistantMessage, ToolCallMessage]:
+        self._log_request_start(messages)
+        
+        responses_parameters = self._prepare_request_parameters(messages, tools, structured_output, output_types)
+
+        self._log_request_parameters(responses_parameters)
+        
+        response = self._execute_with_retry(responses_parameters)
+        
+        return self._process_response(response, structured_output)
 
     @staticmethod
     def get_name():
