@@ -49,38 +49,54 @@ def test_simple_bedrock(model_id):
         .complete()
         .latest_message.content
     )
-    
+
     # Basic response checks
     assert response is not None, "Response should not be None"
-    assert isinstance(response, str), f"Response should be a string, got {type(response)}"
+    assert isinstance(
+        response, str
+    ), f"Response should be a string, got {type(response)}"
     assert len(response) > 0, "Response should not be empty"
-    
+
     # Content validation - verify it answers the question about Canada
-    assert "canada" in response.lower(), f"Response should mention Canada. Got: {response[:200]}"
-    assert "ottawa" in response.lower(), f"Response should mention Ottawa as the capital. Got: {response[:200]}"
-    
+    assert (
+        "canada" in response.lower()
+    ), f"Response should mention Canada. Got: {response[:200]}"
+    assert (
+        "ottawa" in response.lower()
+    ), f"Response should mention Ottawa as the capital. Got: {response[:200]}"
+
     # JSON format validation
     import json
     import re
-    
+
     # Find JSON in the response (it might be embedded in other text)
     json_match = re.search(r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response)
-    assert json_match is not None, f"Response should contain valid JSON format. Got: {response[:500]}"
-    
+    assert (
+        json_match is not None
+    ), f"Response should contain valid JSON format. Got: {response[:500]}"
+
     try:
         parsed_json = json.loads(json_match.group())
         assert "country" in parsed_json, "JSON should have 'country' key"
         assert "name" in parsed_json["country"], "JSON should have 'country.name' field"
-        assert "capital" in parsed_json["country"], "JSON should have 'country.capital' field"
-        
+        assert (
+            "capital" in parsed_json["country"]
+        ), "JSON should have 'country.capital' field"
+
         # Verify correct values
         country_name = parsed_json["country"]["name"].lower()
-        assert "canada" in country_name, f"Country name should be Canada, got: {parsed_json['country']['name']}"
-        
+        assert (
+            "canada" in country_name
+        ), f"Country name should be Canada, got: {parsed_json['country']['name']}"
+
         capital_name = parsed_json["country"]["capital"].lower()
-        assert "ottawa" in capital_name, f"Capital should be Ottawa, got: {parsed_json['country']['capital']}"
+        assert (
+            "ottawa" in capital_name
+        ), f"Capital should be Ottawa, got: {parsed_json['country']['capital']}"
     except json.JSONDecodeError as e:
-        pytest.fail(f"Failed to parse JSON from response: {e}. JSON string: {json_match.group()}")
+        pytest.fail(
+            f"Failed to parse JSON from response: {e}. JSON string: {json_match.group()}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -191,16 +207,14 @@ def test_simple_tool_calling():
 
     def get_weather(location: str) -> str:
         """Get the current weather for a location.
-        
+
         Args:
             location: The city or location to get weather for
         """
         return f"The weather in {location} is sunny and 22°C"
 
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        temperature=0.0,
-        top_p=1.0
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0, top_p=1.0
     )
 
     chat = Chat(model=bedrock).with_tools([get_weather])
@@ -210,7 +224,7 @@ def test_simple_tool_calling():
         "When asked about weather, you MUST call the get_weather tool. "
         "Do not just describe what you would do - actually call the tool."
     )
-    
+
     response = (
         chat.add_message(system_msg)
         .add_message(UserMessage("What's the weather in Paris?"))
@@ -222,15 +236,18 @@ def test_simple_tool_calling():
         f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
         f"Content: {response.latest_message.content}"
     )
-    
+
     tool_calls = response.latest_message.tool_calls
-    assert len(tool_calls) == 1, f"Expected exactly one tool call, got {len(tool_calls)}"
-    
+    assert (
+        len(tool_calls) == 1
+    ), f"Expected exactly one tool call, got {len(tool_calls)}"
+
     tool_call = tool_calls[0]
     assert tool_call["type"] == "function"
     assert tool_call["function"]["name"] == "get_weather"
-    
+
     import json
+
     arguments = json.loads(tool_call["function"]["arguments"])
     assert "location" in arguments
     assert "paris" in arguments["location"].lower()
@@ -251,9 +268,7 @@ def test_tool_calling():
         return facts.get(topic.lower(), "Mathematics is the language of the universe")
 
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-        temperature=0.0,
-        top_p=1.0
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0, top_p=1.0
     )
 
     chat = Chat(model=bedrock).with_tools([calculate_area, get_math_fact])
@@ -281,31 +296,38 @@ def test_tool_calling():
         f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
         f"Content: {response.latest_message.content}"
     )
-    
+
     tool_calls = response.latest_message.tool_calls
-    assert len(tool_calls) >= 1, f"Expected at least one tool call, got {len(tool_calls)}"
-    
+    assert (
+        len(tool_calls) >= 1
+    ), f"Expected at least one tool call, got {len(tool_calls)}"
+
     # Verify we have the expected tool calls
     tool_names = [tc["function"]["name"] for tc in tool_calls]
-    
+
     # Check for calculate_area call
     area_calls = [tc for tc in tool_calls if tc["function"]["name"] == "calculate_area"]
-    assert len(area_calls) >= 1, f"Expected calculate_area to be called, but got tools: {tool_names}"
-    
+    assert (
+        len(area_calls) >= 1
+    ), f"Expected calculate_area to be called, but got tools: {tool_names}"
+
     # Verify calculate_area arguments
     import json
+
     area_args = json.loads(area_calls[0]["function"]["arguments"])
     assert "length" in area_args, "calculate_area missing 'length' argument"
     assert "width" in area_args, "calculate_area missing 'width' argument"
     assert area_args["length"] == 5, f"Expected length=5, got {area_args['length']}"
     assert area_args["width"] == 3, f"Expected width=3, got {area_args['width']}"
-    
+
     # Check for get_math_fact call (optional but expected)
     fact_calls = [tc for tc in tool_calls if tc["function"]["name"] == "get_math_fact"]
     if fact_calls:
         fact_args = json.loads(fact_calls[0]["function"]["arguments"])
         assert "topic" in fact_args, "get_math_fact missing 'topic' argument"
-        assert "rectangle" in fact_args["topic"].lower(), f"Expected topic about rectangles, got {fact_args['topic']}"
+        assert (
+            "rectangle" in fact_args["topic"].lower()
+        ), f"Expected topic about rectangles, got {fact_args['topic']}"
 
 
 @pytest.mark.parametrize(
@@ -397,28 +419,28 @@ def test_thinking_mode_unsupported_models_fail(model_id, thinking_config):
 
     # Verify it's a validation error with a clear message
     error = exc_info.value
-    assert error.response["Error"]["Code"] == "ValidationException", (
-        f"Expected ValidationException but got {error.response['Error']['Code']}"
-    )
+    assert (
+        error.response["Error"]["Code"] == "ValidationException"
+    ), f"Expected ValidationException but got {error.response['Error']['Code']}"
 
     # Check that the error message mentions the problematic field
     error_msg = str(error)
-    
+
     # The error should mention which field caused the problem
     if thinking_config.token_budget is not None:
-        assert "reasoning_config" in error_msg, (
-            f"Error should mention 'reasoning_config' for token_budget parameter. Got: {error_msg}"
-        )
+        assert (
+            "reasoning_config" in error_msg
+        ), f"Error should mention 'reasoning_config' for token_budget parameter. Got: {error_msg}"
     elif thinking_config.effort is not None:
         # With effort="low", Bedrock sends reasoning_effort which also causes validation error
-        assert "reasoning_effort" in error_msg or "reasoning_config" in error_msg, (
-            f"Error should mention 'reasoning_effort' or 'reasoning_config' for effort parameter. Got: {error_msg}"
-        )
-    
+        assert (
+            "reasoning_effort" in error_msg or "reasoning_config" in error_msg
+        ), f"Error should mention 'reasoning_effort' or 'reasoning_config' for effort parameter. Got: {error_msg}"
+
     # Verify the error message is clear about the issue
-    assert "not permitted" in error_msg or "Malformed" in error_msg, (
-        f"Error message should clearly indicate the parameter is not permitted. Got: {error_msg}"
-    )
+    assert (
+        "not permitted" in error_msg or "Malformed" in error_msg
+    ), f"Error message should clearly indicate the parameter is not permitted. Got: {error_msg}"
 
 
 def test_thinking_mode_parameters():
