@@ -246,66 +246,77 @@ class BedrockModel(Model, ABC):
 
         return bedrock_system
 
-    def _prepare_messages_for_converse(self, messages: List[Message]) -> tuple[List[dict], Optional[List[dict]]]:
+    def _prepare_messages_for_converse(
+        self, messages: List[Message]
+    ) -> tuple[List[dict], Optional[List[dict]]]:
         system_messages = [
             message for message in messages if message.role == ROLE_SYSTEM
         ]
         system_content = self._convert_system_messages_for_bedrock(system_messages)
-        
+
         user_assistant_messages = [
             message
             for message in messages
             if message.role in [ROLE_USER, ROLE_ASSISTANT]
         ]
         conversation = self._convert_messages_for_bedrock(user_assistant_messages)
-        
+
         return conversation, system_content if system_content else None
-        
-    def _build_inference_config(self, structured_output: Optional[object] = None) -> dict:
+
+    def _build_inference_config(
+        self, structured_output: Optional[object] = None
+    ) -> dict:
         inference_config = {
             "temperature": self.temperature,
             "topP": self.top_p,
         }
-        
+
         thinking_params = self._get_thinking_params()
         if thinking_params.get("reasoning_config"):
             inference_config.pop("topP", None)
-            
+
         return inference_config
-        
+
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
             return None
-            
+
         tool_config = self._convert_tools_to_bedrock_format(tools)
         if tool_config["tools"]:
             return tool_config
         return None
-        
-    def _build_converse_params(self, messages: List[Message], tools: Optional[ToolDefinition] = None, structured_output: Optional[object] = None) -> dict:
+
+    def _build_converse_params(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+    ) -> dict:
         conversation, system_content = self._prepare_messages_for_converse(messages)
         inference_config = self._build_inference_config(structured_output)
-        
+
         converse_params = {
             "modelId": self.model_id,
             "messages": conversation,
             "inferenceConfig": inference_config,
         }
-        
+
         if system_content:
             converse_params["system"] = system_content
-            
+
         thinking_params = self._get_thinking_params()
         if thinking_params:
             converse_params["additionalModelRequestFields"] = thinking_params
-            
+
         tool_config = self._prepare_tool_config(tools)
         if tool_config:
             converse_params["toolConfig"] = tool_config
-            
+
         return converse_params
-        
-    def _process_converse_response(self, output: dict, structured_output: Optional[object] = None) -> Union[AssistantMessage, ToolCallMessage]:
+
+    def _process_converse_response(
+        self, output: dict, structured_output: Optional[object] = None
+    ) -> Union[AssistantMessage, ToolCallMessage]:
         if output.get("stopReason") == "tool_use":
             tool_calls = []
             for content_block in output["message"]["content"]:
@@ -320,14 +331,14 @@ class BedrockModel(Model, ABC):
                         },
                     }
                     tool_calls.append(tool_call)
-            
+
             if tool_calls:
                 return ToolCallMessage(tool_calls)
-        
+
         response_content = output["message"]["content"]
         response_text = ""
         reasoning_text = ""
-        
+
         for content_block in response_content:
             if "text" in content_block:
                 response_text += content_block["text"]
@@ -335,7 +346,7 @@ class BedrockModel(Model, ABC):
                 reasoning_content = content_block["reasoningContent"]
                 if "reasoningText" in reasoning_content:
                     reasoning_text += reasoning_content["reasoningText"]["text"]
-        
+
         if (
             reasoning_text
             and self.thinking_config
@@ -346,11 +357,11 @@ class BedrockModel(Model, ABC):
             )
         else:
             full_response = response_text
-        
+
         logger_llm.info(f"[Assistant]\n{full_response}")
-        
+
         return AssistantMessage(full_response, structured_output=structured_output)
-    
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -368,7 +379,9 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        converse_params = self._build_converse_params(messages, tools, structured_output)
+        converse_params = self._build_converse_params(
+            messages, tools, structured_output
+        )
 
         try:
             retry = 0

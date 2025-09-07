@@ -424,16 +424,18 @@ class GoogleModel(Model, ABC):
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> tuple[List[types.Content], types.GenerateContentConfig, dict[str, str]]:
-        system_instruction = self._convert_system_messages_for_google_with_cache(messages)
-        
+        system_instruction = self._convert_system_messages_for_google_with_cache(
+            messages
+        )
+
         contents, cache_mappings = self._convert_messages_for_google_with_cache(
             messages
         )
-        
+
         config = self._build_generation_config(
             tools, structured_output, output_types, system_instruction
         )
-        
+
         return contents, config, cache_mappings
 
     def _process_generation_response(
@@ -455,18 +457,12 @@ class GoogleModel(Model, ABC):
                             "type": "function",
                             "function": {
                                 "name": part.function_call.name,
-                                "arguments": json.dumps(
-                                    dict(part.function_call.args)
-                                ),
+                                "arguments": json.dumps(dict(part.function_call.args)),
                             },
                         }
                         tool_calls.append(tool_call)
 
-                    elif (
-                        hasattr(part, "text")
-                        and part.text
-                        and part.text != "None"
-                    ):
+                    elif hasattr(part, "text") and part.text and part.text != "None":
                         chunks.append(TextChunk(part.text))
 
                     elif hasattr(part, "inline_data") and part.inline_data:
@@ -500,9 +496,7 @@ class GoogleModel(Model, ABC):
         try:
             if hasattr(response, "text") and response.text:
                 content = response.text
-                return AssistantMessage(
-                    content, structured_output=structured_output
-                )
+                return AssistantMessage(content, structured_output=structured_output)
         except Exception:
             pass
 

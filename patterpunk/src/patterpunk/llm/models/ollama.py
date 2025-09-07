@@ -158,7 +158,7 @@ class OllamaModel(Model, ABC):
         stream: bool = False,
     ) -> dict:
         from patterpunk.lib.structured_output import get_model_schema, has_model_schema
-        
+
         chat_params = {
             "model": self.model,
             "messages": ollama_messages,
@@ -180,7 +180,7 @@ class OllamaModel(Model, ABC):
 
     def _execute_chat_request(self, chat_params: dict) -> dict:
         from patterpunk.config import ollama
-        
+
         return ollama.chat(**chat_params)
 
     def _process_tool_calls(self, response: dict) -> Optional[ToolCallMessage]:
@@ -191,7 +191,9 @@ class OllamaModel(Model, ABC):
         for tool_call in response["message"]["tool_calls"]:
             call_id = tool_call.get("id")
             if not call_id:
-                call_id = f"call_{tool_call['function']['name']}_{random.randint(1000, 9999)}"
+                call_id = (
+                    f"call_{tool_call['function']['name']}_{random.randint(1000, 9999)}"
+                )
 
             formatted_tool_call = {
                 "id": call_id,
@@ -205,10 +207,12 @@ class OllamaModel(Model, ABC):
 
         if tool_calls:
             return ToolCallMessage(tool_calls)
-        
+
         return None
 
-    def _create_assistant_response(self, response: dict, structured_output: Optional[object] = None) -> AssistantMessage:
+    def _create_assistant_response(
+        self, response: dict, structured_output: Optional[object] = None
+    ) -> AssistantMessage:
         return AssistantMessage(
             response["message"]["content"], structured_output=structured_output
         )
@@ -218,6 +222,7 @@ class OllamaModel(Model, ABC):
             for temp_file in self._temp_files:
                 try:
                     import os
+
                     os.unlink(temp_file)
                 except:
                     pass
@@ -230,14 +235,14 @@ class OllamaModel(Model, ABC):
     def _validate_response(self, response: dict) -> bool:
         if not isinstance(response, dict):
             return False
-        
+
         message = response.get("message")
         if not isinstance(message, dict):
             return False
-            
+
         if "content" not in message and not message.get("tool_calls"):
             return False
-            
+
         return True
 
     def generate_assistant_message(
@@ -248,12 +253,12 @@ class OllamaModel(Model, ABC):
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         ollama_messages, all_images = self._prepare_messages(messages)
-        
+
         chat_params = self._build_chat_params(
             ollama_messages=ollama_messages,
             tools=tools,
             structured_output=structured_output,
-            stream=False
+            stream=False,
         )
 
         try:
@@ -262,7 +267,9 @@ class OllamaModel(Model, ABC):
             self._handle_response_errors(e)
 
         if not self._validate_response(response):
-            self._handle_response_errors(ValueError(f"Invalid response format: {response}"))
+            self._handle_response_errors(
+                ValueError(f"Invalid response format: {response}")
+            )
 
         tool_call_response = self._process_tool_calls(response)
         if tool_call_response is not None:

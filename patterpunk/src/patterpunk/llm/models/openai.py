@@ -275,7 +275,9 @@ class OpenAiModel(Model, ABC):
 
         return responses_input
 
-    def _should_prompt_for_structured_output(self, structured_output: Optional[object]) -> bool:
+    def _should_prompt_for_structured_output(
+        self, structured_output: Optional[object]
+    ) -> bool:
         prompt_for_structured_output = False
         if structured_output and has_model_schema(structured_output):
             prompt_for_structured_output = True
@@ -291,22 +293,28 @@ class OpenAiModel(Model, ABC):
     def _is_reasoning_model(self, model: str) -> bool:
         return model.startswith("o")
 
-    def _setup_tools_parameter(self, tools: Optional[ToolDefinition], output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> Optional[List[dict]]:
+    def _setup_tools_parameter(
+        self,
+        tools: Optional[ToolDefinition],
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]],
+    ) -> Optional[List[dict]]:
         tools_list = None
-        
+
         if tools:
             tools_list = tools if isinstance(tools, list) else [tools]
-        
+
         if output_types and OutputType.IMAGE in output_types:
             image_generation_tool = {"type": "image_generation"}
             if tools_list:
                 tools_list = tools_list + [image_generation_tool]
             else:
                 tools_list = [image_generation_tool]
-        
+
         return tools_list
 
-    def _setup_structured_output_parameter(self, structured_output: Optional[object], prompt_for_structured_output: bool) -> Optional[dict]:
+    def _setup_structured_output_parameter(
+        self, structured_output: Optional[object], prompt_for_structured_output: bool
+    ) -> Optional[dict]:
         if (
             structured_output
             and has_model_schema(structured_output)
@@ -322,13 +330,20 @@ class OpenAiModel(Model, ABC):
             }
         return None
 
-    def _setup_model_parameters(self, model: str, temperature: float, top_p: float, frequency_penalty: float, presence_penalty: float, logit_bias: dict, reasoning_effort: OpenAiReasoningEffort) -> dict:
+    def _setup_model_parameters(
+        self,
+        model: str,
+        temperature: float,
+        top_p: float,
+        frequency_penalty: float,
+        presence_penalty: float,
+        logit_bias: dict,
+        reasoning_effort: OpenAiReasoningEffort,
+    ) -> dict:
         model_params = {}
-        
+
         if self._is_reasoning_model(model):
-            model_params["reasoning"] = {
-                "effort": reasoning_effort.name.lower()
-            }
+            model_params["reasoning"] = {"effort": reasoning_effort.name.lower()}
         else:
             model_params["temperature"] = temperature
             model_params["top_p"] = top_p
@@ -338,14 +353,13 @@ class OpenAiModel(Model, ABC):
                 model_params["presence_penalty"] = presence_penalty
             if logit_bias:
                 model_params["logit_bias"] = logit_bias
-        
+
         return model_params
 
-    def _process_image_generation_output(self, output_item) -> Optional[MultimodalChunk]:
-        if (
-            hasattr(output_item, "type")
-            and output_item.type == "image_generation_call"
-        ):
+    def _process_image_generation_output(
+        self, output_item
+    ) -> Optional[MultimodalChunk]:
+        if hasattr(output_item, "type") and output_item.type == "image_generation_call":
             if hasattr(output_item, "result") and output_item.result:
                 image_chunk = MultimodalChunk.from_base64(
                     output_item.result, media_type="image/png"
@@ -369,13 +383,13 @@ class OpenAiModel(Model, ABC):
                 )
         return tool_calls
 
-    def _parse_structured_output(self, response_text: str, structured_output: Optional[object]) -> Optional[object]:
+    def _parse_structured_output(
+        self, response_text: str, structured_output: Optional[object]
+    ) -> Optional[object]:
         parsed_output = None
         if structured_output and has_model_schema(structured_output):
             try:
-                parsed_output = structured_output.model_validate_json(
-                    response_text
-                )
+                parsed_output = structured_output.model_validate_json(response_text)
             except Exception as e:
                 logger.warning(f"Failed to parse structured output: {e}")
                 try:
@@ -388,7 +402,9 @@ class OpenAiModel(Model, ABC):
                     )
         return parsed_output
 
-    def _process_response_output(self, response, structured_output: Optional[object]) -> Union[AssistantMessage, ToolCallMessage, None]:
+    def _process_response_output(
+        self, response, structured_output: Optional[object]
+    ) -> Union[AssistantMessage, ToolCallMessage, None]:
         if hasattr(response, "output") and response.output:
             chunks = []
             tool_calls = []
@@ -412,33 +428,55 @@ class OpenAiModel(Model, ABC):
 
         return None
 
-    def _build_base_request_parameters(self, model: str, responses_input: List[dict]) -> dict:
+    def _build_base_request_parameters(
+        self, model: str, responses_input: List[dict]
+    ) -> dict:
         return {
             "model": model,
             "input": responses_input,
             "store": False,
         }
 
-    def _prepare_request_parameters(self, messages: List[Message], tools: Optional[ToolDefinition], structured_output: Optional[object], output_types: Optional[Union[List[OutputType], Set[OutputType]]]) -> dict:
-        prompt_for_structured_output = self._should_prompt_for_structured_output(structured_output)
-        
+    def _prepare_request_parameters(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition],
+        structured_output: Optional[object],
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]],
+    ) -> dict:
+        prompt_for_structured_output = self._should_prompt_for_structured_output(
+            structured_output
+        )
+
         responses_input = self._convert_messages_to_responses_input(
             messages, prompt_for_structured_output
         )
-        
-        responses_parameters = self._build_base_request_parameters(self.model, responses_input)
-        
+
+        responses_parameters = self._build_base_request_parameters(
+            self.model, responses_input
+        )
+
         tools_parameter = self._setup_tools_parameter(tools, output_types)
         if tools_parameter:
             responses_parameters["tools"] = tools_parameter
-        
-        structured_output_parameter = self._setup_structured_output_parameter(structured_output, prompt_for_structured_output)
+
+        structured_output_parameter = self._setup_structured_output_parameter(
+            structured_output, prompt_for_structured_output
+        )
         if structured_output_parameter:
             responses_parameters["response_format"] = structured_output_parameter
-        
-        model_params = self._setup_model_parameters(self.model, self.temperature, self.top_p, self.frequency_penalty, self.presence_penalty, self.logit_bias, self.reasoning_effort)
+
+        model_params = self._setup_model_parameters(
+            self.model,
+            self.temperature,
+            self.top_p,
+            self.frequency_penalty,
+            self.presence_penalty,
+            self.logit_bias,
+            self.reasoning_effort,
+        )
         responses_parameters.update(model_params)
-        
+
         return responses_parameters
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:
@@ -476,14 +514,18 @@ class OpenAiModel(Model, ABC):
 
         return response
 
-    def _process_response(self, response, structured_output: Optional[object]) -> Union[AssistantMessage, ToolCallMessage]:
+    def _process_response(
+        self, response, structured_output: Optional[object]
+    ) -> Union[AssistantMessage, ToolCallMessage]:
         logger_llm.info(f"[Assistant]\n{response.output_text}")
 
         response_message = self._process_response_output(response, structured_output)
         if response_message:
             return response_message
 
-        parsed_output = self._parse_structured_output(response.output_text, structured_output)
+        parsed_output = self._parse_structured_output(
+            response.output_text, structured_output
+        )
 
         return AssistantMessage(
             response.output_text,
@@ -507,13 +549,15 @@ class OpenAiModel(Model, ABC):
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[AssistantMessage, ToolCallMessage]:
         self._log_request_start(messages)
-        
-        responses_parameters = self._prepare_request_parameters(messages, tools, structured_output, output_types)
+
+        responses_parameters = self._prepare_request_parameters(
+            messages, tools, structured_output, output_types
+        )
 
         self._log_request_parameters(responses_parameters)
-        
+
         response = self._execute_with_retry(responses_parameters)
-        
+
         return self._process_response(response, structured_output)
 
     @staticmethod
