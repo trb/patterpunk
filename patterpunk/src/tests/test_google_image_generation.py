@@ -464,29 +464,35 @@ def test_google_multimodal_generation_with_multiple_images():
         len(image_chunks) >= 4
     ), f"Response should contain at least 4 images, got {len(image_chunks)}"
 
-    print(
-        f"Generated {len(image_chunks)} images with {len(text_chunks)} text segments"
-    )
+    print(f"Generated {len(image_chunks)} images with {len(text_chunks)} text segments")
 
     expected_scenes = [
         {
             "name": "beach",
-            "features": ["Beach OR ocean OR water OR sand OR palm OR tropical OR coast OR sea OR waves"],
+            "features": [
+                "Beach OR ocean OR water OR sand OR palm OR tropical OR coast OR sea OR waves"
+            ],
             "forbidden": ["Snow", "Mountain", "Forest", "City", "Urban"],
         },
         {
-            "name": "mountain",  
-            "features": ["Mountain OR snow OR peak OR slope OR alpine OR summit OR hills"],
+            "name": "mountain",
+            "features": [
+                "Mountain OR snow OR peak OR slope OR alpine OR summit OR hills"
+            ],
             "forbidden": ["Beach", "Ocean", "Forest", "City", "Urban"],
         },
         {
             "name": "forest",
-            "features": ["Forest OR trees OR woods OR nature OR green OR leaves OR jungle"],
+            "features": [
+                "Forest OR trees OR woods OR nature OR green OR leaves OR jungle"
+            ],
             "forbidden": ["Beach", "Ocean", "Mountain", "City", "Urban"],
         },
         {
             "name": "city",
-            "features": ["City OR buildings OR street OR urban OR traffic OR skyline OR downtown"],
+            "features": [
+                "City OR buildings OR street OR urban OR traffic OR skyline OR downtown"
+            ],
             "forbidden": ["Beach", "Ocean", "Mountain", "Forest", "Nature"],
         },
     ]
@@ -494,9 +500,7 @@ def test_google_multimodal_generation_with_multiple_images():
     for idx, image_chunk in enumerate(image_chunks[:4]):
         assert isinstance(image_chunk, MultimodalChunk)
         image_bytes = image_chunk.to_bytes()
-        assert (
-            len(image_bytes) > 1000
-        ), f"Image {idx} should have substantial data"
+        assert len(image_bytes) > 1000, f"Image {idx} should have substantial data"
 
         image_header = image_bytes[:10]
         valid_headers = [
@@ -520,9 +524,13 @@ def test_google_multimodal_generation_with_multiple_images():
         print(f"Image {idx}: {len(image_bytes)} bytes")
         with open(f"/tmp/scene_{idx}_{expected_scenes[idx]['name']}.png", "wb") as f:
             f.write(image_bytes)
-        print(f"Saved image {idx} to /tmp/scene_{idx}_{expected_scenes[idx]['name']}.png")
+        print(
+            f"Saved image {idx} to /tmp/scene_{idx}_{expected_scenes[idx]['name']}.png"
+        )
 
-        print(f"\nVerifying image {idx} content (expecting {expected_scenes[idx]['name']})...")
+        print(
+            f"\nVerifying image {idx} content (expecting {expected_scenes[idx]['name']})..."
+        )
         verification_success, verification_analysis = verify_image_content(
             image_chunk,
             expected_features=[expected_scenes[idx]["features"][0]],

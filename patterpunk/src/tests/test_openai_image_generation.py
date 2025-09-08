@@ -12,6 +12,7 @@ from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.output_types import OutputType
 from tests.test_utils import get_resource
+
 try:
     from openai import PermissionDeniedError
 except ImportError:
@@ -77,7 +78,9 @@ End with: VERDICT: PASS (if all expected features are found and no forbidden fea
     return success, analysis
 
 
-@pytest.mark.skip(reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general")
+@pytest.mark.skip(
+    reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general"
+)
 @pytest.mark.integration
 def test_openai_generate_new_image():
     if not OPENAI_API_KEY:
@@ -119,7 +122,10 @@ def test_openai_generate_new_image():
         raise
     except Exception as e:
         error_message = str(e)
-        if "gpt-image-1" in error_message and ("verified" in error_message or "organization must be verified" in error_message.lower()):
+        if "gpt-image-1" in error_message and (
+            "verified" in error_message
+            or "organization must be verified" in error_message.lower()
+        ):
             skip_with_verification_warning("test_openai_generate_new_image")
         if PermissionDeniedError and isinstance(e, PermissionDeniedError):
             skip_with_verification_warning("test_openai_generate_new_image")
@@ -206,7 +212,9 @@ def test_openai_generate_new_image():
                 ), f"Generated image does not match expected magical forest. Analysis: {verification_analysis}"
 
 
-@pytest.mark.skip(reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general")
+@pytest.mark.skip(
+    reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general"
+)
 @pytest.mark.integration
 def test_openai_generate_abstract_art():
     if not OPENAI_API_KEY:
@@ -234,7 +242,10 @@ def test_openai_generate_abstract_art():
         raise
     except Exception as e:
         error_message = str(e)
-        if "gpt-image-1" in error_message and ("verified" in error_message or "organization must be verified" in error_message.lower()):
+        if "gpt-image-1" in error_message and (
+            "verified" in error_message
+            or "organization must be verified" in error_message.lower()
+        ):
             skip_with_verification_warning("test_openai_generate_abstract_art")
         if PermissionDeniedError and isinstance(e, PermissionDeniedError):
             skip_with_verification_warning("test_openai_generate_abstract_art")
@@ -279,7 +290,9 @@ def test_openai_generate_abstract_art():
                 ), f"Generated image is not abstract art. Analysis: {verification_analysis}"
 
 
-@pytest.mark.skip(reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general")
+@pytest.mark.skip(
+    reason="OpenAI organization needs verification for image generation (gpt-image-1). See https://platform.openai.com/settings/organization/general"
+)
 @pytest.mark.integration
 def test_openai_mixed_text_and_image_generation():
     if not OPENAI_API_KEY:
@@ -309,14 +322,23 @@ def test_openai_mixed_text_and_image_generation():
     except OpenAiApiError as e:
         error_message = str(e)
         if "too many api errors" in error_message.lower():
-            skip_with_verification_warning("test_openai_mixed_text_and_image_generation")
+            skip_with_verification_warning(
+                "test_openai_mixed_text_and_image_generation"
+            )
         raise
     except Exception as e:
         error_message = str(e)
-        if "gpt-image-1" in error_message and ("verified" in error_message or "organization must be verified" in error_message.lower()):
-            skip_with_verification_warning("test_openai_mixed_text_and_image_generation")
+        if "gpt-image-1" in error_message and (
+            "verified" in error_message
+            or "organization must be verified" in error_message.lower()
+        ):
+            skip_with_verification_warning(
+                "test_openai_mixed_text_and_image_generation"
+            )
         if PermissionDeniedError and isinstance(e, PermissionDeniedError):
-            skip_with_verification_warning("test_openai_mixed_text_and_image_generation")
+            skip_with_verification_warning(
+                "test_openai_mixed_text_and_image_generation"
+            )
         raise
 
     message = response.latest_message

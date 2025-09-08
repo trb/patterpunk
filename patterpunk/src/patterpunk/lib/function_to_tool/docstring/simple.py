@@ -28,7 +28,11 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
     current_desc_lines = []
 
     for line in lines[args_start + 1 :]:
-        if re.match(r"^\s*(Returns?|Raises?|Yields?|Warns?|Warnings?|Note|Notes|Example|Examples|See Also|References?|Attributes?)\s*:", line, re.IGNORECASE):
+        if re.match(
+            r"^\s*(Returns?|Raises?|Yields?|Warns?|Warnings?|Note|Notes|Example|Examples|See Also|References?|Attributes?)\s*:",
+            line,
+            re.IGNORECASE,
+        ):
             if current_param and current_desc_lines:
                 desc = " ".join(current_desc_lines).strip()
                 param_descriptions[current_param] = desc
