@@ -1,7 +1,7 @@
 import copy
 from typing import Union, List, Optional, Any
 
-from patterpunk.config import GENERATE_STRUCTURED_OUTPUT_PROMPT
+from patterpunk.config.defaults import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.logger import logger
 from ..cache import CacheChunk

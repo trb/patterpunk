@@ -3,9 +3,10 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 import patterpunk.lib.extract_json
-from patterpunk.llm.chat import Chat
+from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.models.ollama import OllamaModel
-from patterpunk.llm.messages import SystemMessage, UserMessage
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
 from tests.test_utils import get_resource

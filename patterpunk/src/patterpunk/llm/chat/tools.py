@@ -8,9 +8,10 @@ including function tool conversion, MCP server integration, and tool execution.
 import json
 from typing import Union, List, Callable, Optional
 
-from patterpunk.lib.function_to_tool import functions_to_tools
+from patterpunk.lib.function_to_tool.converter import functions_to_tools
 from patterpunk.llm.tool_types import ToolDefinition
-from patterpunk.llm.messages import UserMessage, ToolCallMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.logger import logger
 
 
@@ -53,7 +54,7 @@ def configure_mcp_servers(chat_instance, server_configs):
     :return: New Chat instance with MCP servers configured
 
     Examples:
-        from patterpunk.lib.mcp import MCPServerConfig
+        from patterpunk.lib.mcp.server_config import MCPServerConfig
 
         weather_server = MCPServerConfig(
             name="weather",
@@ -63,7 +64,7 @@ def configure_mcp_servers(chat_instance, server_configs):
         chat = configure_mcp_servers(chat, [weather_server])
     """
     try:
-        from patterpunk.lib.mcp import MCPClient
+        from patterpunk.lib.mcp.client import MCPClient
         from patterpunk.lib.mcp.tool_converter import mcp_tools_to_patterpunk_tools
     except ImportError as e:
         raise ImportError(f"MCP functionality requires missing dependencies: {e}")

@@ -5,7 +5,8 @@ This module handles chat-level structured output parsing with sophisticated
 retry logic and error recovery mechanisms.
 """
 
-from patterpunk.llm.messages import UserMessage, StructuredOutputFailedToParseError
+from patterpunk.llm.messages.exceptions import StructuredOutputFailedToParseError
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.logger import logger
 from .exceptions import StructuredOutputParsingError
 

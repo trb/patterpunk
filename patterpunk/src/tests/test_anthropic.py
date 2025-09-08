@@ -1,9 +1,11 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from patterpunk.llm.chat import Chat
+from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.messages import SystemMessage, UserMessage, ToolCallMessage
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
 from tests.test_utils import get_resource
@@ -555,7 +557,7 @@ def test_reasoning_mode_default_type():
 
 
 def test_reasoning_mode_with_claude_sonnet_4():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     thinking_config = ThinkingConfig(token_budget=4000)
 
@@ -624,7 +626,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
 
 
 def test_reasoning_mode_plain_text_response():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     chat = Chat(
         model=AnthropicModel(
@@ -654,7 +656,7 @@ def test_reasoning_mode_plain_text_response():
 
 
 def test_reasoning_mode_structured_output():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     class MathExplanation(BaseModel):
         concept: str = Field(description="The mathematical concept being explained")
@@ -700,7 +702,7 @@ def test_reasoning_mode_structured_output():
 
 
 def test_reasoning_mode_tool_calling():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     def calculate_area(length: float, width: float) -> str:
         area = length * width

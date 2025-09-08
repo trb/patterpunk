@@ -1,8 +1,9 @@
 import pytest
 from typing import Dict, List, Optional
 
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import UserMessage, AssistantMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.base import Model
 
 

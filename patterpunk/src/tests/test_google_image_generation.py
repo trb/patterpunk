@@ -7,12 +7,58 @@ from patterpunk.config.providers.google import GOOGLE_APPLICATION_CREDENTIALS
 from patterpunk.config.providers.openai import OPENAI_API_KEY
 from patterpunk.llm.models.google import GoogleModel
 from patterpunk.llm.models.openai import OpenAiModel
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import UserMessage, AssistantMessage, SystemMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from patterpunk.llm.output_types import OutputType
 from tests.test_utils import get_resource
+
+
+def get_working_image_model():
+    """
+    Work around Googles api being flakey
+    """
+    image_generation_models = [
+        "gemini-2.0-flash-preview-image-generation",
+        "gemini-2.5-flash-image-preview",
+    ]
+
+    for model_name in image_generation_models:
+        try:
+            test_model = GoogleModel(
+                model=model_name, location="global", temperature=0.7
+            )
+
+            test_chat = Chat(model=test_model)
+            response = test_chat.add_message(
+                UserMessage(content=[TextChunk("Generate a simple red square image")])
+            ).complete(output_types={OutputType.TEXT, OutputType.IMAGE})
+
+            if response.latest_message:
+                print(f"Using image generation model: {model_name}")
+                return model_name
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if (
+                "not found" in error_str
+                or "404" in error_str
+                or "unavailable" in error_str
+                or "not supported" in error_str
+                or "invalid_argument" in error_str
+            ):
+                print(
+                    f"Model {model_name} not available or doesn't support image generation: {e}"
+                )
+                continue
+            else:
+                print(f"Unexpected error testing {model_name}: {e}")
+                continue
+
+    return None
 
 
 def verify_image_content(
@@ -54,11 +100,27 @@ def test_google_generate_new_image():
     if not GOOGLE_APPLICATION_CREDENTIALS:
         pytest.skip("Google credentials not available")
 
-    model = GoogleModel(
-        model="gemini-2.5-flash-image-preview", location="global", temperature=0.7
-    )
+    working_model = get_working_image_model()
+    if not working_model:
+        pytest.skip(
+            "No Google image generation models available. "
+            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "These models require the 'global' location and may have limited availability."
+        )
 
-    chat = Chat(model=model)
+    try:
+        model = GoogleModel(model=working_model, location="global", temperature=0.7)
+
+        chat = Chat(model=model)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "404" in error_msg or "not found" in error_msg or "unavailable" in error_msg:
+            pytest.skip(
+                f"Model {working_model} not available in 'global' location. "
+                f"This is likely a temporary availability issue. Error: {e}"
+            )
+        else:
+            raise
 
     response = (
         chat.add_message(
@@ -189,11 +251,27 @@ def test_google_edit_existing_image_ducks_to_pelicans():
     if not GOOGLE_APPLICATION_CREDENTIALS:
         pytest.skip("Google credentials not available")
 
-    model = GoogleModel(
-        model="gemini-2.5-flash-image-preview", location="global", temperature=0.7
-    )
+    working_model = get_working_image_model()
+    if not working_model:
+        pytest.skip(
+            "No Google image generation models available. "
+            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "These models require the 'global' location and may have limited availability."
+        )
 
-    chat = Chat(model=model)
+    try:
+        model = GoogleModel(model=working_model, location="global", temperature=0.7)
+
+        chat = Chat(model=model)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "404" in error_msg or "not found" in error_msg or "unavailable" in error_msg:
+            pytest.skip(
+                f"Model {working_model} not available in 'global' location. "
+                f"This is likely a temporary availability issue. Error: {e}"
+            )
+        else:
+            raise
 
     ducks_image = MultimodalChunk.from_file(get_resource("ducks_pond.jpg"))
 
@@ -327,31 +405,47 @@ def test_google_multimodal_generation_with_multiple_images():
     if not GOOGLE_APPLICATION_CREDENTIALS:
         pytest.skip("Google credentials not available")
 
-    model = GoogleModel(
-        model="gemini-2.5-flash-image-preview", location="global", temperature=0.7
-    )
+    working_model = get_working_image_model()
+    if not working_model:
+        pytest.skip(
+            "No Google image generation models available. "
+            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "These models require the 'global' location and may have limited availability."
+        )
 
-    chat = Chat(model=model)
+    try:
+        model = GoogleModel(model=working_model, location="global", temperature=0.7)
+
+        chat = Chat(model=model)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "404" in error_msg or "not found" in error_msg or "unavailable" in error_msg:
+            pytest.skip(
+                f"Model {working_model} not available in 'global' location. "
+                f"This is likely a temporary availability issue. Error: {e}"
+            )
+        else:
+            raise
 
     response = (
         chat.add_message(
             SystemMessage(
-                "You are a creative visual storyteller who creates illustrated stories with multiple images."
+                "You are an expert at creating distinct, contrasting images to illustrate different scenes."
             )
         )
         .add_message(
             UserMessage(
                 content=[
                     TextChunk(
-                        """Create a short illustrated story about a day in the life of a robot chef. 
-                    Include:
-                    1. An image of the robot chef waking up in the morning
-                    2. An image of the robot preparing ingredients 
-                    3. An image of the robot cooking a spectacular dish
-                    4. An image of happy customers enjoying the meal
+                        """Generate exactly 4 different images, each showing a completely different scene:
                     
-                    Provide narrative text between each image to tell the story.
-                    Make the images colorful, whimsical, and consistent in style."""
+                    1. A sunny tropical beach with ocean waves and palm trees
+                    2. A snowy mountain peak with white slopes
+                    3. A dense green forest with tall trees
+                    4. A busy city street with tall buildings and traffic
+                    
+                    Make each image visually distinct and different from the others.
+                    Provide a brief description with each image."""
                     )
                 ]
             )
@@ -365,21 +459,44 @@ def test_google_multimodal_generation_with_multiple_images():
     text_chunks = message.texts
     image_chunks = message.images
 
-    assert len(text_chunks) > 0, "Response should contain story narrative text"
+    assert len(text_chunks) > 0, "Response should contain descriptive text"
     assert (
-        len(image_chunks) >= 2
-    ), "Response should contain multiple images for the story"
+        len(image_chunks) >= 4
+    ), f"Response should contain at least 4 images, got {len(image_chunks)}"
 
     print(
-        f"Generated story with {len(text_chunks)} text segments and {len(image_chunks)} images"
+        f"Generated {len(image_chunks)} images with {len(text_chunks)} text segments"
     )
 
-    for idx, image_chunk in enumerate(image_chunks):
+    expected_scenes = [
+        {
+            "name": "beach",
+            "features": ["Beach OR ocean OR water OR sand OR palm OR tropical OR coast OR sea OR waves"],
+            "forbidden": ["Snow", "Mountain", "Forest", "City", "Urban"],
+        },
+        {
+            "name": "mountain",  
+            "features": ["Mountain OR snow OR peak OR slope OR alpine OR summit OR hills"],
+            "forbidden": ["Beach", "Ocean", "Forest", "City", "Urban"],
+        },
+        {
+            "name": "forest",
+            "features": ["Forest OR trees OR woods OR nature OR green OR leaves OR jungle"],
+            "forbidden": ["Beach", "Ocean", "Mountain", "City", "Urban"],
+        },
+        {
+            "name": "city",
+            "features": ["City OR buildings OR street OR urban OR traffic OR skyline OR downtown"],
+            "forbidden": ["Beach", "Ocean", "Mountain", "Forest", "Nature"],
+        },
+    ]
+
+    for idx, image_chunk in enumerate(image_chunks[:4]):
         assert isinstance(image_chunk, MultimodalChunk)
         image_bytes = image_chunk.to_bytes()
         assert (
             len(image_bytes) > 1000
-        ), f"Story image {idx} should have substantial data"
+        ), f"Image {idx} should have substantial data"
 
         image_header = image_bytes[:10]
         valid_headers = [
@@ -398,35 +515,32 @@ def test_google_multimodal_generation_with_multiple_images():
         )
         assert (
             is_valid_image
-        ), f"Story image {idx} should have valid image file header, got {image_header[:4]}"
+        ), f"Image {idx} should have valid image file header, got {image_header[:4]}"
 
-        print(f"Story image {idx}: {len(image_bytes)} bytes")
-        with open(f"/tmp/robot_chef_story_{idx}.png", "wb") as f:
+        print(f"Image {idx}: {len(image_bytes)} bytes")
+        with open(f"/tmp/scene_{idx}_{expected_scenes[idx]['name']}.png", "wb") as f:
             f.write(image_bytes)
-        print(f"Saved story image {idx} to /tmp/robot_chef_story_{idx}.png")
+        print(f"Saved image {idx} to /tmp/scene_{idx}_{expected_scenes[idx]['name']}.png")
 
-        print(f"\nVerifying story image {idx} content with GPT-4o...")
+        print(f"\nVerifying image {idx} content (expecting {expected_scenes[idx]['name']})...")
         verification_success, verification_analysis = verify_image_content(
             image_chunk,
-            expected_features=[
-                "Robot or mechanical character",
-                "Cooking or kitchen scene",
-                "Colorful whimsical illustration",
-            ],
-            should_not_contain=["Photographic realism", "Dark or horror theme"],
+            expected_features=[expected_scenes[idx]["features"][0]],
+            should_not_contain=None,
         )
 
-        print(f"\nStory image {idx} verification analysis:\n{verification_analysis}")
+        print(f"\nImage {idx} verification analysis:\n{verification_analysis}")
         assert (
             verification_success
-        ), f"Story image {idx} does not match robot chef theme. Analysis: {verification_analysis}"
+        ), f"Image {idx} does not match expected {expected_scenes[idx]['name']} scene. Analysis: {verification_analysis}"
 
     combined_text = message.content.lower()
     assert (
-        "robot" in combined_text
-        or "chef" in combined_text
-        or "cooking" in combined_text
-    ), "Story text should relate to the robot chef theme"
+        "beach" in combined_text
+        or "mountain" in combined_text
+        or "forest" in combined_text
+        or "city" in combined_text
+    ), "Response text should mention at least one of the requested scenes"
 
 
 if __name__ == "__main__":

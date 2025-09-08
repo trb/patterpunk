@@ -3,15 +3,17 @@ import random
 from abc import ABC
 from typing import List, Optional, Callable, Set, Union
 
-from patterpunk.config import ollama
+from patterpunk.config.providers.ollama import ollama
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
-from patterpunk.llm.messages import Message, AssistantMessage, ToolCallMessage
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 
 
 class OllamaModel(Model, ABC):
@@ -179,7 +181,7 @@ class OllamaModel(Model, ABC):
         return chat_params
 
     def _execute_chat_request(self, chat_params: dict) -> dict:
-        from patterpunk.config import ollama
+        from patterpunk.config.providers.ollama import ollama
 
         return ollama.chat(**chat_params)
 

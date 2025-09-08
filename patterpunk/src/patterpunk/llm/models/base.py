@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Set, Union
 
-from patterpunk.llm.messages import Message
+from patterpunk.llm.messages.base import Message
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition
 

@@ -1,7 +1,7 @@
 import pytest
 
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import UserMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.types import TextChunk as TextChunkFromTypes
 
 

@@ -2,8 +2,9 @@ import pytest
 from typing import List, Optional
 from unittest.mock import Mock, patch
 
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import AssistantMessage, UserMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.text import TextChunk
@@ -52,7 +53,7 @@ class TestAssistantMessageContentTypeSupport:
         chunks = [
             TextChunk("Text part"),
             CacheChunk("Cached content", ttl=300),
-            MultimodalChunk.from_file("/tmp/test.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/test.jpg"),
         ]
         message = AssistantMessage(chunks)
         assert "Text part" in message.content
@@ -64,8 +65,8 @@ class TestAssistantMessageContentTypeSupport:
 
     def test_assistant_message_accepts_multimodal_chunk_list(self):
         chunks = [
-            MultimodalChunk.from_file("/tmp/image.jpg"),
-            MultimodalChunk.from_file("/tmp/photo.png"),
+            MultimodalChunk.from_file("/app/tests/assets/image.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/photo.png"),
         ]
         message = AssistantMessage(chunks)
         assert isinstance(message.content, str)
@@ -84,7 +85,7 @@ class TestContentPropertyBehavior:
         assert message.content == ""
 
     def test_content_property_handles_multimodal_chunks(self):
-        chunks = [MultimodalChunk.from_file("/tmp/test.jpg")]
+        chunks = [MultimodalChunk.from_file("/app/tests/assets/test.jpg")]
         message = AssistantMessage(chunks)
         content = message.content
         assert isinstance(content, str)
@@ -109,7 +110,7 @@ class TestChunksAccessor:
         chunks = [
             TextChunk("Text"),
             CacheChunk("Cache", ttl=300),
-            MultimodalChunk.from_file("/tmp/test.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/test.jpg"),
         ]
         message = AssistantMessage(chunks)
         retrieved_chunks = message.chunks
@@ -122,9 +123,9 @@ class TestTypeSpecificAccessors:
     def test_images_property_returns_multimodal_image_chunks(self):
         chunks = [
             TextChunk("Hello"),
-            MultimodalChunk.from_file("/tmp/image.jpg"),
-            MultimodalChunk.from_file("/tmp/video.mp4"),
-            MultimodalChunk.from_file("/tmp/photo.png"),
+            MultimodalChunk.from_file("/app/tests/assets/image.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/video.mp4"),
+            MultimodalChunk.from_file("/app/tests/assets/photo.png"),
         ]
         message = AssistantMessage(chunks)
         images = message.images
@@ -134,8 +135,8 @@ class TestTypeSpecificAccessors:
     def test_videos_property_returns_multimodal_video_chunks(self):
         chunks = [
             TextChunk("Hello"),
-            MultimodalChunk.from_file("/tmp/video.mp4"),
-            MultimodalChunk.from_file("/tmp/movie.avi"),
+            MultimodalChunk.from_file("/app/tests/assets/video.mp4"),
+            MultimodalChunk.from_file("/app/tests/assets/movie.avi"),
         ]
         message = AssistantMessage(chunks)
         videos = message.videos
@@ -144,8 +145,8 @@ class TestTypeSpecificAccessors:
 
     def test_audios_property_returns_multimodal_audio_chunks(self):
         chunks = [
-            MultimodalChunk.from_file("/tmp/audio.mp3"),
-            MultimodalChunk.from_file("/tmp/sound.wav"),
+            MultimodalChunk.from_file("/app/tests/assets/audio.mp3"),
+            MultimodalChunk.from_file("/app/tests/assets/sound.wav"),
             TextChunk("Text content"),
         ]
         message = AssistantMessage(chunks)
@@ -157,7 +158,7 @@ class TestTypeSpecificAccessors:
         chunks = [
             TextChunk("Text 1"),
             CacheChunk("Cached text", ttl=300),
-            MultimodalChunk.from_file("/tmp/image.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/image.jpg"),
             TextChunk("Text 2"),
         ]
         message = AssistantMessage(chunks)
@@ -276,7 +277,7 @@ class TestModelBaseClassSignature:
 
 class TestMultimodalOutputIntegration:
     def test_assistant_message_with_generated_image(self):
-        mock_image_chunk = MultimodalChunk.from_file("/tmp/generated.jpg")
+        mock_image_chunk = MultimodalChunk.from_file("/app/tests/assets/generated.jpg")
         chunks = [TextChunk("Here's your image:"), mock_image_chunk]
         message = AssistantMessage(chunks)
 
@@ -288,9 +289,9 @@ class TestMultimodalOutputIntegration:
     def test_assistant_message_with_multiple_media_types(self):
         chunks = [
             TextChunk("Generated content:"),
-            MultimodalChunk.from_file("/tmp/image.png"),
-            MultimodalChunk.from_file("/tmp/audio.mp3"),
-            MultimodalChunk.from_file("/tmp/video.mp4"),
+            MultimodalChunk.from_file("/app/tests/assets/image.png"),
+            MultimodalChunk.from_file("/app/tests/assets/audio.mp3"),
+            MultimodalChunk.from_file("/app/tests/assets/video.mp4"),
         ]
         message = AssistantMessage(chunks)
 
@@ -302,7 +303,7 @@ class TestMultimodalOutputIntegration:
     def test_chat_workflow_with_multimodal_output(self):
         mock_chunks = [
             TextChunk("Generated image:"),
-            MultimodalChunk.from_file("/tmp/result.jpg"),
+            MultimodalChunk.from_file("/app/tests/assets/result.jpg"),
         ]
 
         with patch.object(MockModel, "generate_assistant_message") as mock_generate:

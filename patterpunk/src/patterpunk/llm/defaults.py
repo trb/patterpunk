@@ -1,4 +1,4 @@
-from patterpunk.config import DEFAULT_MODEL
+from patterpunk.config.defaults import DEFAULT_MODEL
 from patterpunk.llm.models.openai import OpenAiModel
 
 

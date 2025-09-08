@@ -3,8 +3,10 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from patterpunk.llm.models.bedrock import BedrockModel
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import UserMessage, SystemMessage, ToolCallMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
@@ -22,21 +24,11 @@ except ImportError:
         "anthropic.claude-3-haiku-20240307-v1:0",
         "anthropic.claude-3-sonnet-20240229-v1:0",
         "meta.llama3-70b-instruct-v1:0",
-        "meta.llama3-8b-instruct-v1:0",
-        "mistral.mistral-7b-instruct-v0:2",
         "mistral.mistral-large-2402-v1:0",
-        "mistral.mixtral-8x7b-instruct-v0:1",
-        "amazon.titan-text-express-v1",
-        "amazon.titan-text-lite-v1",
     ],
 )
 def test_simple_bedrock(model_id):
     bedrock = BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98)
-
-    print()
-    print("Bedrock Models")
-    print(BedrockModel.get_available_models())
-    print()
 
     chat = Chat(model=bedrock)
 

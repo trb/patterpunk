@@ -4,8 +4,9 @@ import pytest
 from pydantic import BaseModel, Field
 
 from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import SystemMessage, UserMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.thinking import ThinkingConfig

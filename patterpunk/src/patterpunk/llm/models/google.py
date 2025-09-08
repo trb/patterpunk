@@ -4,15 +4,15 @@ import time
 from abc import ABC
 from typing import List, Optional, Set, Union
 
-from patterpunk.config import (
+from patterpunk.config.providers.google import (
     GOOGLE_APPLICATION_CREDENTIALS,
     GOOGLE_DEFAULT_MAX_TOKENS,
     GOOGLE_DEFAULT_TEMPERATURE,
     GOOGLE_DEFAULT_TOP_K,
     GOOGLE_DEFAULT_TOP_P,
     GEMINI_REGION,
-    MAX_RETRIES,
 )
+from patterpunk.config.defaults import MAX_RETRIES
 
 try:
     from google import genai
@@ -27,21 +27,17 @@ except ImportError:
 
 print("has it?", google_genai_available)
 
-from patterpunk.llm.messages import (
-    Message,
-    ROLE_SYSTEM,
-    ROLE_USER,
-    ROLE_ASSISTANT,
-    AssistantMessage,
-    ToolCallMessage,
-)
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger
 
 

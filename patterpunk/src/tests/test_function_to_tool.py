@@ -1,6 +1,6 @@
 import pytest
 from typing import Optional, List, Dict, Union
-from patterpunk.lib.function_to_tool import function_to_tool, functions_to_tools
+from patterpunk.lib.function_to_tool.converter import function_to_tool, functions_to_tools
 
 
 def test_simple_function():

@@ -3,22 +3,26 @@ import enum
 from abc import ABC
 from typing import List, Literal, Optional, Set, Union
 
-from patterpunk.config import (
+from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
+    GENERATE_STRUCTURED_OUTPUT_PROMPT,
+)
+from patterpunk.config.providers.openai import (
     openai,
     OPENAI_MAX_RETRIES,
-    GENERATE_STRUCTURED_OUTPUT_PROMPT,
 )
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.lib.extract_json import extract_json
-from patterpunk.llm.messages import AssistantMessage, Message, ToolCallMessage
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 if openai:

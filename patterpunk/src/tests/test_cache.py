@@ -2,12 +2,10 @@ import pytest
 from datetime import timedelta
 
 from patterpunk.llm.types import CacheChunk
-from patterpunk.llm.messages import (
-    Message,
-    SystemMessage,
-    UserMessage,
-    AssistantMessage,
-)
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
+from patterpunk.llm.messages.assistant import AssistantMessage
 
 
 class TestCacheChunk:

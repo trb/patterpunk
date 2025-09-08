@@ -3,8 +3,9 @@ from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.models.openai import OpenAiModel
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.models.google import GoogleModel
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import SystemMessage, UserMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
 
 
 def test_thinking_config_validation():

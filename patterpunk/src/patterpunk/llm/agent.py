@@ -3,8 +3,9 @@ from dataclasses import asdict
 from typing import Generic, TypeVar, get_args
 
 import jinja2
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import SystemMessage, UserMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.base import Model
 
 InputType = TypeVar("InputType")

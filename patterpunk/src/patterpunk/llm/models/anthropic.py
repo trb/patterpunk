@@ -4,30 +4,26 @@ from abc import ABC
 from dataclasses import dataclass
 from typing import List, Optional, Callable, get_args, Set, Union, Literal
 
-from patterpunk.config import (
+from patterpunk.config.providers.anthropic import (
     anthropic,
     ANTHROPIC_DEFAULT_TEMPERATURE,
     ANTHROPIC_DEFAULT_TOP_P,
     ANTHROPIC_DEFAULT_TOP_K,
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     ANTHROPIC_DEFAULT_TIMEOUT,
-    MAX_RETRIES,
 )
-from patterpunk.llm.messages import (
-    Message,
-    ROLE_SYSTEM,
-    ROLE_USER,
-    ROLE_ASSISTANT,
-    AssistantMessage,
-    ToolCallMessage,
-)
+from patterpunk.config.defaults import MAX_RETRIES
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
 

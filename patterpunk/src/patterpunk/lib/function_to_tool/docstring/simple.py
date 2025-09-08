@@ -16,7 +16,7 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
             break
 
     if args_start is None:
-        from .cleaning import clean_description
+        from ..cleaning import clean_description
 
         return clean_description(docstring), {}
 
@@ -28,7 +28,7 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
     current_desc_lines = []
 
     for line in lines[args_start + 1 :]:
-        if re.match(r"^\s*\w+\s*:", line):
+        if re.match(r"^\s*(Returns?|Raises?|Yields?|Warns?|Warnings?|Note|Notes|Example|Examples|See Also|References?|Attributes?)\s*:", line, re.IGNORECASE):
             if current_param and current_desc_lines:
                 desc = " ".join(current_desc_lines).strip()
                 param_descriptions[current_param] = desc
@@ -49,6 +49,6 @@ def parse_with_regex(func: Callable) -> Tuple[str, Dict[str, str]]:
         desc = " ".join(current_desc_lines).strip()
         param_descriptions[current_param] = desc
 
-    from .cleaning import clean_description
+    from ..cleaning import clean_description
 
     return clean_description(description) or func.__name__, param_descriptions

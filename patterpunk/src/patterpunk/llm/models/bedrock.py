@@ -4,33 +4,31 @@ from abc import ABC
 from typing import List, Optional, Set, Union
 import time
 
-from patterpunk.config import (
+from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
-    boto3,
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
-    get_bedrock_client_by_region,
     MAX_RETRIES,
+)
+from patterpunk.config.providers.bedrock import (
+    boto3,
+    get_bedrock_client_by_region,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 
 if boto3:
     from botocore.exceptions import ClientError
-from patterpunk.llm.messages import (
-    Message,
-    AssistantMessage,
-    ToolCallMessage,
-    ROLE_SYSTEM,
-    ROLE_ASSISTANT,
-    ROLE_USER,
-)
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
-from patterpunk.llm.messages import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
 

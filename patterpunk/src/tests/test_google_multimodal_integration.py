@@ -3,8 +3,9 @@ from typing import List, Union
 
 from patterpunk.config.providers.google import GOOGLE_APPLICATION_CREDENTIALS
 from patterpunk.llm.models.google import GoogleModel
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import UserMessage, AssistantMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.text import TextChunk
 from tests.test_utils import get_resource

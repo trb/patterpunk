@@ -12,7 +12,9 @@ from typing import List, Optional, Set, Union
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.defaults import default_model
 from patterpunk.llm.tool_types import ToolDefinition
-from patterpunk.llm.messages import AssistantMessage, ToolCallMessage, Message
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from .tools import configure_tools, configure_mcp_servers, execute_mcp_tool_calls

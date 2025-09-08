@@ -2,8 +2,10 @@ from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
-from patterpunk.llm.chat import Chat
-from patterpunk.llm.messages import SystemMessage, UserMessage, ToolCallMessage
+from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.messages.system import SystemMessage
+from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.google import GoogleModel
 from patterpunk.llm.cache import CacheChunk
 from patterpunk.llm.multimodal import MultimodalChunk
@@ -99,7 +101,7 @@ def test_available_models():
 
 
 def test_tool_calling():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     def calculate_area(length: float, width: float) -> str:
         area = length * width
@@ -143,7 +145,7 @@ def test_tool_calling():
 
 
 def test_simple_tool_calling():
-    from patterpunk.llm.chat import Chat
+    from patterpunk.llm.chat.core import Chat
 
     def get_weather(location: str) -> str:
         return f"The weather in {location} is sunny and 22°C"

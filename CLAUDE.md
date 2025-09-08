@@ -31,6 +31,7 @@ YOU MUST FOLLOW THESE CODE DESIGN RULES! IT IS A FATAL VIOLATION NOT TO FOLLOW T
 
 ## Code Design Rules - How to write code in patterunk!
 - FATAL: DO NOT ADD SINGLE-LINE COMMENTS, UNDER ANY CIRCUMSTANCES!
+- FATAL: NEVER ADD LOGIC OR EXPORTS TO `__init__.py` FILES! EVER! ALL `__init__.py` FILES MUST REMAIN EMPTY!
 - You MUST NOT mock any interface when writing tests unless VERY EXPLICTLY instructed to do so by the user. Our tests are all integration tests and should hit all services.
 - Code MUST be expressive and easy to understand. Avoid complex code structures, long if-statements, long functions, etc - prefer composition instead of complex code structures
 - **Incremental progress over big bangs** - Small changes that compile
