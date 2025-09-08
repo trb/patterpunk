@@ -161,7 +161,3 @@ Patterpunk prioritizes **developer experience** through:
 3. **Immutable** - Functional composition without side effects
 4. **Modular** - Use only the features you need
 5. **Production Ready** - Error handling, retries, cost optimization
-
-## Contributing
-
-Patterpunk is open source. Contributions welcome for new providers, features, and improvements.
