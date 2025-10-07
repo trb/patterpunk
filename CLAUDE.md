@@ -26,35 +26,99 @@ You MUST access the following files if you work on related features of patterpun
 1. You MUST NOT estimate time periods. Under no circumstances should you add time estimates, to any file, in any context.
 
 
-<codeDesignRules importance="FATAL" mustFollow="true">
-YOU MUST FOLLOW THESE CODE DESIGN RULES! IT IS A FATAL VIOLATION NOT TO FOLLOW THESE RULES!
+<code-design-rules importance="FATAL" mustFollowEveryTime="true">
 
-## Code Design Rules - How to write code in patterunk!
-- FATAL: DO NOT ADD SINGLE-LINE COMMENTS, UNDER ANY CIRCUMSTANCES!
-- FATAL: NEVER ADD LOGIC OR EXPORTS TO `__init__.py` FILES! EVER! ALL `__init__.py` FILES MUST REMAIN EMPTY!
-- You MUST NOT mock any interface when writing tests unless VERY EXPLICTLY instructed to do so by the user. Our tests are all integration tests and should hit all services.
-- Code MUST be expressive and easy to understand. Avoid complex code structures, long if-statements, long functions, etc - prefer composition instead of complex code structures
-- **Incremental progress over big bangs** - Small changes that compile
-- **Learning from existing code** - Study and plan before implementing
-- **Pragmatic over dogmatic** - Adapt to project reality
-- **Clear intent over clever code** - Be boring and obvious
-- Single responsibility per function/class
-- Avoid premature abstractions
-- No clever tricks - choose the boring solution
-- If you need to explain it, it's too complex
-- Split long functions into smaller ones
-- Keep all code structures - functions, classes, modules, etc. - small and easy to understand
-- Compose instead of inline
-- Single-use functions still have value as they convey context that otherwise would be missing, and they separate functionality into smaller chunks
-- **MUST REMEMBER:** Design code for humans, whose working memory can handle 5 memory chunks at most, where a chunk is a new piece of information, like an unknown variable, function interface, etc., keep those under 5 chunks
-- Code must be self-documenting through clear variable names and structure
-- Never abbreviate variable names (use `signature` not `sig`)
-- Keep provider-specific code isolated in model files only
-- NO docstrings (unless absolutely required by a framework)
-- NO inline comments explaining what code does
-- NO comment blocks
-- NO TODO comments
-</codeDesignRules>
+## Code Design Rules
+
+You MUST follow these rules when writing code. They'll guide you to well-structured, clean and maintainable code! It's of utmost, FATAL importance that you follow these rules.
+
+**FUNDAMENTAL CONSTRAINT**
+- Working memory holds ~4 chunks of information; exceeding this causes comprehension failure
+- Every abstraction, indirection, and context switch consumes a chunk
+- Optimize for minimal mental effort to understand and modify code
+
+**FUNCTION/METHOD DESIGN**
+- Extract complex conditionals into descriptively-named boolean variables (e.g., `isEligibleForDiscount` instead of `user.age > 18 && user.memberSince < 2020 && !user.suspended`)
+- Use early returns to avoid nested conditionals - handle edge cases first, then focus on happy path
+- One abstraction level per function - don't mix high-level orchestration with low-level details
+- Deep modules preferred: simple interface hiding complex implementation (e.g., `database.save(user)` hiding connection pooling, retries, transactions)
+- Pure functions better than stateful objects - push side effects to system edges
+
+**ABSTRACTION GUIDELINES**
+- "A little copying is better than a little dependency" - prefer small code duplication over wrong abstraction
+- Build abstractions only after pattern emerges 3+ times, not speculatively
+- Always provide escape hatches - allow bypassing abstraction for edge cases
+- Abstract for changeability not reusability - focus on what varies in YOUR domain
+- Prefer composition over inheritance - inheritance creates tight coupling and mental stack overflow
+
+**CODE ORGANIZATION**
+- Organize by feature/domain not technical layer (e.g., `user/` not `controllers/, models/, views/`)
+- Colocate related logic - group code that changes together
+- Keep files/modules focused - split when cognitive load exceeds ~4 concepts
+- Minimize cross-module dependencies - each module should be understandable in isolation
+- Single source of truth - avoid duplicate state/logic
+
+**NAMING & CLARITY**
+- Intent-revealing names better than implementation-describing (e.g., `validateUserEligibility()` not `checkUserObject()`)
+- Explicit better than implicit - no hidden magic or assumed knowledge
+- Self-documenting code better than comments - if you need to explain it, simplify it
+- Consistent naming conventions throughout codebase - reduce mental translation
+
+**ARCHITECTURAL DECISIONS**
+- Monolith-first - microservices add distributed complexity; split only when proven necessary
+- Framework-agnostic core logic - frameworks at edges only (controllers, adapters)
+- Push complexity to edges - keep core business logic simple, handle messiness in adapters
+- Bounded contexts better than arbitrary boundaries - split by domain not technical concerns
+
+**AVOID THESE PATTERNS**
+- Deep inheritance hierarchies (more than 2 levels)
+- Lasagna architecture (too many layers of indirection)
+- Mixed abstraction levels in same scope
+- Shared mutable state across components
+- Temporal coupling (hidden order dependencies)
+- Action-at-distance (modifying state in unexpected places)
+- Clever/elegant code - boring and obvious wins
+- Speculative generality - YAGNI (You Aren't Gonna Need It)
+- Framework religion - use frameworks pragmatically not dogmatically
+- DRY extremism - some duplication acceptable to reduce coupling
+
+**STATE & DATA FLOW**
+- Immutability by default - mutate only when performance requires
+- Make illegal states unrepresentable in type system
+- Explicit data flow - avoid hidden channels
+- Fail fast and loud - surface errors immediately
+- Use types as documentation - rich domain types over primitives
+
+**REFACTORING PRINCIPLES**
+- Refactor when pattern is clear, not when suspected
+- Optimize for deletion - make code easy to remove
+- Leave breadcrumbs - document non-obvious decisions
+- Business logic is inherently messy - embrace it, don't over-abstract
+- Code for median developer competence not genius level
+
+**COMPLEXITY MANAGEMENT**
+- Each function should require 4 or fewer mental chunks to understand
+- Flatten deeply nested structures - use guard clauses, early returns
+- Avoid callback hell - use async/await or similar patterns
+- Minimize action distance - keep cause and effect close
+- Reduce state space - fewer possible states equals fewer bugs
+- Hide complexity that won't change, expose what will vary
+
+**INTERFACE DESIGN**
+- Minimal surface area - fewer public methods/properties
+- Consistent patterns across similar interfaces
+- Progressive disclosure - simple common cases, complex rare cases
+- Avoid boolean parameters - use enums or separate methods
+- Return consistent types - avoid sometimes-null, sometimes-array confusion
+
+**PRACTICAL SIMPLIFICATION**
+- If explaining takes more than 2 sentences, code is too complex
+- If you need a diagram to understand flow, refactor
+- If new developers consistently misunderstand, clarify
+- If changes require touching many files, reconsider boundaries
+- If testing is hard, design is probably wrong
+
+</code-design-rules>
 
 ## Architecture Overview
 

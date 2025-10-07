@@ -389,3 +389,118 @@ def test_multimodal_pdf():
     assert "bank of canada" in title.lower()
     assert "research" in title.lower()
     assert "2025" in title.lower()
+
+
+def test_simple_tool_calling():
+    """Test simple tool calling with OpenAI"""
+    from patterpunk.llm.messages.tool_call import ToolCallMessage
+
+    def get_weather(location: str) -> str:
+        """Get the current weather for a location.
+
+        Args:
+            location: The city or location to get weather for
+        """
+        return f"The weather in {location} is sunny and 22°C"
+
+    chat = Chat(model=OpenAiModel(model="gpt-4o-mini", temperature=0.0)).with_tools(
+        [get_weather]
+    )
+
+    system_msg = SystemMessage(
+        "You are a helpful assistant that MUST use the provided tools to answer questions. "
+        "When asked about weather, you MUST call the get_weather tool. "
+        "Do not just describe what you would do - actually call the tool."
+    )
+
+    response = (
+        chat.add_message(system_msg)
+        .add_message(UserMessage("What's the weather in Paris?"))
+        .complete()
+    )
+
+    assert response.latest_message is not None
+    assert isinstance(
+        response.latest_message, ToolCallMessage
+    ), f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. Content: {response.latest_message.content}"
+
+    tool_calls = response.latest_message.tool_calls
+    assert (
+        len(tool_calls) == 1
+    ), f"Expected exactly one tool call, got {len(tool_calls)}"
+
+    tool_call = tool_calls[0]
+    assert tool_call["type"] == "function"
+    assert tool_call["function"]["name"] == "get_weather"
+
+    import json
+
+    arguments = json.loads(tool_call["function"]["arguments"])
+    assert "location" in arguments
+    assert "paris" in arguments["location"].lower()
+
+
+def test_multi_tool_calling():
+    """Test calling multiple tools with OpenAI"""
+    from patterpunk.llm.messages.tool_call import ToolCallMessage
+
+    def calculate_area(length: float, width: float) -> str:
+        """Calculate the area of a rectangle.
+
+        Args:
+            length: The length of the rectangle
+            width: The width of the rectangle
+        """
+        area = length * width
+        return f"The area is {area} square units"
+
+    def get_math_fact(topic: str) -> str:
+        """Get an interesting fact about a math topic.
+
+        Args:
+            topic: The math topic to get a fact about
+        """
+        facts = {
+            "rectangle": "A rectangle has opposite sides that are equal and parallel",
+            "area": "Area measures the amount of space inside a 2D shape",
+            "geometry": "Geometry is one of the oldest mathematical sciences",
+        }
+        return facts.get(topic.lower(), "Mathematics is the language of the universe")
+
+    chat = Chat(model=OpenAiModel(model="gpt-4o-mini", temperature=0.0)).with_tools(
+        [calculate_area, get_math_fact]
+    )
+
+    system_msg = SystemMessage(
+        "You are a geometry helper that MUST use the provided tools to solve problems. "
+        "When asked to calculate area, you MUST call the calculate_area tool. "
+        "When asked for facts, you MUST call the get_math_fact tool. "
+        "Do not calculate or provide facts without using the tools."
+    )
+
+    response = (
+        chat.add_message(system_msg)
+        .add_message(
+            UserMessage(
+                "I have a rectangle that is 5 units long and 3 units wide. "
+                "Calculate its area and give me an interesting fact about rectangles."
+            )
+        )
+        .complete()
+    )
+
+    assert response.latest_message is not None
+    assert isinstance(
+        response.latest_message, ToolCallMessage
+    ), f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. Content: {response.latest_message.content}"
+
+    tool_calls = response.latest_message.tool_calls
+    assert (
+        len(tool_calls) >= 1
+    ), f"Expected at least one tool call, got {len(tool_calls)}"
+
+    # Verify we have the expected tool calls
+    tool_names = [tc["function"]["name"] for tc in tool_calls]
+    assert (
+        "calculate_area" in tool_names or "get_math_fact" in tool_names
+    ), f"Expected calculate_area or get_math_fact in tool calls, got: {tool_names}"

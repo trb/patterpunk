@@ -306,6 +306,8 @@ class OpenAiModel(Model, ABC):
 
         if tools:
             tools_list = tools if isinstance(tools, list) else [tools]
+            # Convert from Chat Completions format to Responses API format
+            tools_list = self._convert_tools_to_responses_format(tools_list)
 
         if output_types and OutputType.IMAGE in output_types:
             image_generation_tool = {"type": "image_generation"}
@@ -315,6 +317,24 @@ class OpenAiModel(Model, ABC):
                 tools_list = [image_generation_tool]
 
         return tools_list
+
+    def _convert_tools_to_responses_format(self, tools: List[dict]) -> List[dict]:
+        """Convert tools from Chat Completions format to Responses API format.
+
+        Chat Completions format: {"type": "function", "function": {"name": "...", ...}}
+        Responses API format: {"type": "function", "name": "...", ...}
+        """
+        converted_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                # Flatten nested function structure
+                flattened = {"type": "function"}
+                flattened.update(tool["function"])
+                converted_tools.append(flattened)
+            else:
+                # Keep non-function tools as-is
+                converted_tools.append(tool)
+        return converted_tools
 
     def _setup_structured_output_parameter(
         self, structured_output: Optional[object], prompt_for_structured_output: bool
@@ -373,7 +393,21 @@ class OpenAiModel(Model, ABC):
 
     def _process_tool_calls_output(self, output_item) -> List[dict]:
         tool_calls = []
-        if hasattr(output_item, "tool_calls") and output_item.tool_calls:
+
+        # Check if output_item IS a tool call (ResponseFunctionToolCall)
+        if hasattr(output_item, "type") and output_item.type == "function_call":
+            tool_calls.append(
+                {
+                    "id": output_item.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": output_item.name,
+                        "arguments": output_item.arguments,
+                    },
+                }
+            )
+        # Legacy format: check if output_item has tool_calls attribute
+        elif hasattr(output_item, "tool_calls") and output_item.tool_calls:
             for tool_call in output_item.tool_calls:
                 tool_calls.append(
                     {
