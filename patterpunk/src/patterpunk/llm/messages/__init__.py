@@ -1,4 +1,5 @@
 """Message types for conversations."""
+
 from .system import SystemMessage
 from .user import UserMessage
 from .assistant import AssistantMessage
