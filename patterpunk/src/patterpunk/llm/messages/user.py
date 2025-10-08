@@ -1,6 +1,6 @@
 from typing import Union, List, Optional, Any
 
-from ..cache import CacheChunk
+from ..chunks import CacheChunk
 from ..types import ContentType
 from .base import Message
 from .roles import ROLE_USER

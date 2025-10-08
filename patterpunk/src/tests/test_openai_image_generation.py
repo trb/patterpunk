@@ -8,8 +8,7 @@ from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
-from patterpunk.llm.multimodal import MultimodalChunk
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.output_types import OutputType
 from tests.test_utils import get_resource
 

@@ -2,7 +2,7 @@ from typing import Union, List, Optional, Any
 
 from patterpunk.lib.extract_json import extract_json
 from patterpunk.logger import logger
-from ..cache import CacheChunk
+from ..chunks import CacheChunk
 from .exceptions import (
     StructuredOutputNotPydanticLikeError,
     StructuredOutputFailedToParseError,

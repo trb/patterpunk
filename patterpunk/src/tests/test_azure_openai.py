@@ -2,7 +2,7 @@ import os
 import pytest
 from pydantic import BaseModel, Field
 
-from patterpunk.llm.cache import CacheChunk
+from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
@@ -11,7 +11,6 @@ from patterpunk.llm.models.azure_openai import (
     AzureOpenAiModel,
     AzureOpenAiMissingConfigurationError,
 )
-from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.thinking import ThinkingConfig
 from tests.test_utils import get_resource
 

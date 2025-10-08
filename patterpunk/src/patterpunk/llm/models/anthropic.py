@@ -21,8 +21,7 @@ from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
 from patterpunk.llm.output_types import OutputType
-from patterpunk.llm.multimodal import MultimodalChunk
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger

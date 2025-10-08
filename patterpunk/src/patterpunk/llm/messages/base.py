@@ -4,8 +4,7 @@ from typing import Union, List, Optional, Any
 from patterpunk.config.defaults import GENERATE_STRUCTURED_OUTPUT_PROMPT
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.logger import logger
-from ..cache import CacheChunk
-from ..multimodal import MultimodalChunk
+from ..chunks import CacheChunk, MultimodalChunk
 from ..types import ContentType
 from .roles import ROLE_USER
 from .exceptions import BadParameterError

@@ -1,6 +1,6 @@
 from typing import Union, List
 
-from ..cache import CacheChunk
+from ..chunks import CacheChunk
 from .base import Message
 from .roles import ROLE_SYSTEM
 

@@ -3,12 +3,11 @@ from typing import List, Optional
 import pytest
 from pydantic import BaseModel, Field
 
-from patterpunk.llm.cache import CacheChunk
+from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
-from patterpunk.llm.multimodal import MultimodalChunk
 from patterpunk.llm.thinking import ThinkingConfig
 from tests.test_utils import get_resource
 
@@ -504,3 +503,54 @@ def test_multi_tool_calling():
     assert (
         "calculate_area" in tool_names or "get_math_fact" in tool_names
     ), f"Expected calculate_area or get_math_fact in tool calls, got: {tool_names}"
+
+
+def test_cache_chunks():
+    """Test that cache chunks work with OpenAI"""
+
+    chat = Chat(model=OpenAiModel(model="gpt-4o-mini", temperature=0.1))
+
+    # Create a message with mixed cacheable and non-cacheable content
+    large_context = (
+        """
+    This is a large context document that should be cached for performance.
+    It contains important information that will be referenced multiple times.
+    """
+        * 100
+    )  # Make it larger to benefit from caching
+
+    response = (
+        chat.add_message(
+            SystemMessage(
+                content=[
+                    CacheChunk(
+                        content=large_context,
+                        cacheable=True,
+                    ),
+                    CacheChunk(
+                        content="Answer questions about the context concisely.",
+                        cacheable=False,
+                    ),
+                ]
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="What is this document about?", cacheable=False)
+                ]
+            )
+        )
+        .complete()
+    )
+
+    assert response.latest_message is not None
+    assert response.latest_message.content is not None
+    assert len(response.latest_message.content.strip()) > 0
+
+    # The response should mention something about context or information
+    content_lower = response.latest_message.content.lower()
+    assert any(
+        term in content_lower
+        for term in ["context", "information", "document", "reference"]
+    )

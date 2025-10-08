@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 from pathlib import Path
 
 
-VERSION = "0.5.2"
+VERSION = "0.8.1"
 
 current_dir = Path(__file__).parent
 requirements_path = current_dir / "requirements.txt"

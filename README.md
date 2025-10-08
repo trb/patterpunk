@@ -42,8 +42,7 @@ if response.is_latest_message_tool_call:
 ### Multimodal Content
 
 ```python
-from patterpunk.llm.multimodal import MultimodalChunk
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 
 response = Chat().add_message(
     UserMessage([

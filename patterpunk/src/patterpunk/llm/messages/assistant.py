@@ -1,8 +1,6 @@
 from typing import Optional, Any, Union, List
 
-from ..cache import CacheChunk
-from ..multimodal import MultimodalChunk
-from ..text import TextChunk
+from ..chunks import CacheChunk, MultimodalChunk, TextChunk
 from ..types import ContentType
 from .base import Message
 from .roles import ROLE_ASSISTANT

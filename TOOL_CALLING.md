@@ -101,7 +101,7 @@ weather_server = MCPServerConfig(
     timeout=30.0
 )
 
-# Stdio transport (local subprocess servers)  
+# Stdio transport (local subprocess servers)
 filesystem_server = MCPServerConfig(
     name="filesystem",
     command=["python", "-m", "mcp_filesystem"],

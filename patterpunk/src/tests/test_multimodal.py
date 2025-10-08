@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import MultimodalChunk
 from tests.test_utils import get_resource
 
 

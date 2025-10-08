@@ -1,6 +1,6 @@
 import pytest
 
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import TextChunk
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.types import TextChunk as TextChunkFromTypes
 
@@ -32,7 +32,7 @@ def test_text_chunk_in_user_message():
 
 
 def test_text_chunk_with_cache_chunk():
-    from patterpunk.llm.cache import CacheChunk
+    from patterpunk.llm.chunks import CacheChunk
 
     message = UserMessage(
         [
@@ -67,7 +67,7 @@ def test_text_chunk_templating():
 
 
 def test_text_chunk_cache_chunks_conversion():
-    from patterpunk.llm.cache import CacheChunk
+    from patterpunk.llm.chunks import CacheChunk
 
     message = UserMessage([TextChunk("Regular text"), TextChunk("More text")])
 
@@ -87,7 +87,7 @@ def test_text_chunk_no_cacheable_content():
 
 
 def test_text_chunk_mixed_with_multimodal():
-    from patterpunk.llm.multimodal import MultimodalChunk
+    from patterpunk.llm.chunks import MultimodalChunk
     from tests.test_utils import get_resource
 
     message = UserMessage(

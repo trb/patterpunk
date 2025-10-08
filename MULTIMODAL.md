@@ -7,7 +7,7 @@ Patterpunk provides unified multimodal content handling across all providers thr
 ### From Files
 
 ```python
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import MultimodalChunk
 
 # Local files with automatic media type detection
 image = MultimodalChunk.from_file("screenshot.png")
@@ -79,7 +79,7 @@ print(chunk.filename)        # "image.jpg"
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import TextChunk
 
 # Mixed content types in messages
 message = UserMessage([
@@ -128,6 +128,8 @@ MultimodalChunk(b"binary_data")                 # bytes
 ### Document Types by Provider
 
 ```python
+from patterpunk.llm.chunks import MultimodalChunk
+
 # PDF support varies by provider
 pdf_chunk = MultimodalChunk.from_file("document.pdf")
 
@@ -150,6 +152,8 @@ google_chat = Chat(model=GoogleModel()).add_message(
 ### Image Formats
 
 ```python
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
+
 # Common formats supported across providers
 formats = [
     MultimodalChunk.from_file("image.jpg"),    # JPEG
@@ -167,6 +171,8 @@ for image in formats:
 ## Lazy Loading and Caching
 
 ```python
+from patterpunk.llm.chunks import MultimodalChunk
+
 # Content is loaded on-demand
 url_chunk = MultimodalChunk.from_url("https://example.com/large-file.pdf")
 print(url_chunk.source_type)  # "url" - not downloaded yet
@@ -183,6 +189,8 @@ print(downloaded_chunk.source_type)  # "bytes"
 ## Error Handling
 
 ```python
+from patterpunk.llm.chunks import MultimodalChunk
+
 # File not found
 try:
     chunk = MultimodalChunk.from_file("nonexistent.jpg")
@@ -215,6 +223,8 @@ except ImportError:
 ### Batch Processing
 
 ```python
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
+
 # Process multiple files efficiently
 image_paths = ["img1.jpg", "img2.png", "img3.gif"]
 chunks = [MultimodalChunk.from_file(path) for path in image_paths]
@@ -231,6 +241,7 @@ response = chat.add_message(message).complete()
 
 ```python
 import requests
+from patterpunk.llm.chunks import MultimodalChunk
 
 # Authenticated downloads
 session = requests.Session()
@@ -246,8 +257,7 @@ downloaded = secure_chunk.download(session=session)
 ### Mixed Content Workflows
 
 ```python
-from patterpunk.llm.text import TextChunk
-from patterpunk.llm.cache import CacheChunk
+from patterpunk.llm.chunks import TextChunk, CacheChunk, MultimodalChunk
 
 # Complex content composition
 message = UserMessage([

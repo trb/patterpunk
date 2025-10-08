@@ -1,8 +1,7 @@
 from jinja2 import Template
 from typing import Union, List, Dict, Any
 
-from ..cache import CacheChunk
-from ..text import TextChunk
+from ..chunks import CacheChunk, TextChunk
 
 
 def format_content(

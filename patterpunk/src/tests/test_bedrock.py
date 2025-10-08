@@ -8,8 +8,7 @@ from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from tests.test_utils import get_resource
 
 try:
@@ -552,3 +551,61 @@ def test_multimodal_pdf():
     assert "bank of canada" in title.lower()
     assert "research" in title.lower()
     assert "2025" in title.lower()
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "anthropic.claude-3-sonnet-20240229-v1:0",
+        "anthropic.claude-3-haiku-20240307-v1:0",
+    ],
+)
+def test_cache_chunks(model_id):
+    """Test that cache chunks work with Bedrock"""
+
+    chat = Chat(model=BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98))
+
+    # Create a message with mixed cacheable and non-cacheable content
+    large_context = (
+        """
+    This is a large context document that should be cached for performance.
+    It contains important information that will be referenced multiple times.
+    """
+        * 100
+    )  # Make it larger to benefit from caching
+
+    response = (
+        chat.add_message(
+            SystemMessage(
+                content=[
+                    CacheChunk(
+                        content=large_context,
+                        cacheable=True,
+                    ),
+                    CacheChunk(
+                        content="Answer questions about the context concisely.",
+                        cacheable=False,
+                    ),
+                ]
+            )
+        )
+        .add_message(
+            UserMessage(
+                content=[
+                    CacheChunk(content="What is this document about?", cacheable=False)
+                ]
+            )
+        )
+        .complete()
+    )
+
+    assert response.latest_message is not None
+    assert response.latest_message.content is not None
+    assert len(response.latest_message.content.strip()) > 0
+
+    # The response should mention something about context or information
+    content_lower = response.latest_message.content.lower()
+    assert any(
+        term in content_lower
+        for term in ["context", "information", "document", "reference"]
+    )

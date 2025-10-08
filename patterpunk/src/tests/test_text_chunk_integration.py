@@ -1,7 +1,5 @@
 import pytest
-from patterpunk.llm.text import TextChunk
-from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import TextChunk, CacheChunk, MultimodalChunk
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.anthropic import AnthropicModel

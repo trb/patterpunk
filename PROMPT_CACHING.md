@@ -6,7 +6,7 @@ Patterpunk provides unified prompt caching across providers through `CacheChunk`
 
 ```python
 from datetime import timedelta
-from patterpunk.llm.cache import CacheChunk
+from patterpunk.llm.chunks import CacheChunk
 from patterpunk.llm.messages import UserMessage
 
 # Basic usage with UserMessage
@@ -18,8 +18,8 @@ message = UserMessage([
 # With TTL (provider-specific interpretation)
 message = UserMessage([
     CacheChunk(
-        content="System instructions...", 
-        cacheable=True, 
+        content="System instructions...",
+        cacheable=True,
         ttl=timedelta(hours=2)
     ),
     CacheChunk(content="Current request", cacheable=False)
@@ -39,6 +39,8 @@ Not all aspects of CacheChunk are supported by all providers. E.g. how providers
 OpenAI requires cacheable content to be at the **beginning** of messages (prefix pattern). Non-prefix cacheable content triggers warnings and may be ineffective.
 
 ```python
+from patterpunk.llm.chunks import CacheChunk, TextChunk
+
 # Correct: Cacheable content as prefix
 message = UserMessage([
     CacheChunk("Large codebase context...", cacheable=True),
@@ -77,7 +79,7 @@ Needs no specific considerations
 ### Mixed Content Strategies
 
 ```python
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import TextChunk, CacheChunk
 
 # Strategic caching pattern
 message = UserMessage([
@@ -97,6 +99,8 @@ system = SystemMessage([
 ### Multi-Turn Conversation Optimization
 
 ```python
+from patterpunk.llm.chunks import CacheChunk, TextChunk
+
 # Cache system context across conversation turns
 chat = Chat().add_message(SystemMessage([
     CacheChunk(persistent_instructions, cacheable=True)
@@ -108,14 +112,14 @@ for user_input in conversation:
         CacheChunk(current_context, cacheable=False),  # Changes each turn
         TextChunk(user_input)
     ])).complete()
-    
+
     chat = response
 ```
 
 ### Multimodal Content with Caching
 
 ```python
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import MultimodalChunk, CacheChunk, TextChunk
 
 # Cache text context, not multimodal content
 message = UserMessage([
@@ -133,6 +137,8 @@ message = UserMessage([
 All content goes through automatic processing:
 
 ```python
+from patterpunk.llm.chunks import TextChunk, CacheChunk
+
 # TextChunk automatically converts to non-cacheable CacheChunk
 message = UserMessage([
     TextChunk("Instructions"),  # → CacheChunk(cacheable=False)
@@ -147,9 +153,11 @@ has_cacheable = message.has_cacheable_content()
 ### Cost Optimization Patterns
 
 ```python
+from patterpunk.llm.chunks import CacheChunk
+
 # High-value caching: Large, reused content
 system_context = CacheChunk(
-    content=load_large_documentation(), 
+    content=load_large_documentation(),
     cacheable=True,
     ttl=timedelta(hours=8)  # Long TTL for stable content
 )
@@ -171,15 +179,17 @@ conversation_history = CacheChunk(
 ### Cache Effectiveness Analysis
 
 ```python
+from patterpunk.llm.chunks import CacheChunk
+
 # Analyze cache potential
 def analyze_cache_potential(message):
     chunks = message.get_cache_chunks()
-    
+
     for i, chunk in enumerate(chunks):
         if chunk.cacheable:
             size = len(chunk.content)
             print(f"Chunk {i}: {size} chars, cacheable")
-            
+
             # Provider-specific considerations
             if provider == "google" and size < 32000:
                 print(f"  Warning: Below Google's 32KB threshold")
@@ -213,6 +223,8 @@ def optimize_cache_layout(chunks):
 ### Provider Cost Implications
 
 ```python
+from patterpunk.llm.chunks import CacheChunk
+
 # Anthropic: Cache control reduces token costs
 anthropic_message = UserMessage([
     CacheChunk(large_context, cacheable=True),  # Cached tokens cost less
@@ -236,6 +248,8 @@ openai_message = UserMessage([
 ### Common Patterns and Issues
 
 ```python
+from patterpunk.llm.chunks import CacheChunk
+
 # Debug cache effectiveness
 def debug_caching(chat_response):
     for message in chat_response.messages:
@@ -253,20 +267,22 @@ logging.getLogger('patterpunk').setLevel(logging.WARNING)
 ### Provider-Specific Debugging
 
 ```python
+from patterpunk.llm.chunks import CacheChunk
+
 # OpenAI: Validate prefix pattern
 def validate_openai_cache_pattern(chunks):
     last_cacheable = -1
     for i, chunk in enumerate(chunks):
         if isinstance(chunk, CacheChunk) and chunk.cacheable:
             last_cacheable = i
-    
+
     # Check if all content before last cacheable is also cacheable
     for i in range(last_cacheable):
         if not (isinstance(chunks[i], CacheChunk) and chunks[i].cacheable):
             return False, f"Non-cacheable content at position {i}"
     return True, "Valid prefix pattern"
 
-# Google: Check size thresholds  
+# Google: Check size thresholds
 def check_google_cache_eligibility(chunks):
     for i, chunk in enumerate(chunks):
         if isinstance(chunk, CacheChunk) and chunk.cacheable:
@@ -280,6 +296,7 @@ def check_google_cache_eligibility(chunks):
 
 ```python
 from patterpunk.llm.agent import Agent
+from patterpunk.llm.chunks import CacheChunk
 
 class CachedAgent(Agent[str, str]):
     def prepare_chat(self):
@@ -293,6 +310,7 @@ class CachedAgent(Agent[str, str]):
 
 ```python
 from pydantic import BaseModel
+from patterpunk.llm.chunks import CacheChunk, TextChunk
 
 class Analysis(BaseModel):
     findings: list[str]

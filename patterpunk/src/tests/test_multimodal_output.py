@@ -6,9 +6,7 @@ from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.base import Model
-from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.text import TextChunk
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import CacheChunk, TextChunk, MultimodalChunk
 from patterpunk.llm.output_types import OutputType
 
 
