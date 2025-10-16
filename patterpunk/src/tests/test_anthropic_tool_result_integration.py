@@ -35,16 +35,16 @@ class TestAnthropicToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris"}'
-                        }
+                            "arguments": '{"location": "Paris"}',
+                        },
                     }
                 ]
             ),
             ToolResultMessage(
                 content="sunny, 22°C",
                 call_id="toolu_abc123",
-                function_name="get_weather"
-            )
+                function_name="get_weather",
+            ),
         ]
 
         # Convert messages to Anthropic format
@@ -68,7 +68,7 @@ class TestAnthropicToolResultSerialization:
                 content="Tool execution failed: Invalid location",
                 call_id="toolu_abc123",
                 function_name="get_weather",
-                is_error=True
+                is_error=True,
             )
         ]
 
@@ -87,8 +87,7 @@ class TestAnthropicToolResultSerialization:
         # Create message without call_id
         messages = [
             ToolResultMessage(
-                content="Result without call_id",
-                function_name="get_weather"
+                content="Result without call_id", function_name="get_weather"
             )
         ]
 
@@ -111,8 +110,8 @@ class TestAnthropicToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris", "unit": "celsius"}'
-                        }
+                            "arguments": '{"location": "Paris", "unit": "celsius"}',
+                        },
                     }
                 ]
             )
@@ -142,29 +141,25 @@ class TestAnthropicToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris"}'
-                        }
+                            "arguments": '{"location": "Paris"}',
+                        },
                     },
                     {
                         "id": "toolu_2",
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "London"}'
-                        }
-                    }
+                            "arguments": '{"location": "London"}',
+                        },
+                    },
                 ]
             ),
             ToolResultMessage(
-                content="sunny, 22°C",
-                call_id="toolu_1",
-                function_name="get_weather"
+                content="sunny, 22°C", call_id="toolu_1", function_name="get_weather"
             ),
             ToolResultMessage(
-                content="rainy, 15°C",
-                call_id="toolu_2",
-                function_name="get_weather"
-            )
+                content="rainy, 15°C", call_id="toolu_2", function_name="get_weather"
+            ),
         ]
 
         anthropic_messages = model._convert_messages_for_anthropic(messages)
@@ -216,7 +211,11 @@ class TestAnthropicToolResultIntegration:
 
         # Turn 1: Ask question, expect tool call
         chat = (
-            chat.add_message(SystemMessage("You are a helpful assistant. Use tools to answer questions."))
+            chat.add_message(
+                SystemMessage(
+                    "You are a helpful assistant. Use tools to answer questions."
+                )
+            )
             .add_message(UserMessage("What's the weather in Paris?"))
             .complete()
         )
@@ -240,9 +239,7 @@ class TestAnthropicToolResultIntegration:
         # Turn 2: Provide result, expect answer
         chat = chat.add_message(
             ToolResultMessage(
-                content=result,
-                call_id=call_id,
-                function_name=function_name
+                content=result, call_id=call_id, function_name=function_name
             )
         ).complete()
 
@@ -277,7 +274,7 @@ class TestAnthropicToolResultIntegration:
                     content="Error: Invalid location provided",
                     call_id=tool_call["id"],
                     function_name=tool_call["function"]["name"],
-                    is_error=True
+                    is_error=True,
                 )
             ).complete()
 
@@ -310,7 +307,7 @@ class TestAnthropicToolResultIntegration:
                 ToolResultMessage(
                     content=result,
                     call_id=tool_call["id"],
-                    function_name=tool_call["function"]["name"]
+                    function_name=tool_call["function"]["name"],
                 )
             ).complete()
 
@@ -353,36 +350,48 @@ class TestAnthropicToolResultIntegration:
 
         # Step 1: Build conversation with all message types
         chat = chat.add_message(
-            SystemMessage("You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description.")
+            SystemMessage(
+                "You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description."
+            )
         )
 
         # Step 2: User message with CacheChunk + TextChunk
         chat = chat.add_message(
-            UserMessage([
-                CacheChunk("Context: We are analyzing images for unusual elements.", ttl=300),
-                TextChunk(" Please prepare to analyze the upcoming image.")
-            ])
+            UserMessage(
+                [
+                    CacheChunk(
+                        "Context: We are analyzing images for unusual elements.",
+                        ttl=300,
+                    ),
+                    TextChunk(" Please prepare to analyze the upcoming image."),
+                ]
+            )
         )
 
         # Step 3: Pre-set AssistantMessage
         chat = chat.add_message(
-            AssistantMessage("I'm ready to analyze images. Please provide the image you'd like me to examine.")
+            AssistantMessage(
+                "I'm ready to analyze images. Please provide the image you'd like me to examine."
+            )
         )
 
         # Step 4: User message with image
         chat = chat.add_message(
-            UserMessage([
-                TextChunk("Here is the image to analyze:"),
-                MultimodalChunk.from_file(get_resource("ducks_pond.jpg"))
-            ])
+            UserMessage(
+                [
+                    TextChunk("Here is the image to analyze:"),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
 
         # Step 5: Complete and expect ToolCallMessage
         chat = chat.complete()
 
         assert chat.latest_message is not None
-        assert isinstance(chat.latest_message, ToolCallMessage), \
-            f"Expected ToolCallMessage, got {type(chat.latest_message)}"
+        assert isinstance(
+            chat.latest_message, ToolCallMessage
+        ), f"Expected ToolCallMessage, got {type(chat.latest_message)}"
         assert len(chat.latest_message.tool_calls) == 1
 
         # Step 6: Execute tool manually
@@ -399,9 +408,7 @@ class TestAnthropicToolResultIntegration:
         # Step 7: Add ToolResultMessage
         chat = chat.add_message(
             ToolResultMessage(
-                content=result,
-                call_id=call_id,
-                function_name=function_name
+                content=result, call_id=call_id, function_name=function_name
             )
         )
 
@@ -413,7 +420,9 @@ class TestAnthropicToolResultIntegration:
 
         # Step 9: Ask about the unique phrase to test context retention
         chat = chat.add_message(
-            UserMessage("What unusual thing did you detect in the background of the image?")
+            UserMessage(
+                "What unusual thing did you detect in the background of the image?"
+            )
         ).complete()
 
         assert chat.latest_message is not None
@@ -421,5 +430,8 @@ class TestAnthropicToolResultIntegration:
 
         # The LLM should mention the unique phrase from the tool result
         response_lower = chat.latest_message.content.lower()
-        assert "magical" in response_lower or "purple" in response_lower or "elephant" in response_lower, \
-            f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"
+        assert (
+            "magical" in response_lower
+            or "purple" in response_lower
+            or "elephant" in response_lower
+        ), f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"

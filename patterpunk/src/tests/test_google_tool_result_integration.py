@@ -34,16 +34,16 @@ class TestGoogleToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris"}'
-                        }
+                            "arguments": '{"location": "Paris"}',
+                        },
                     }
                 ]
             ),
             ToolResultMessage(
                 content='{"temperature": 22, "condition": "sunny"}',
                 call_id="call_abc123",
-                function_name="get_weather"
-            )
+                function_name="get_weather",
+            ),
         ]
 
         # Convert to Google format
@@ -58,7 +58,7 @@ class TestGoogleToolResultSerialization:
         assert len(parts) == 1
         # The part should be a FunctionResponse
         part = parts[0]
-        assert hasattr(part, 'function_response')
+        assert hasattr(part, "function_response")
         assert part.function_response.name == "get_weather"
         # Response should be parsed JSON
         response_dict = dict(part.function_response.response)
@@ -70,10 +70,7 @@ class TestGoogleToolResultSerialization:
         model = GoogleModel(model="gemini-1.5-flash")
 
         messages = [
-            ToolResultMessage(
-                content="sunny, 22°C",
-                function_name="get_weather"
-            )
+            ToolResultMessage(content="sunny, 22°C", function_name="get_weather")
         ]
 
         contents, _ = model._convert_messages_for_google_with_cache(messages)
@@ -82,7 +79,7 @@ class TestGoogleToolResultSerialization:
         assert str(tool_result_content.role) == "user"
 
         part = tool_result_content.parts[0]
-        assert hasattr(part, 'function_response')
+        assert hasattr(part, "function_response")
         # Non-JSON content should be wrapped in {"result": ...}
         response_dict = dict(part.function_response.response)
         assert "result" in response_dict
@@ -95,8 +92,7 @@ class TestGoogleToolResultSerialization:
         # Create message without function_name (only call_id)
         messages = [
             ToolResultMessage(
-                content="Result without function_name",
-                call_id="call_abc123"
+                content="Result without function_name", call_id="call_abc123"
             )
         ]
 
@@ -118,8 +114,8 @@ class TestGoogleToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris", "unit": "celsius"}'
-                        }
+                            "arguments": '{"location": "Paris", "unit": "celsius"}',
+                        },
                     }
                 ]
             )
@@ -131,7 +127,7 @@ class TestGoogleToolResultSerialization:
         assert str(tool_call_content.role) == "model"
 
         part = tool_call_content.parts[0]
-        assert hasattr(part, 'function_call')
+        assert hasattr(part, "function_call")
         assert part.function_call.name == "get_weather"
         args_dict = dict(part.function_call.args)
         assert args_dict["location"] == "Paris"
@@ -150,27 +146,27 @@ class TestGoogleToolResultSerialization:
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "Paris"}'
-                        }
+                            "arguments": '{"location": "Paris"}',
+                        },
                     },
                     {
                         "id": "call_2",
                         "type": "function",
                         "function": {
                             "name": "get_weather",
-                            "arguments": '{"location": "London"}'
-                        }
-                    }
+                            "arguments": '{"location": "London"}',
+                        },
+                    },
                 ]
             ),
             ToolResultMessage(
                 content='{"temperature": 22, "condition": "sunny"}',
-                function_name="get_weather"
+                function_name="get_weather",
             ),
             ToolResultMessage(
                 content='{"temperature": 15, "condition": "rainy"}',
-                function_name="get_weather"
-            )
+                function_name="get_weather",
+            ),
         ]
 
         contents, _ = model._convert_messages_for_google_with_cache(messages)
@@ -182,8 +178,8 @@ class TestGoogleToolResultSerialization:
         tool_call_content = contents[1]
         assert str(tool_call_content.role) == "model"
         assert len(tool_call_content.parts) == 2
-        assert hasattr(tool_call_content.parts[0], 'function_call')
-        assert hasattr(tool_call_content.parts[1], 'function_call')
+        assert hasattr(tool_call_content.parts[0], "function_call")
+        assert hasattr(tool_call_content.parts[1], "function_call")
 
         # First tool result (user role with functionResponse)
         tool_result_1 = contents[2]
@@ -217,13 +213,21 @@ class TestGoogleToolResultIntegration:
                 location: The city or location to get weather for
             """
             # Return JSON for Google
-            return '{"temperature": 22, "condition": "sunny", "location": "' + location + '"}'
+            return (
+                '{"temperature": 22, "condition": "sunny", "location": "'
+                + location
+                + '"}'
+            )
 
         chat = Chat(model=model).with_tools([get_weather])
 
         # Turn 1: Ask question, expect tool call
         chat = (
-            chat.add_message(SystemMessage("You are a helpful assistant. Use tools to answer questions."))
+            chat.add_message(
+                SystemMessage(
+                    "You are a helpful assistant. Use tools to answer questions."
+                )
+            )
             .add_message(UserMessage("What's the weather in Paris?"))
             .complete()
         )
@@ -245,10 +249,7 @@ class TestGoogleToolResultIntegration:
         # Turn 2: Provide result, expect answer
         # Google doesn't use call_id, only function_name
         chat = chat.add_message(
-            ToolResultMessage(
-                content=result,
-                function_name=function_name
-            )
+            ToolResultMessage(content=result, function_name=function_name)
         ).complete()
 
         assert chat.latest_message is not None
@@ -263,7 +264,9 @@ class TestGoogleToolResultIntegration:
 
         def get_weather(location: str) -> str:
             """Get weather for a location."""
-            return f'{{"temperature": 20, "condition": "sunny", "location": "{location}"}}'
+            return (
+                f'{{"temperature": 20, "condition": "sunny", "location": "{location}"}}'
+            )
 
         chat = Chat(model=model).with_tools([get_weather])
 
@@ -280,8 +283,7 @@ class TestGoogleToolResultIntegration:
 
             chat = chat.add_message(
                 ToolResultMessage(
-                    content=result,
-                    function_name=tool_call["function"]["name"]
+                    content=result, function_name=tool_call["function"]["name"]
                 )
             ).complete()
 
@@ -325,36 +327,48 @@ class TestGoogleToolResultIntegration:
 
         # Step 1: Build conversation with all message types
         chat = chat.add_message(
-            SystemMessage("You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description.")
+            SystemMessage(
+                "You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description."
+            )
         )
 
         # Step 2: User message with CacheChunk + TextChunk
         chat = chat.add_message(
-            UserMessage([
-                CacheChunk("Context: We are analyzing images for unusual elements.", ttl=300),
-                TextChunk(" Please prepare to analyze the upcoming image.")
-            ])
+            UserMessage(
+                [
+                    CacheChunk(
+                        "Context: We are analyzing images for unusual elements.",
+                        ttl=300,
+                    ),
+                    TextChunk(" Please prepare to analyze the upcoming image."),
+                ]
+            )
         )
 
         # Step 3: Pre-set AssistantMessage
         chat = chat.add_message(
-            AssistantMessage("I'm ready to analyze images. Please provide the image you'd like me to examine.")
+            AssistantMessage(
+                "I'm ready to analyze images. Please provide the image you'd like me to examine."
+            )
         )
 
         # Step 4: User message with image
         chat = chat.add_message(
-            UserMessage([
-                TextChunk("Here is the image to analyze:"),
-                MultimodalChunk.from_file(get_resource("ducks_pond.jpg"))
-            ])
+            UserMessage(
+                [
+                    TextChunk("Here is the image to analyze:"),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
 
         # Step 5: Complete and expect ToolCallMessage
         chat = chat.complete()
 
         assert chat.latest_message is not None
-        assert isinstance(chat.latest_message, ToolCallMessage), \
-            f"Expected ToolCallMessage, got {type(chat.latest_message)}"
+        assert isinstance(
+            chat.latest_message, ToolCallMessage
+        ), f"Expected ToolCallMessage, got {type(chat.latest_message)}"
         assert len(chat.latest_message.tool_calls) == 1
 
         # Step 6: Execute tool manually
@@ -369,10 +383,7 @@ class TestGoogleToolResultIntegration:
 
         # Step 7: Add ToolResultMessage (Google uses function_name, not call_id)
         chat = chat.add_message(
-            ToolResultMessage(
-                content=result,
-                function_name=function_name
-            )
+            ToolResultMessage(content=result, function_name=function_name)
         )
 
         # Step 8: Complete to get response incorporating tool result
@@ -383,7 +394,9 @@ class TestGoogleToolResultIntegration:
 
         # Step 9: Ask about the unique phrase to test context retention
         chat = chat.add_message(
-            UserMessage("What unusual thing did you detect in the background of the image?")
+            UserMessage(
+                "What unusual thing did you detect in the background of the image?"
+            )
         ).complete()
 
         assert chat.latest_message is not None
@@ -391,5 +404,8 @@ class TestGoogleToolResultIntegration:
 
         # The LLM should mention the unique phrase from the tool result
         response_lower = chat.latest_message.content.lower()
-        assert "magical" in response_lower or "purple" in response_lower or "elephant" in response_lower, \
-            f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"
+        assert (
+            "magical" in response_lower
+            or "purple" in response_lower
+            or "elephant" in response_lower
+        ), f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"

@@ -43,9 +43,7 @@ class TestToolResultMessageCreation:
     def test_create_with_both_call_id_and_function_name(self):
         """Test creating ToolResultMessage with both call_id and function_name."""
         msg = ToolResultMessage(
-            content="Result: 42",
-            call_id="call_abc123",
-            function_name="get_weather"
+            content="Result: 42", call_id="call_abc123", function_name="get_weather"
         )
 
         assert msg.content == "Result: 42"
@@ -58,7 +56,7 @@ class TestToolResultMessageCreation:
         msg = ToolResultMessage(
             content="Tool execution failed: Connection timeout",
             call_id="call_abc123",
-            is_error=True
+            is_error=True,
         )
 
         assert msg.content == "Tool execution failed: Connection timeout"
@@ -71,7 +69,7 @@ class TestToolResultMessageCreation:
             content="Error: Invalid location",
             call_id="call_abc123",
             function_name="get_weather",
-            is_error=True
+            is_error=True,
         )
 
         assert msg.content == "Error: Invalid location"
@@ -143,7 +141,7 @@ class TestToolResultMessageToDict:
             content="Error: Invalid input",
             call_id="call_abc123",
             function_name="process_data",
-            is_error=True
+            is_error=True,
         )
         result = msg.to_dict()
 
@@ -189,9 +187,7 @@ class TestToolResultMessageRepr:
     def test_repr_with_error_flag(self):
         """Test __repr__() includes is_error flag."""
         msg = ToolResultMessage(
-            content="Error occurred",
-            call_id="call_123",
-            is_error=True
+            content="Error occurred", call_id="call_123", is_error=True
         )
         repr_str = repr(msg)
 
@@ -225,10 +221,7 @@ class TestToolResultMessageRepr:
     def test_repr_with_all_metadata(self):
         """Test __repr__() with all metadata fields."""
         msg = ToolResultMessage(
-            content="Result",
-            call_id="call_123",
-            function_name="process",
-            is_error=True
+            content="Result", call_id="call_123", function_name="process", is_error=True
         )
         repr_str = repr(msg)
 
@@ -247,6 +240,7 @@ class TestToolResultMessageInheritance:
 
         # Check inheritance
         from patterpunk.llm.messages.base import Message
+
         assert isinstance(msg, Message)
 
     def test_has_role_attribute(self):

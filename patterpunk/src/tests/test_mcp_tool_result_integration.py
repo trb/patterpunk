@@ -28,8 +28,8 @@ class TestMCPToolResultCreation:
                     "type": "function",
                     "function": {
                         "name": "weather__get_weather",
-                        "arguments": '{"location": "Paris"}'
-                    }
+                        "arguments": '{"location": "Paris"}',
+                    },
                 }
             ]
         )
@@ -39,8 +39,8 @@ class TestMCPToolResultCreation:
                 "function": {
                     "name": "weather__get_weather",
                     "description": "Get weather for a location",
-                    "parameters": {}
-                }
+                    "parameters": {},
+                },
             }
         ]
 
@@ -64,7 +64,9 @@ class TestMCPToolResultCreation:
 
         # CRITICAL: Should be ToolResultMessage, not UserMessage
         assert isinstance(added_message, ToolResultMessage)
-        assert not isinstance(added_message, UserMessage) or isinstance(added_message, ToolResultMessage)
+        assert not isinstance(added_message, UserMessage) or isinstance(
+            added_message, ToolResultMessage
+        )
 
         # Verify proper linkage
         assert added_message.content == "sunny, 22°C"
@@ -83,8 +85,8 @@ class TestMCPToolResultCreation:
                     "type": "function",
                     "function": {
                         "name": "weather__get_weather",
-                        "arguments": '{"location": "InvalidCity"}'
-                    }
+                        "arguments": '{"location": "InvalidCity"}',
+                    },
                 }
             ]
         )
@@ -94,8 +96,8 @@ class TestMCPToolResultCreation:
                 "function": {
                     "name": "weather__get_weather",
                     "description": "Get weather",
-                    "parameters": {}
-                }
+                    "parameters": {},
+                },
             }
         ]
 
@@ -135,17 +137,17 @@ class TestMCPToolResultCreation:
                     "type": "function",
                     "function": {
                         "name": "weather__get_weather",
-                        "arguments": '{"location": "Paris"}'
-                    }
+                        "arguments": '{"location": "Paris"}',
+                    },
                 },
                 {
                     "id": "call_2",
                     "type": "function",
                     "function": {
                         "name": "weather__get_weather",
-                        "arguments": '{"location": "London"}'
-                    }
-                }
+                        "arguments": '{"location": "London"}',
+                    },
+                },
             ]
         )
         mock_chat.tools = [
@@ -154,8 +156,8 @@ class TestMCPToolResultCreation:
                 "function": {
                     "name": "weather__get_weather",
                     "description": "Get weather",
-                    "parameters": {}
-                }
+                    "parameters": {},
+                },
             }
         ]
 
@@ -207,8 +209,8 @@ class TestMCPToolResultCreation:
                     "type": "function",
                     "function": {
                         "name": "filesystem__read_file",
-                        "arguments": '{"path": "/test.txt"}'
-                    }
+                        "arguments": '{"path": "/test.txt"}',
+                    },
                 }
             ]
         )
@@ -218,8 +220,8 @@ class TestMCPToolResultCreation:
                 "function": {
                     "name": "filesystem__read_file",
                     "description": "Read file",
-                    "parameters": {}
-                }
+                    "parameters": {},
+                },
             }
         ]
 
@@ -258,10 +260,7 @@ class TestMCPToolResultCreation:
                 {
                     "id": "call_test",
                     "type": "function",
-                    "function": {
-                        "name": "some_tool",
-                        "arguments": '{}'
-                    }
+                    "function": {"name": "some_tool", "arguments": "{}"},
                 }
             ]
         )

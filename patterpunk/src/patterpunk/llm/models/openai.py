@@ -247,7 +247,7 @@ class OpenAiModel(Model, ABC):
         that match the call_ids from the ToolCallMessage.
         """
         tool_call_message = messages[tool_call_index]
-        if not hasattr(tool_call_message, 'tool_calls'):
+        if not hasattr(tool_call_message, "tool_calls"):
             return False
 
         # Get all call_ids from this tool call message
@@ -256,8 +256,8 @@ class OpenAiModel(Model, ABC):
         # Look for corresponding ToolResultMessage(s) after this tool call
         for i in range(tool_call_index + 1, len(messages)):
             msg = messages[i]
-            if hasattr(msg, 'role') and msg.role == "tool_result":
-                if hasattr(msg, 'call_id') and msg.call_id in call_ids:
+            if hasattr(msg, "role") and msg.role == "tool_result":
+                if hasattr(msg, "call_id") and msg.call_id in call_ids:
                     call_ids.remove(msg.call_id)
                     if not call_ids:  # All tool calls have results
                         return True

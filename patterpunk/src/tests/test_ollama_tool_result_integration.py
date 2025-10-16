@@ -34,6 +34,7 @@ class TestOllamaToolResultIntegration:
 
     def test_tool_call_and_result_flow(self, model):
         """Test complete flow: question → tool call → result → answer."""
+
         def get_weather(location: str) -> str:
             """Get the current weather for a location.
 
@@ -46,7 +47,11 @@ class TestOllamaToolResultIntegration:
 
         # Turn 1: Ask question, expect tool call
         chat = (
-            chat.add_message(SystemMessage("You are a helpful assistant. Use tools to answer questions."))
+            chat.add_message(
+                SystemMessage(
+                    "You are a helpful assistant. Use tools to answer questions."
+                )
+            )
             .add_message(UserMessage("What's the weather in Paris?"))
             .complete()
         )
@@ -70,9 +75,7 @@ class TestOllamaToolResultIntegration:
         # Turn 2: Provide result, expect answer
         chat = chat.add_message(
             ToolResultMessage(
-                content=result,
-                call_id=call_id,
-                function_name=function_name
+                content=result, call_id=call_id, function_name=function_name
             )
         ).complete()
 
@@ -94,6 +97,7 @@ class TestOllamaToolResultIntegration:
         - ToolResultMessage (manual execution)
         - Multi-turn conversation with context retention
         """
+
         # Define tool that injects unique phrase
         def analyze_image(description: str) -> str:
             """Analyze an image based on a detailed description.
@@ -108,36 +112,48 @@ class TestOllamaToolResultIntegration:
 
         # Step 1: Build conversation with all message types
         chat = chat.add_message(
-            SystemMessage("You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description.")
+            SystemMessage(
+                "You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description."
+            )
         )
 
         # Step 2: User message with CacheChunk + TextChunk
         chat = chat.add_message(
-            UserMessage([
-                CacheChunk("Context: We are analyzing images for unusual elements.", ttl=300),
-                TextChunk(" Please prepare to analyze the upcoming image.")
-            ])
+            UserMessage(
+                [
+                    CacheChunk(
+                        "Context: We are analyzing images for unusual elements.",
+                        ttl=300,
+                    ),
+                    TextChunk(" Please prepare to analyze the upcoming image."),
+                ]
+            )
         )
 
         # Step 3: Pre-set AssistantMessage
         chat = chat.add_message(
-            AssistantMessage("I'm ready to analyze images. Please provide the image you'd like me to examine.")
+            AssistantMessage(
+                "I'm ready to analyze images. Please provide the image you'd like me to examine."
+            )
         )
 
         # Step 4: User message with image
         chat = chat.add_message(
-            UserMessage([
-                TextChunk("Here is the image to analyze:"),
-                MultimodalChunk.from_file(get_resource("ducks_pond.jpg"))
-            ])
+            UserMessage(
+                [
+                    TextChunk("Here is the image to analyze:"),
+                    MultimodalChunk.from_file(get_resource("ducks_pond.jpg")),
+                ]
+            )
         )
 
         # Step 5: Complete and expect ToolCallMessage
         chat = chat.complete()
 
         assert chat.latest_message is not None
-        assert isinstance(chat.latest_message, ToolCallMessage), \
-            f"Expected ToolCallMessage, got {type(chat.latest_message)}"
+        assert isinstance(
+            chat.latest_message, ToolCallMessage
+        ), f"Expected ToolCallMessage, got {type(chat.latest_message)}"
         assert len(chat.latest_message.tool_calls) == 1
 
         # Step 6: Execute tool manually
@@ -154,9 +170,7 @@ class TestOllamaToolResultIntegration:
         # Step 7: Add ToolResultMessage
         chat = chat.add_message(
             ToolResultMessage(
-                content=result,
-                call_id=call_id,
-                function_name=function_name
+                content=result, call_id=call_id, function_name=function_name
             )
         )
 
@@ -168,7 +182,9 @@ class TestOllamaToolResultIntegration:
 
         # Step 9: Ask about the unique phrase to test context retention
         chat = chat.add_message(
-            UserMessage("What unusual thing did you detect in the background of the image?")
+            UserMessage(
+                "What unusual thing did you detect in the background of the image?"
+            )
         ).complete()
 
         assert chat.latest_message is not None
@@ -176,5 +192,8 @@ class TestOllamaToolResultIntegration:
 
         # The LLM should mention the unique phrase from the tool result
         response_lower = chat.latest_message.content.lower()
-        assert "magical" in response_lower or "purple" in response_lower or "elephant" in response_lower, \
-            f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"
+        assert (
+            "magical" in response_lower
+            or "purple" in response_lower
+            or "elephant" in response_lower
+        ), f"Expected LLM to reference the unique phrase from tool result, got: {chat.latest_message.content}"
