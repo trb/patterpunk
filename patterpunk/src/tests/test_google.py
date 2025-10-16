@@ -7,9 +7,7 @@ from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.google import GoogleModel
-from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.multimodal import MultimodalChunk
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import CacheChunk, MultimodalChunk, TextChunk
 from tests.test_utils import get_resource
 
 

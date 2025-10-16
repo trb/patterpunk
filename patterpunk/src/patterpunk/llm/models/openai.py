@@ -16,6 +16,7 @@ from patterpunk.lib.extract_json import extract_json
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
@@ -144,19 +145,38 @@ class OpenAiModel(Model, ABC):
 
         return content, should_warn
 
-    def _convert_message_content_for_openai_responses(self, content) -> List[dict]:
+    def _convert_message_content_for_openai_responses(
+        self, content, role: str
+    ) -> List[dict]:
+        # Assistant messages use "output_text" for text content
+        # User/developer messages use "input_*" types
+        # Note: Multimodal content in assistant messages (images/files) is not supported in input
+        # as these are generated via tool calls (image_generation_call), not direct content
+
         if isinstance(content, str):
-            return [{"type": "input_text", "text": content}]
+            text_type = "output_text" if role == "assistant" else "input_text"
+            return [{"type": text_type, "text": content}]
 
         openai_content = []
         session = None
 
         for chunk in content:
             if isinstance(chunk, TextChunk):
-                openai_content.append({"type": "input_text", "text": chunk.content})
+                text_type = "output_text" if role == "assistant" else "input_text"
+                openai_content.append({"type": text_type, "text": chunk.content})
             elif isinstance(chunk, CacheChunk):
-                openai_content.append({"type": "input_text", "text": chunk.content})
+                text_type = "output_text" if role == "assistant" else "input_text"
+                openai_content.append({"type": text_type, "text": chunk.content})
             elif isinstance(chunk, MultimodalChunk):
+                # Multimodal content only supported for non-assistant messages in input
+                # Assistant-generated images/files come through tool calls in responses
+                if role == "assistant":
+                    logger.warning(
+                        f"[OPENAI_RESPONSES_API] Skipping multimodal content in assistant message - "
+                        f"images/files from assistant should be generated via tool calls, not direct content"
+                    )
+                    continue
+
                 if chunk.media_type and chunk.media_type.startswith("image/"):
                     if chunk.source_type == "url":
                         openai_content.append(
@@ -217,16 +237,43 @@ class OpenAiModel(Model, ABC):
 
         return openai_messages
 
+    def _has_corresponding_tool_result(
+        self, messages: List[Message], tool_call_index: int
+    ) -> bool:
+        """
+        Check if a ToolCallMessage has a corresponding ToolResultMessage.
+
+        Scans messages after the tool_call_index to find ToolResultMessage(s)
+        that match the call_ids from the ToolCallMessage.
+        """
+        tool_call_message = messages[tool_call_index]
+        if not hasattr(tool_call_message, 'tool_calls'):
+            return False
+
+        # Get all call_ids from this tool call message
+        call_ids = {tc["id"] for tc in tool_call_message.tool_calls}
+
+        # Look for corresponding ToolResultMessage(s) after this tool call
+        for i in range(tool_call_index + 1, len(messages)):
+            msg = messages[i]
+            if hasattr(msg, 'role') and msg.role == "tool_result":
+                if hasattr(msg, 'call_id') and msg.call_id in call_ids:
+                    call_ids.remove(msg.call_id)
+                    if not call_ids:  # All tool calls have results
+                        return True
+
+        return False
+
     def _convert_messages_to_responses_input(
         self, messages: List[Message], prompt_for_structured_output: bool = False
     ) -> List[dict]:
         responses_input = []
         cache_warnings = []
 
-        for message in messages:
+        for idx, message in enumerate(messages):
             if has_multimodal_content(message.content):
                 content_array = self._convert_message_content_for_openai_responses(
-                    message.content
+                    message.content, message.role
                 )
             else:
                 if isinstance(message.content, list):
@@ -248,7 +295,11 @@ class OpenAiModel(Model, ABC):
                 ):
                     content_text = f"{content_text}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
 
-                content_array = [{"type": "input_text", "text": content_text}]
+                # Use "output_text" for assistant messages, "input_text" for others
+                text_type = (
+                    "output_text" if message.role == "assistant" else "input_text"
+                )
+                content_array = [{"type": text_type, "text": content_text}]
 
             if message.role == "system":
                 responses_input.append({"role": "developer", "content": content_array})
@@ -258,20 +309,47 @@ class OpenAiModel(Model, ABC):
                 if content_array and any(
                     item.get("text")
                     for item in content_array
-                    if item.get("type") == "input_text"
+                    if item.get("type") in ["input_text", "output_text"]
                 ):
                     responses_input.append(
                         {"role": "assistant", "content": content_array}
                     )
             elif message.role == "tool_call":
-                if hasattr(message, "tool_calls"):
-                    responses_input.append(
-                        {
-                            "role": "assistant",
-                            "content": [],
-                            "tool_calls": message.tool_calls,
-                        }
+                # Only serialize tool calls if they have corresponding ToolResultMessage
+                # The Responses API requires function_call to be paired with function_call_output
+                # Orphaned tool calls (without results) are invalid and will be rejected by the API
+                if self._has_corresponding_tool_result(messages, idx):
+                    for tool_call in message.tool_calls:
+                        responses_input.append(
+                            {
+                                "type": "function_call",
+                                "call_id": tool_call["id"],
+                                "name": tool_call["function"]["name"],
+                                "arguments": tool_call["function"]["arguments"],
+                            }
+                        )
+                else:
+                    logger.warning(
+                        f"[OPENAI] Skipping ToolCallMessage in conversation history - no corresponding ToolResultMessage found. "
+                        f"Tool calls must be paired with results in the Responses API."
                     )
+            elif message.role == "tool_result":
+                # Validate required field for OpenAI
+                if not message.call_id:
+                    raise ValueError(
+                        "OpenAI Responses API requires call_id in ToolResultMessage. "
+                        "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
+                    )
+
+                # Serialize as function_call_output
+                # NOTE: This currently fails if the corresponding ToolCallMessage isn't in the input
+                responses_input.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.call_id,
+                        "output": message.content,
+                    }
+                )
 
         for warning in cache_warnings:
             logger.warning(f"[OPENAI_CACHE] {warning} - caching may be ineffective")

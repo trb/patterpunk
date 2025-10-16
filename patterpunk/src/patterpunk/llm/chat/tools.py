@@ -11,6 +11,7 @@ from typing import Union, List, Callable, Optional
 from patterpunk.lib.function_to_tool.converter import functions_to_tools
 from patterpunk.llm.tool_types import ToolDefinition
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.logger import logger
 
@@ -100,7 +101,7 @@ def execute_mcp_tool_calls(chat_instance):
     if not chat_instance._mcp_client:
         return chat_instance
 
-    new_chat = chat_instance
+    new_chat = chat_instance.copy()
 
     for tool_call in chat_instance.latest_message.tool_calls:
         try:
@@ -122,17 +123,25 @@ def execute_mcp_tool_calls(chat_instance):
                 function_name, arguments, server_name
             )
 
-            tool_result_message = UserMessage(
-                f"Tool '{function_name}' returned: {result}", allow_tool_calls=True
+            # Create ToolResultMessage with proper linkage
+            tool_result_message = ToolResultMessage(
+                content=str(result),
+                call_id=tool_call_id,
+                function_name=function_name,
+                is_error=False,
             )
 
             new_chat = new_chat.add_message(tool_result_message)
 
         except Exception as e:
             logger.error(f"Failed to execute MCP tool call '{function_name}': {e}")
-            error_message = UserMessage(
-                f"Tool '{function_name}' failed with error: {str(e)}",
-                allow_tool_calls=True,
+
+            # Create ToolResultMessage for errors with is_error=True
+            error_message = ToolResultMessage(
+                content=f"Tool '{function_name}' failed with error: {str(e)}",
+                call_id=tool_call_id,
+                function_name=function_name,
+                is_error=True,
             )
             new_chat = new_chat.add_message(error_message)
 

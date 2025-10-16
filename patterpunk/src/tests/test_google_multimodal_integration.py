@@ -6,8 +6,7 @@ from patterpunk.llm.models.google import GoogleModel
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.user import UserMessage
-from patterpunk.llm.multimodal import MultimodalChunk
-from patterpunk.llm.text import TextChunk
+from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from tests.test_utils import get_resource
 
 

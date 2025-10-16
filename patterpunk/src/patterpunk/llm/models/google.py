@@ -31,6 +31,7 @@ from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
@@ -309,6 +310,50 @@ class GoogleModel(Model, ABC):
 
         for message in messages:
             if message.role == ROLE_SYSTEM:
+                continue
+
+            if message.role == "tool_call":
+                # Serialize ToolCallMessage as model role with functionCall parts
+                parts = []
+                for tool_call in message.tool_calls:
+                    # Parse arguments from JSON string
+                    try:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        arguments = {}
+
+                    # Google uses FunctionCall for tool requests
+                    parts.append(
+                        types.Part.from_function_call(
+                            name=tool_call["function"]["name"], args=arguments
+                        )
+                    )
+
+                contents.append(types.Content(role="model", parts=parts))
+                continue
+
+            if message.role == "tool_result":
+                # Validate required field for Google
+                if not message.function_name:
+                    raise ValueError(
+                        "Google Vertex AI requires function_name in ToolResultMessage. "
+                        "Ensure ToolResultMessage is created with function_name from the original ToolCallMessage."
+                    )
+
+                # Try to parse content as JSON; fall back to wrapping in result object
+                try:
+                    response_data = json.loads(message.content)
+                except (json.JSONDecodeError, TypeError):
+                    response_data = {"result": message.content}
+
+                # Google uses functionResponse for tool results
+                parts = [
+                    types.Part.from_function_response(
+                        name=message.function_name, response=response_data
+                    )
+                ]
+
+                contents.append(types.Content(role="user", parts=parts))
                 continue
 
             if isinstance(message.content, list):

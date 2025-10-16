@@ -8,6 +8,7 @@ from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition, CacheChunk
@@ -57,6 +58,35 @@ class OllamaModel(Model, ABC):
 
         try:
             for message in messages:
+                if message.role == "tool_call":
+                    # Serialize ToolCallMessage as assistant message with tool_calls (OpenAI-compatible)
+                    ollama_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": message.tool_calls,
+                        }
+                    )
+                    continue
+
+                if message.role == "tool_result":
+                    # Validate required field for Ollama
+                    if not message.call_id:
+                        raise ValueError(
+                            "Ollama requires call_id in ToolResultMessage. "
+                            "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
+                        )
+
+                    # Serialize as OpenAI-compatible tool message
+                    ollama_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": message.call_id,
+                            "content": message.content,
+                        }
+                    )
+                    continue
+
                 if isinstance(message.content, str):
                     content_text = message.content
                 else:

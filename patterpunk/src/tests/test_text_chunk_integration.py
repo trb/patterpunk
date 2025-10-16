@@ -107,7 +107,7 @@ def test_text_chunk_provider_conversion(model_class):
             TextChunk("!"),
         ]
 
-        openai_content = model._convert_message_content_for_openai_responses(content)
+        openai_content = model._convert_message_content_for_openai_responses(content, role="user")
 
         assert len(openai_content) == 3
         assert all(item["type"] == "input_text" for item in openai_content)

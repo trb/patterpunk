@@ -17,6 +17,7 @@ from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk
@@ -262,7 +263,8 @@ Please extract the relevant information from this reasoning and format it exactl
                 [
                     message
                     for message in messages
-                    if message.role in [ROLE_USER, ROLE_ASSISTANT]
+                    if message.role
+                    in [ROLE_USER, ROLE_ASSISTANT, "tool_call", "tool_result"]
                 ]
             ),
             "max_tokens": self.max_tokens,
@@ -698,12 +700,61 @@ Please extract the relevant information from this reasoning and format it exactl
         anthropic_messages = []
 
         for message in messages:
-            if isinstance(message.content, list):
-                content = self._convert_content_to_anthropic_format(message.content)
-            else:
-                content = [{"type": "text", "text": message.content}]
+            if message.role == "tool_call":
+                # Serialize ToolCallMessage as assistant message with tool_use content blocks
+                content_blocks = []
+                for tool_call in message.tool_calls:
+                    # Parse arguments from JSON string
+                    try:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        arguments = {}
 
-            anthropic_messages.append({"role": message.role, "content": content})
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tool_call["id"],
+                            "name": tool_call["function"]["name"],
+                            "input": arguments,
+                        }
+                    )
+
+                anthropic_messages.append(
+                    {"role": "assistant", "content": content_blocks}
+                )
+
+            elif message.role == "tool_result":
+                # Validate required field for Anthropic
+                if not message.call_id:
+                    raise ValueError(
+                        "Anthropic requires call_id (as tool_use_id) in ToolResultMessage. "
+                        "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
+                    )
+
+                # Serialize as USER message with tool_result content block
+                # Anthropic requires tool results to be sent as user role messages
+                anthropic_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": message.call_id,
+                                "content": message.content,
+                                "is_error": message.is_error,
+                            }
+                        ],
+                    }
+                )
+
+            else:
+                # Handle regular messages (user, assistant)
+                if isinstance(message.content, list):
+                    content = self._convert_content_to_anthropic_format(message.content)
+                else:
+                    content = [{"type": "text", "text": message.content}]
+
+                anthropic_messages.append({"role": message.role, "content": content})
 
         return anthropic_messages
 

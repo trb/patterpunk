@@ -21,6 +21,7 @@ if boto3:
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
@@ -205,26 +206,79 @@ class BedrockModel(Model, ABC):
         bedrock_messages = []
 
         for message in messages:
-            if isinstance(message.content, list):
-                content = self._convert_content_to_bedrock_format(message.content)
+            if message.role == "tool_call":
+                # Serialize ToolCallMessage as assistant message with toolUse content blocks
+                content_blocks = []
+                for tool_call in message.tool_calls:
+                    # Parse arguments from JSON string
+                    try:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        arguments = {}
 
-                has_text = any("text" in chunk for chunk in content)
-                has_document = any("document" in chunk for chunk in content)
-
-                if has_document and not has_text:
-                    raise ValueError(
-                        "Bedrock requires at least one text block when documents are present. "
-                        "Please include text content along with your documents."
+                    content_blocks.append(
+                        {
+                            "toolUse": {
+                                "toolUseId": tool_call["id"],
+                                "name": tool_call["function"]["name"],
+                                "input": arguments,
+                            }
+                        }
                     )
-            else:
-                content_str = message.get_content_as_string()
-                if message.structured_output and has_model_schema(
-                    message.structured_output
-                ):
-                    content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
-                content = [{"text": content_str}]
 
-            bedrock_messages.append({"role": message.role, "content": content})
+                bedrock_messages.append(
+                    {"role": "assistant", "content": content_blocks}
+                )
+
+            elif message.role == "tool_result":
+                # Validate required field for Bedrock
+                if not message.call_id:
+                    raise ValueError(
+                        "AWS Bedrock requires call_id (as toolUseId) in ToolResultMessage. "
+                        "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
+                    )
+
+                # Serialize as user message with toolResult content block
+                # Bedrock uses status field instead of is_error boolean
+                bedrock_messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "toolResult": {
+                                    "toolUseId": message.call_id,
+                                    "content": [{"text": message.content}],
+                                    "status": (
+                                        "error" if message.is_error else "success"
+                                    ),
+                                }
+                            }
+                        ],
+                    }
+                )
+
+            else:
+                # Handle regular messages (user, assistant)
+                if isinstance(message.content, list):
+                    content = self._convert_content_to_bedrock_format(message.content)
+
+                    has_text = any("text" in chunk for chunk in content)
+                    has_document = any("document" in chunk for chunk in content)
+
+                    if has_document and not has_text:
+                        raise ValueError(
+                            "Bedrock requires at least one text block when documents are present. "
+                            "Please include text content along with your documents."
+                        )
+                else:
+                    content_str = message.get_content_as_string()
+                    if message.structured_output and has_model_schema(
+                        message.structured_output
+                    ):
+                        content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+                    content = [{"text": content_str}]
+
+                bedrock_messages.append({"role": message.role, "content": content})
 
         return bedrock_messages
 
@@ -254,7 +308,7 @@ class BedrockModel(Model, ABC):
         user_assistant_messages = [
             message
             for message in messages
-            if message.role in [ROLE_USER, ROLE_ASSISTANT]
+            if message.role in [ROLE_USER, ROLE_ASSISTANT, "tool_call", "tool_result"]
         ]
         conversation = self._convert_messages_for_bedrock(user_assistant_messages)
 

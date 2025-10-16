@@ -28,13 +28,26 @@ response = chat.add_message("What's the weather in Paris?").complete()
 
 # Handle tool calls manually (required for function tools)
 if response.is_latest_message_tool_call:
+    from patterpunk.llm.messages import ToolResultMessage
+
     for tool_call in response.latest_message.tool_calls:
+        call_id = tool_call["id"]
         function_name = tool_call["function"]["name"]
         arguments = json.loads(tool_call["function"]["arguments"])
-        
+
         if function_name == "get_weather":
             result = get_weather(**arguments)
-            print(f"Tool result: {result}")
+
+            # Add result with proper linkage to original tool call
+            chat = chat.add_message(ToolResultMessage(
+                content=str(result),
+                call_id=call_id,
+                function_name=function_name
+            ))
+
+    # Continue conversation with tool results
+    response = chat.complete()
+    print(response.latest_message.content)
 ```
 
 ### Advanced Function Features
@@ -137,17 +150,28 @@ response = chat.add_message("Process 'hello' and list files").complete()
 
 # Handle mixed tool calls
 if response.is_latest_message_tool_call:
+    from patterpunk.llm.messages import ToolResultMessage
+
     for tool_call in response.latest_message.tool_calls:
+        call_id = tool_call["id"]
         function_name = tool_call["function"]["name"]
-        
+
         # MCP tools already executed automatically
         # Only handle local function tools manually
         if function_name == "local_function":
             arguments = json.loads(tool_call["function"]["arguments"])
             result = local_function(**arguments)
-            
-            # Add result back to conversation
-            chat = chat.add_message(f"Function result: {result}")
+
+            # Add result back to conversation with proper linkage
+            chat = chat.add_message(ToolResultMessage(
+                content=str(result),
+                call_id=call_id,
+                function_name=function_name
+            ))
+
+    # Continue conversation
+    response = chat.complete()
+    print(response.latest_message.content)
 ```
 
 ## ToolCallMessage Structure
@@ -199,19 +223,39 @@ result = agent.execute("What's the weather in Tokyo?")
 ### Error Handling
 
 ```python
+from patterpunk.llm.messages import ToolResultMessage
+
 try:
     response = chat.complete()
-    
+
     if response.is_latest_message_tool_call:
         for tool_call in response.latest_message.tool_calls:
+            call_id = tool_call["id"]
+            function_name = tool_call["function"]["name"]
+            arguments = json.loads(tool_call["function"]["arguments"])
+
             try:
                 # Execute tool call
                 result = execute_function(**arguments)
+
+                # Add successful result
+                chat = chat.add_message(ToolResultMessage(
+                    content=str(result),
+                    call_id=call_id,
+                    function_name=function_name
+                ))
             except Exception as e:
-                # Handle tool execution errors
-                error_message = f"Tool {function_name} failed: {e}"
-                chat = chat.add_message(error_message)
-                
+                # Handle tool execution errors with is_error flag
+                chat = chat.add_message(ToolResultMessage(
+                    content=f"Tool {function_name} failed: {e}",
+                    call_id=call_id,
+                    function_name=function_name,
+                    is_error=True
+                ))
+
+        # Continue conversation with results
+        response = chat.complete()
+
 except ImportError:
     # MCP functionality requires optional dependencies (requests)
     print("Install requests for MCP HTTP transport support")

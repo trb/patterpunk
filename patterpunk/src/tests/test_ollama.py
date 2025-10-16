@@ -7,8 +7,7 @@ from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.models.ollama import OllamaModel
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
-from patterpunk.llm.cache import CacheChunk
-from patterpunk.llm.multimodal import MultimodalChunk
+from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from tests.test_utils import get_resource
 from patterpunk.logger import logger, logger_llm
 
