@@ -115,6 +115,7 @@ class AnthropicModel(Model, ABC):
         reasoning_content: str,
         structured_output: object,
         original_messages: List[Message],
+        thinking_blocks: Optional[List[dict]] = None,
     ) -> AssistantMessage:
         """
         Reasoning models can't use tool_choice constraints, so we use a two-model approach:
@@ -175,6 +176,7 @@ Please extract the relevant information from this reasoning and format it exactl
                                 structured_response_content,
                                 structured_output=structured_output,
                                 parsed_output=parsed_output,
+                                thinking_blocks=thinking_blocks,
                             )
                         except Exception as e:
                             logger.error(
@@ -185,7 +187,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 "[ANTHROPIC] Haiku formatting failed, falling back to reasoning content"
             )
             return AssistantMessage(
-                reasoning_content, structured_output=structured_output
+                reasoning_content,
+                structured_output=structured_output,
+                thinking_blocks=thinking_blocks,
             )
 
         except Exception as e:
@@ -193,7 +197,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 f"[ANTHROPIC] Error in two-model structured output approach: {e}"
             )
             return AssistantMessage(
-                reasoning_content, structured_output=structured_output
+                reasoning_content,
+                structured_output=structured_output,
+                thinking_blocks=thinking_blocks,
             )
 
     def _parse_model_version(self) -> tuple[int, int]:
@@ -229,6 +235,46 @@ Please extract the relevant information from this reasoning and format it exactl
         return False
 
     def _get_compatible_params(self, api_params: dict) -> dict:
+        major, minor = self._parse_model_version()
+
+        # Claude 4+ models with thinking mode: remove top_p/top_k, force temperature=1.0
+        if major >= 4 and self.thinking:
+            compatible_params = api_params.copy()
+            if "top_p" in compatible_params:
+                del compatible_params["top_p"]
+            if "top_k" in compatible_params:
+                del compatible_params["top_k"]
+            compatible_params["temperature"] = 1.0
+            return compatible_params
+
+        # Claude 4+ models without thinking: temperature and top_p cannot both be specified
+        if major >= 4:
+            has_temp = "temperature" in api_params
+            has_top_p = "top_p" in api_params
+
+            if has_temp and has_top_p:
+                # If top_p is at default (1.0), omit it (effectively a no-op anyway)
+                # This handles the common case where defaults are used
+                if api_params.get("top_p") == 1.0:
+                    compatible_params = api_params.copy()
+                    del compatible_params["top_p"]
+                    if "top_k" in compatible_params:
+                        del compatible_params["top_k"]
+                    return compatible_params
+
+                # If both are non-default, user explicitly wants both - raise error
+                if (
+                    api_params.get("temperature") != 0.7
+                    or api_params.get("top_p") != 1.0
+                ):
+                    raise ValueError(
+                        f"Claude 4+ models do not support both 'temperature' and 'top_p' simultaneously. "
+                        f"Please use only one. Current values: temperature={api_params.get('temperature')}, "
+                        f"top_p={api_params.get('top_p')}. "
+                        f"Anthropic recommends using 'temperature' for most use cases."
+                    )
+
+        # For Claude 3.x with thinking mode (existing behavior)
         if self.thinking:
             compatible_params = api_params.copy()
             if "top_p" in compatible_params:
@@ -237,6 +283,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 del compatible_params["top_k"]
             compatible_params["temperature"] = 1.0
             return compatible_params
+
         return api_params
 
     def _prepare_system_prompt(
@@ -285,7 +332,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 "type": self.thinking.type,
                 "budget_tokens": self.thinking.budget_tokens,
             }
-            api_params = self._get_compatible_params(api_params)
+        # Always apply parameter compatibility checks for Claude 4+ models
+        # to handle temperature/top_p conflicts and thinking mode requirements
+        api_params = self._get_compatible_params(api_params)
         return api_params
 
     def _initialize_retry_state(self) -> tuple[int, int]:
@@ -392,6 +441,30 @@ Please extract the relevant information from this reasoning and format it exactl
         else:
             return self._configure_regular_tools(api_params, tools)
 
+    def _extract_thinking_blocks(self, response) -> List[dict]:
+        """
+        Extract thinking blocks from Anthropic API response.
+        Returns list of thinking block dictionaries in their original format.
+        """
+        thinking_blocks = []
+        for block in response.content:
+            if block.type == "thinking":
+                thinking_block = {
+                    "type": "thinking",
+                    "thinking": block.thinking,
+                }
+                # Include signature if present
+                if hasattr(block, "signature") and block.signature:
+                    thinking_block["signature"] = block.signature
+                thinking_blocks.append(thinking_block)
+            elif block.type == "redacted_thinking":
+                redacted_block = {
+                    "type": "redacted_thinking",
+                    "data": block.data,
+                }
+                thinking_blocks.append(redacted_block)
+        return thinking_blocks
+
     def _extract_reasoning_content(self, response) -> str:
         reasoning_parts = []
         for block in response.content:
@@ -406,7 +479,10 @@ Please extract the relevant information from this reasoning and format it exactl
         return "\n".join(reasoning_parts)
 
     def _parse_structured_output_from_tool_call(
-        self, block, structured_output: object
+        self,
+        block,
+        structured_output: object,
+        thinking_blocks: Optional[List[dict]] = None,
     ) -> Optional[AssistantMessage]:
         if block.name == "provide_structured_response" and structured_output:
             if hasattr(block, "input") and block.input:
@@ -418,6 +494,7 @@ Please extract the relevant information from this reasoning and format it exactl
                         structured_response_content,
                         structured_output=structured_output,
                         parsed_output=parsed_output,
+                        thinking_blocks=thinking_blocks,
                     )
                 except Exception as e:
                     logger.warning(
@@ -449,7 +526,12 @@ Please extract the relevant information from this reasoning and format it exactl
         content = "\n".join(
             [block.text for block in response.content if block.type == "text"]
         )
-        return AssistantMessage(content, structured_output=structured_output)
+        thinking_blocks = self._extract_thinking_blocks(response)
+        return AssistantMessage(
+            content,
+            structured_output=structured_output,
+            thinking_blocks=thinking_blocks,
+        )
 
     def _validate_stop_reason(self, response) -> None:
         if response.stop_reason == "max_tokens":
@@ -489,6 +571,9 @@ Please extract the relevant information from this reasoning and format it exactl
 
                     try:
                         reasoning_response = anthropic.messages.create(**api_params)
+                        thinking_blocks = self._extract_thinking_blocks(
+                            reasoning_response
+                        )
 
                         for block in reasoning_response.content:
                             if (
@@ -513,6 +598,7 @@ Please extract the relevant information from this reasoning and format it exactl
                                             structured_response_content,
                                             structured_output=structured_output,
                                             parsed_output=parsed_output,
+                                            thinking_blocks=thinking_blocks,
                                         )
                                     except Exception as e:
                                         logger.warning(
@@ -528,7 +614,10 @@ Please extract the relevant information from this reasoning and format it exactl
                             reasoning_response
                         )
                         return self._format_reasoning_to_structured_output(
-                            reasoning_content, structured_output, messages
+                            reasoning_content,
+                            structured_output,
+                            messages,
+                            thinking_blocks,
                         )
 
                     except Exception as e:
@@ -540,11 +629,17 @@ Please extract the relevant information from this reasoning and format it exactl
                             api_params, tools
                         )
                         reasoning_response = anthropic.messages.create(**api_params)
+                        thinking_blocks = self._extract_thinking_blocks(
+                            reasoning_response
+                        )
                         reasoning_content = self._extract_reasoning_content(
                             reasoning_response
                         )
                         return self._format_reasoning_to_structured_output(
-                            reasoning_content, structured_output, messages
+                            reasoning_content,
+                            structured_output,
+                            messages,
+                            thinking_blocks,
                         )
 
                 else:
@@ -564,12 +659,13 @@ Please extract the relevant information from this reasoning and format it exactl
                     return self._assemble_text_content(response, structured_output)
                 elif response.stop_reason == "tool_use":
                     tool_calls = []
+                    thinking_blocks = self._extract_thinking_blocks(response)
 
                     for block in response.content:
                         if block.type == "tool_use":
                             structured_result = (
                                 self._parse_structured_output_from_tool_call(
-                                    block, structured_output
+                                    block, structured_output, thinking_blocks
                                 )
                             )
                             if structured_result:
@@ -579,7 +675,9 @@ Please extract the relevant information from this reasoning and format it exactl
                             tool_calls.append(tool_call)
 
                     if tool_calls:
-                        return ToolCallMessage(tool_calls)
+                        return ToolCallMessage(
+                            tool_calls, thinking_blocks=thinking_blocks
+                        )
                     else:
                         raise AnthropicAPIError(
                             "Tool use stop reason but no tool use blocks found in response"
@@ -703,6 +801,12 @@ Please extract the relevant information from this reasoning and format it exactl
             if message.role == "tool_call":
                 # Serialize ToolCallMessage as assistant message with tool_use content blocks
                 content_blocks = []
+
+                # CRITICAL: Include thinking blocks first, before tool_use blocks
+                # Anthropic requires thinking blocks to be preserved in multi-turn conversations
+                if hasattr(message, "thinking_blocks") and message.thinking_blocks:
+                    content_blocks.extend(message.thinking_blocks)
+
                 for tool_call in message.tool_calls:
                     # Parse arguments from JSON string
                     try:
@@ -749,10 +853,23 @@ Please extract the relevant information from this reasoning and format it exactl
 
             else:
                 # Handle regular messages (user, assistant)
+                content = []
+
+                # For assistant messages with thinking blocks, include them first
+                if (
+                    message.role == ROLE_ASSISTANT
+                    and hasattr(message, "thinking_blocks")
+                    and message.thinking_blocks
+                ):
+                    content.extend(message.thinking_blocks)
+
+                # Then add the main content
                 if isinstance(message.content, list):
-                    content = self._convert_content_to_anthropic_format(message.content)
+                    content.extend(
+                        self._convert_content_to_anthropic_format(message.content)
+                    )
                 else:
-                    content = [{"type": "text", "text": message.content}]
+                    content.append({"type": "text", "text": message.content})
 
                 anthropic_messages.append({"role": message.role, "content": content})
 

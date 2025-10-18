@@ -14,12 +14,12 @@ You MUST access the following files if you work on related features of patterpun
 
 ## Development Commands
 - Tests are located in `patterpunk/src/tests/` with provider-specific test files
-- Run tests with `docker compose run --entrypoint '/bin/bash -c' patterpunk '/app/bin/test.dev $TEST'` -  the single-quotes around `/app/bin/test.dev $TEST` are paramount, without them ALL tests will be excuted. It's a FATAL violation to run the tests without wrapping the command and test case in single-quotes!
+- Run tests with `docker compose run --rm --entrypoint '/bin/bash -c' patterpunk '/app/bin/test.dev $TEST'` -  the single-quotes around `/app/bin/test.dev $TEST` are paramount, without them ALL tests will be excuted. It's a FATAL violation to run the tests without wrapping the command and test case in single-quotes!
 - Test files should be given relative to `patterpunk/src` prefixed with `/app` as that is the mount point in the container. E.g. for anthropic tests, the path would be `/app/tests/test_anthropic.py`
 - Dependencies: core (`requirements.txt`), testing (`test.requirements.txt`), build (`build.requirements.txt`)
 
 **Code Formatting:**
-- Run `docker compose run --entrypoint '/bin/bash -c' --remove-orphans patterpunk black` for formatting
+- Run `docker compose run --rm --remove-orphans patterpunk 'black /app/patterpunk'` for formatting
 
 ## General Rules
 

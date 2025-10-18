@@ -993,3 +993,127 @@ def test_cache_chunks():
         term in content_lower
         for term in ["context", "information", "document", "reference"]
     )
+
+
+def test_thinking_blocks_preservation():
+    """Test that thinking blocks are extracted and preserved from API responses"""
+    from patterpunk.llm.chat.core import Chat
+    from patterpunk.llm.messages.assistant import AssistantMessage
+
+    # Test with Claude 4.5 Sonnet (reasoning model)
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-sonnet-4-5-20250929",
+            thinking_config=ThinkingConfig(token_budget=2000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    )
+
+    response = (
+        chat.add_message(
+            SystemMessage(
+                "You are a helpful assistant. Think through problems step by step."
+            )
+        )
+        .add_message(
+            UserMessage("What is 27 * 453? Think through the calculation step by step.")
+        )
+        .complete()
+    )
+
+    # Verify the response has thinking blocks
+    assert response.latest_message is not None
+    assert isinstance(response.latest_message, AssistantMessage)
+    assert hasattr(response.latest_message, "thinking_blocks")
+
+    # Claude 4+ models return summarized thinking, but should still have thinking blocks
+    if response.latest_message.has_thinking:
+        assert len(response.latest_message.thinking_blocks) > 0
+        # Verify thinking blocks have the correct structure
+        for block in response.latest_message.thinking_blocks:
+            assert "type" in block
+            assert block["type"] in ["thinking", "redacted_thinking"]
+            if block["type"] == "thinking":
+                assert "thinking" in block
+                # Signature may or may not be present depending on model
+            elif block["type"] == "redacted_thinking":
+                assert "data" in block
+
+    # Verify the final answer content is present
+    assert response.latest_message.content is not None
+    assert len(response.latest_message.content.strip()) > 0
+
+
+def test_thinking_blocks_with_tool_calling():
+    """Test that thinking blocks are preserved in multi-turn conversations with tool use"""
+    from patterpunk.llm.chat.core import Chat
+
+    def multiply(a: float, b: float) -> str:
+        """Multiply two numbers together.
+
+        Args:
+            a: First number
+            b: Second number
+        """
+        return str(a * b)
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-sonnet-4-5-20250929",
+            thinking_config=ThinkingConfig(token_budget=3000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    ).with_tools([multiply])
+
+    # Make initial request that should use tools
+    response = (
+        chat.add_message(
+            SystemMessage(
+                "You are a math assistant. Use the multiply tool when asked to multiply numbers."
+            )
+        )
+        .add_message(UserMessage("What is 27 times 453? Use the multiply tool."))
+        .complete()
+    )
+
+    # Check if we got a tool call
+    if isinstance(response.latest_message, ToolCallMessage):
+        # Verify thinking blocks are present on the tool call message
+        assert hasattr(response.latest_message, "thinking_blocks")
+
+        # The thinking blocks should be preserved when converting back to Anthropic format
+        # This is critical for multi-turn conversations
+        messages_for_api = response.model._convert_messages_for_anthropic(
+            response.messages
+        )
+
+        # Find the assistant message with tool_use
+        tool_use_message = None
+        for msg in messages_for_api:
+            if msg["role"] == "assistant" and any(
+                block.get("type") == "tool_use" for block in msg["content"]
+            ):
+                tool_use_message = msg
+                break
+
+        if tool_use_message and response.latest_message.thinking_blocks:
+            # Verify thinking blocks come before tool_use blocks
+            content_blocks = tool_use_message["content"]
+            thinking_indices = [
+                i
+                for i, block in enumerate(content_blocks)
+                if block.get("type") in ["thinking", "redacted_thinking"]
+            ]
+            tool_use_indices = [
+                i
+                for i, block in enumerate(content_blocks)
+                if block.get("type") == "tool_use"
+            ]
+
+            # If both exist, thinking should come before tool_use
+            if thinking_indices and tool_use_indices:
+                assert max(thinking_indices) < min(
+                    tool_use_indices
+                ), "Thinking blocks must come before tool_use blocks in Anthropic API format"

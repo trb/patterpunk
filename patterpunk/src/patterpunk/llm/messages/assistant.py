@@ -14,11 +14,13 @@ class AssistantMessage(Message):
         content: ContentType,
         structured_output: Optional[Any] = None,
         parsed_output: Optional[Any] = None,
+        thinking_blocks: Optional[List[dict]] = None,
     ):
         super().__init__(content, ROLE_ASSISTANT)
         self.structured_output = structured_output
         self._parsed_output = parsed_output
         self._raw_content = content
+        self.thinking_blocks = thinking_blocks or []
 
     @property
     def content(self) -> str:
@@ -89,3 +91,25 @@ class AssistantMessage(Message):
                 and chunk.media_type.startswith("audio/")
             ]
         return []
+
+    @property
+    def has_thinking(self) -> bool:
+        """Check if this message contains thinking blocks."""
+        return len(self.thinking_blocks) > 0
+
+    @property
+    def thinking_text(self) -> Optional[str]:
+        """
+        Get the combined thinking text from all thinking blocks.
+        Returns None if there are no thinking blocks.
+        Redacted thinking blocks are excluded as they contain encrypted data.
+        """
+        if not self.has_thinking:
+            return None
+
+        thinking_parts = []
+        for block in self.thinking_blocks:
+            if block.get("type") == "thinking" and "thinking" in block:
+                thinking_parts.append(block["thinking"])
+
+        return "\n".join(thinking_parts) if thinking_parts else None
