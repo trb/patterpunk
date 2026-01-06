@@ -1,13 +1,20 @@
+import asyncio
 from abc import ABC, abstractmethod
-from typing import List, Optional, Set, Union
+from concurrent.futures import ThreadPoolExecutor
+from typing import AsyncIterator, List, Optional, Set, Union
 
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition
+from patterpunk.llm.streaming import StreamChunk, StreamingNotSupported
 
 
 class ModelNotImplemented(Exception):
     pass
+
+
+# Shared executor for sync-to-async wrapping
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 class Model(ABC):
@@ -20,6 +27,47 @@ class Model(ABC):
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
         raise ModelNotImplemented("You need to use a LLM-specific model")
+
+    async def generate_assistant_message_async(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> Union[Message, "ToolCallMessage"]:
+        """
+        Async version of generate_assistant_message.
+
+        Default implementation wraps the sync method in an executor.
+        Providers with native async support should override this.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor,
+            lambda: self.generate_assistant_message(
+                messages, tools, structured_output, output_types
+            ),
+        )
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """
+        Stream the assistant message response.
+
+        Default implementation raises StreamingNotSupported.
+        Providers with streaming support should override this.
+        """
+        raise StreamingNotSupported(
+            f"{self.get_name()} does not support streaming. "
+            "Use generate_assistant_message_async() instead."
+        )
+        # Make this an async generator by yielding nothing after the raise
+        yield  # type: ignore  # This makes it an AsyncIterator
 
     @staticmethod
     @abstractmethod

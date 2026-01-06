@@ -19,7 +19,7 @@ def test_basic():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", max_tokens=4096, temperature=0.1
+            model="claude-haiku-4-5-20251001", max_tokens=4096, temperature=0.1
         )
     )
 
@@ -262,7 +262,7 @@ def test_structured_output():
 
     sonnet_chat = Chat(
         model=AnthropicModel(
-            model="claude-3-7-sonnet-latest", max_tokens=4096, temperature=0.2
+            model="claude-haiku-4-5-20251001", max_tokens=4096, temperature=0.2
         )
     )
 
@@ -347,7 +347,7 @@ Keywords: artificial intelligence, climate change, energy efficiency, environmen
 
     haiku_chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-haiku-latest", max_tokens=4096, temperature=0.2
+            model="claude-haiku-4-5-20251001", max_tokens=4096, temperature=0.2
         )
     )
 
@@ -444,7 +444,7 @@ def test_reasoning_mode_version_parsing():
     assert model_37._parse_model_version() == (3, 7)
     assert model_37._is_reasoning_model() == True
 
-    model_35 = AnthropicModel(model="claude-3-5-sonnet-20240620")
+    model_35 = AnthropicModel(model="claude-haiku-4-5-20251001")
     assert model_35._parse_model_version() == (3, 5)
     assert model_35._is_reasoning_model() == False
 
@@ -607,7 +607,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
 
     chat_35 = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.5, top_p=0.8, top_k=50
+            model="claude-haiku-4-5-20251001", temperature=0.5, top_p=0.8, top_k=50
         )
     )
 
@@ -629,7 +629,7 @@ def test_reasoning_mode_plain_text_response():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             thinking_config=ThinkingConfig(token_budget=2000),
             max_tokens=4000,
             temperature=1.0,
@@ -668,7 +668,7 @@ def test_reasoning_mode_structured_output():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-7-sonnet-20250219",
+            model="claude-haiku-4-5-20251001",
             thinking_config=ThinkingConfig(token_budget=3000),
             max_tokens=5000,
             temperature=1.0,
@@ -717,7 +717,7 @@ def test_reasoning_mode_tool_calling():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-opus-4-20250514",
+            model="claude-haiku-4-5-20251001",
             thinking_config=ThinkingConfig(token_budget=4000),
             max_tokens=6000,
             temperature=1.0,
@@ -750,7 +750,7 @@ def test_reasoning_mode_tool_calling():
 def test_multimodal_image():
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.1, max_tokens=4096
+            model="claude-haiku-4-5-20251001", temperature=0.1, max_tokens=4096
         )
     )
 
@@ -799,7 +799,7 @@ def test_multimodal_image():
 def test_multimodal_pdf():
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.0, max_tokens=4096
+            model="claude-haiku-4-5-20251001", temperature=0.0, max_tokens=4096
         )
     )
 
@@ -836,7 +836,7 @@ def test_simple_tool_calling():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.0, max_tokens=4096
+            model="claude-haiku-4-5-20251001", temperature=0.0, max_tokens=4096
         )
     ).with_tools([get_weather])
 
@@ -901,7 +901,7 @@ def test_multi_tool_calling():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.0, max_tokens=4096
+            model="claude-haiku-4-5-20251001", temperature=0.0, max_tokens=4096
         )
     ).with_tools([calculate_area, get_math_fact])
 
@@ -945,7 +945,7 @@ def test_cache_chunks():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-3-5-sonnet-20240620", temperature=0.1, max_tokens=4096
+            model="claude-haiku-4-5-20251001", temperature=0.1, max_tokens=4096
         )
     )
 
@@ -1003,7 +1003,7 @@ def test_thinking_blocks_preservation():
     # Test with Claude 4.5 Sonnet (reasoning model)
     chat = Chat(
         model=AnthropicModel(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-haiku-4-5-20251001",
             thinking_config=ThinkingConfig(token_budget=2000),
             max_tokens=4000,
             temperature=1.0,
@@ -1060,7 +1060,7 @@ def test_thinking_blocks_with_tool_calling():
 
     chat = Chat(
         model=AnthropicModel(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-haiku-4-5-20251001",
             thinking_config=ThinkingConfig(token_budget=3000),
             max_tokens=4000,
             temperature=1.0,

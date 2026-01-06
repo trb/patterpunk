@@ -17,6 +17,7 @@ from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
+from patterpunk.llm.streaming import ChatStream, ChatStreamFactory
 from .tools import configure_tools, configure_mcp_servers, execute_mcp_tool_calls
 from .structured_output import get_parsed_output_with_retry
 
@@ -83,6 +84,70 @@ class Chat:
             new_chat = execute_mcp_tool_calls(new_chat)
 
         return new_chat
+
+    async def complete_async(
+        self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None
+    ) -> "Chat":
+        """
+        Async version of complete().
+
+        Completes the conversation by generating a response from the LLM asynchronously.
+        Returns a new Chat with the response message appended.
+        """
+        message = self.latest_message
+        model = message.model if message.model else self.model
+
+        tools_to_use = None
+        if self.tools and getattr(message, "allow_tool_calls", True):
+            tools_to_use = self.tools
+
+        response_message = await model.generate_assistant_message_async(
+            self.messages,
+            tools_to_use,
+            structured_output=getattr(message, "structured_output", None),
+            output_types=output_types,
+        )
+
+        new_chat = self.add_message(response_message)
+
+        if new_chat.is_latest_message_tool_call and new_chat._mcp_client:
+            new_chat = execute_mcp_tool_calls(new_chat)
+
+        return new_chat
+
+    def complete_stream(
+        self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None
+    ) -> ChatStream:
+        """
+        Stream the conversation completion.
+
+        Returns a ChatStream async context manager for streaming responses.
+
+        Usage:
+            async with chat.complete_stream() as stream:
+                async for thinking in stream.thinking:
+                    print(f"Thinking: {thinking}")
+                async for content in stream.content:
+                    print(content, end="")
+
+            final_chat = stream.chat
+        """
+        message = self.latest_message
+        model = message.model if message.model else self.model
+
+        tools_to_use = None
+        if self.tools and getattr(message, "allow_tool_calls", True):
+            tools_to_use = self.tools
+
+        raw_stream = model.stream_assistant_message(
+            self.messages,
+            tools_to_use,
+            structured_output=getattr(message, "structured_output", None),
+            output_types=output_types,
+        )
+
+        factory = ChatStreamFactory(self)
+        return ChatStream(raw_stream, factory)
 
     def extract_json(self) -> Optional[List[str]]:
         chat_text = "\n\n".join(
