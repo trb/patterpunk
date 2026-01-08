@@ -18,7 +18,12 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.streaming import ChatStream, ChatStreamFactory
-from .tools import configure_tools, configure_mcp_servers, execute_mcp_tool_calls
+from .tools import (
+    configure_tools,
+    configure_mcp_servers,
+    execute_mcp_tool_calls,
+    execute_all_tool_calls,
+)
 from .structured_output import get_parsed_output_with_retry
 
 
@@ -43,6 +48,7 @@ class Chat:
         self.model = default_model() if model is None else model
         self.tools = tools
         self._mcp_client = None
+        self._tool_functions = {}  # Maps function names to callables
 
     def add_message(self, message: Message):
         new_chat = self.copy()
@@ -56,13 +62,21 @@ class Chat:
         return configure_mcp_servers(self, server_configs)
 
     def complete(
-        self, output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None
+        self,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        execute_tools: bool = True,
     ):
         """
         Complete the conversation by generating a response from the LLM.
 
         Handles the core completion flow while delegating specialized operations
         to appropriate modules.
+
+        Args:
+            output_types: Optional output type constraints
+            execute_tools: If True (default), automatically execute tool calls
+                          and continue the conversation. If False, return the
+                          Chat with the ToolCallMessage for manual handling.
         """
         message = self.latest_message
         model = message.model if message.model else self.model
@@ -80,8 +94,9 @@ class Chat:
 
         new_chat = self.add_message(response_message)
 
-        if new_chat.is_latest_message_tool_call and new_chat._mcp_client:
-            new_chat = execute_mcp_tool_calls(new_chat)
+        # Auto-execute tool calls if enabled
+        if new_chat.is_latest_message_tool_call and execute_tools:
+            new_chat = execute_all_tool_calls(new_chat)
 
         return new_chat
 

@@ -34,7 +34,7 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
@@ -318,14 +318,14 @@ class GoogleModel(Model, ABC):
                 for tool_call in message.tool_calls:
                     # Parse arguments from JSON string
                     try:
-                        arguments = json.loads(tool_call["function"]["arguments"])
+                        arguments = json.loads(tool_call.arguments)
                     except (json.JSONDecodeError, KeyError):
                         arguments = {}
 
                     # Google uses FunctionCall for tool requests
                     parts.append(
                         types.Part.from_function_call(
-                            name=tool_call["function"]["name"], args=arguments
+                            name=tool_call.name, args=arguments
                         )
                     )
 
@@ -492,15 +492,13 @@ class GoogleModel(Model, ABC):
                         hasattr(part, "function_call")
                         and part.function_call is not None
                     ):
-                        tool_call = {
-                            "id": f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
-                            "type": "function",
-                            "function": {
-                                "name": part.function_call.name,
-                                "arguments": json.dumps(dict(part.function_call.args)),
-                            },
-                        }
-                        tool_calls.append(tool_call)
+                        tool_calls.append(
+                            ToolCall(
+                                id=f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
+                                name=part.function_call.name,
+                                arguments=json.dumps(dict(part.function_call.args)),
+                            )
+                        )
 
                     elif hasattr(part, "text") and part.text and part.text != "None":
                         chunks.append(TextChunk(part.text))

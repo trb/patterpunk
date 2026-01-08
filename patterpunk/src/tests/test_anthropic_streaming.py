@@ -51,8 +51,8 @@ async def test_stream_content_basic():
         iteration_count > 1
     ), f"Expected multiple streaming iterations, got {iteration_count}"
 
-    # After context exit, stream.chat should be available
-    final_chat = stream.chat
+    # After context exit, await stream.chat to get the final result
+    final_chat = await stream.chat
 
     # Final chat should have the response
     assert final_chat is not None
@@ -117,7 +117,7 @@ async def test_stream_thinking_and_content():
     ), f"Expected multiple content iterations, got {content_iterations}"
 
     # Verify final chat
-    final_chat = stream.chat
+    final_chat = await stream.chat
     assert final_chat is not None
     assert final_chat.latest_message is not None
 
@@ -166,17 +166,51 @@ async def test_stream_content_only_auto_drains_thinking():
     ), f"Expected multiple content iterations, got {content_iterations}"
 
     # Should still work and have the answer
-    final_chat = stream.chat
+    final_chat = await stream.chat
     assert final_chat is not None
     assert "12" in accumulated_content
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_access_before_exit_raises():
+async def test_stream_chat_cancelled_raises():
     """
-    Test that accessing stream.chat before context exit raises StreamIncompleteError.
+    Test that awaiting stream.chat after cancellation raises StreamIncompleteError.
 
-    This ensures consumers don't accidentally use incomplete data.
+    When the user exits the stream early (e.g., break from loop), the stream is
+    cancelled and there's no complete chat to return.
+    """
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            temperature=0.0,
+            max_tokens=256,
+        )
+    )
+
+    chat = chat.add_message(SystemMessage("Be verbose.")).add_message(
+        UserMessage("Count from 1 to 100, describing each number.")
+    )
+
+    async with chat.complete_stream() as stream:
+        # Start iterating but exit early
+        count = 0
+        async for _ in stream.content:
+            count += 1
+            if count >= 3:
+                break  # Exit early - this cancels the stream
+
+    # After early exit, await stream.chat should raise
+    with pytest.raises(StreamIncompleteError) as exc_info:
+        _ = await stream.chat
+    assert "cancelled" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_waits_for_completion():
+    """
+    Test that await stream.chat waits for completion if called during iteration.
+
+    The await is non-blocking if already complete, or waits if still in progress.
     """
     chat = Chat(
         model=AnthropicModel(
@@ -191,18 +225,14 @@ async def test_stream_chat_access_before_exit_raises():
     )
 
     async with chat.complete_stream() as stream:
-        # Try to access chat before iteration completes
-        with pytest.raises(StreamIncompleteError) as exc_info:
-            _ = stream.chat
-        assert "still in progress" in str(exc_info.value)
-
-        # Drain the stream
+        # Drain the stream normally
         async for _ in stream.content:
             pass
 
-    # After exit, it should work
-    final_chat = stream.chat
+    # After complete iteration, await should return immediately
+    final_chat = await stream.chat
     assert final_chat is not None
+    assert final_chat.latest_message is not None
 
 
 @pytest.mark.asyncio
@@ -235,5 +265,5 @@ async def test_stream_delta_iterators():
 
     # Joining deltas should give us the full content
     full_content = "".join(deltas)
-    final_chat = stream.chat
+    final_chat = await stream.chat
     assert full_content == final_chat.latest_message.content

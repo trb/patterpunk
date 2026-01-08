@@ -113,3 +113,14 @@ class AssistantMessage(Message):
                 thinking_parts.append(block["thinking"])
 
         return "\n".join(thinking_parts) if thinking_parts else None
+
+    def to_dict(self, prompt_for_structured_output: bool = False):
+        """
+        Convert to dictionary format for serialization.
+
+        Includes thinking_blocks when present (for extended thinking models).
+        """
+        result = super().to_dict(prompt_for_structured_output)
+        if self.thinking_blocks:
+            result["thinking_blocks"] = self.thinking_blocks
+        return result

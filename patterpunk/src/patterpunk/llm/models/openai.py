@@ -20,7 +20,7 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall, ToolCallList
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
@@ -323,9 +323,9 @@ class OpenAiModel(Model, ABC):
                         responses_input.append(
                             {
                                 "type": "function_call",
-                                "call_id": tool_call["id"],
-                                "name": tool_call["function"]["name"],
-                                "arguments": tool_call["function"]["arguments"],
+                                "call_id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments,
                             }
                         )
                 else:
@@ -468,33 +468,28 @@ class OpenAiModel(Model, ABC):
                 return image_chunk
         return None
 
-    def _process_tool_calls_output(self, output_item) -> List[dict]:
-        tool_calls = []
+    def _process_tool_calls_output(self, output_item) -> ToolCallList:
+        tool_calls: ToolCallList = []
 
         # Check if output_item IS a tool call (ResponseFunctionToolCall)
         if hasattr(output_item, "type") and output_item.type == "function_call":
             tool_calls.append(
-                {
-                    "id": output_item.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": output_item.name,
-                        "arguments": output_item.arguments,
-                    },
-                }
+                ToolCall(
+                    id=output_item.call_id,
+                    name=output_item.name,
+                    arguments=output_item.arguments,
+                )
             )
         # Legacy format: check if output_item has tool_calls attribute
         elif hasattr(output_item, "tool_calls") and output_item.tool_calls:
-            for tool_call in output_item.tool_calls:
+            for tc in output_item.tool_calls:
                 tool_calls.append(
-                    {
-                        "id": tool_call.id,
-                        "type": tool_call.type,
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=tc.function.arguments,
+                        type=tc.type,
+                    )
                 )
         return tool_calls
 

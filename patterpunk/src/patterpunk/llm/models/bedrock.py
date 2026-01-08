@@ -25,7 +25,7 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
@@ -212,15 +212,15 @@ class BedrockModel(Model, ABC):
                 for tool_call in message.tool_calls:
                     # Parse arguments from JSON string
                     try:
-                        arguments = json.loads(tool_call["function"]["arguments"])
+                        arguments = json.loads(tool_call.arguments)
                     except (json.JSONDecodeError, KeyError):
                         arguments = {}
 
                     content_blocks.append(
                         {
                             "toolUse": {
-                                "toolUseId": tool_call["id"],
-                                "name": tool_call["function"]["name"],
+                                "toolUseId": tool_call.id,
+                                "name": tool_call.name,
                                 "input": arguments,
                             }
                         }
@@ -374,15 +374,13 @@ class BedrockModel(Model, ABC):
         for content_block in output.get("message", {}).get("content", []):
             if "toolUse" in content_block:
                 tool_use = content_block["toolUse"]
-                tool_call = {
-                    "id": tool_use["toolUseId"],
-                    "type": "function",
-                    "function": {
-                        "name": tool_use["name"],
-                        "arguments": json.dumps(tool_use["input"]),
-                    },
-                }
-                tool_calls.append(tool_call)
+                tool_calls.append(
+                    ToolCall(
+                        id=tool_use["toolUseId"],
+                        name=tool_use["name"],
+                        arguments=json.dumps(tool_use["input"]),
+                    )
+                )
 
         if tool_calls:
             return ToolCallMessage(tool_calls)

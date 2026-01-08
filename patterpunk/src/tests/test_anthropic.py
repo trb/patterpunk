@@ -1,3 +1,4 @@
+import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from patterpunk.llm.chat.core import Chat
@@ -444,9 +445,15 @@ def test_reasoning_mode_version_parsing():
     assert model_37._parse_model_version() == (3, 7)
     assert model_37._is_reasoning_model() == True
 
-    model_35 = AnthropicModel(model="claude-haiku-4-5-20251001")
-    assert model_35._parse_model_version() == (3, 5)
-    assert model_35._is_reasoning_model() == False
+    # Claude Haiku 4.5 - version 4.5, IS a reasoning model (>= 3.7)
+    model_45_haiku = AnthropicModel(model="claude-haiku-4-5-20251001")
+    assert model_45_haiku._parse_model_version() == (4, 5)
+    assert model_45_haiku._is_reasoning_model() == True
+
+    # Old Claude 3 Haiku - NOT a reasoning model (< 3.7)
+    model_3_haiku = AnthropicModel(model="claude-3-haiku-20240307")
+    assert model_3_haiku._parse_model_version() == (3, 0)
+    assert model_3_haiku._is_reasoning_model() == False
 
     model_opus4 = AnthropicModel(model="claude-opus-4-20250514")
     assert model_opus4._parse_model_version() == (4, 0)
@@ -605,14 +612,15 @@ def test_reasoning_mode_with_claude_sonnet_4():
     assert chat_37.model._is_reasoning_model() == True
     assert chat_37.model._parse_model_version() == (3, 7)
 
-    chat_35 = Chat(
+    # Test non-reasoning model (Claude 3 Haiku, version < 3.7)
+    chat_3_haiku = Chat(
         model=AnthropicModel(
-            model="claude-haiku-4-5-20251001", temperature=0.5, top_p=0.8, top_k=50
+            model="claude-3-haiku-20240307", temperature=0.5, top_p=0.8, top_k=50
         )
     )
 
-    assert chat_35.model._is_reasoning_model() == False
-    assert chat_35.model._parse_model_version() == (3, 5)
+    assert chat_3_haiku.model._is_reasoning_model() == False
+    assert chat_3_haiku.model._parse_model_version() == (3, 0)
 
     non_reasoning_params = {
         "temperature": 0.5,
@@ -620,7 +628,9 @@ def test_reasoning_mode_with_claude_sonnet_4():
         "top_k": 50,
         "max_tokens": 1000,
     }
-    filtered_non_reasoning = chat_35.model._get_compatible_params(non_reasoning_params)
+    filtered_non_reasoning = chat_3_haiku.model._get_compatible_params(
+        non_reasoning_params
+    )
     assert filtered_non_reasoning == non_reasoning_params
 
 
@@ -846,10 +856,11 @@ def test_simple_tool_calling():
         "Do not just describe what you would do - actually call the tool."
     )
 
+    # Use execute_tools=False to inspect the ToolCallMessage before execution
     response = (
         chat.add_message(system_msg)
         .add_message(UserMessage("What's the weather in Paris?"))
-        .complete()
+        .complete(execute_tools=False)
     )
 
     assert response.latest_message is not None
@@ -863,12 +874,12 @@ def test_simple_tool_calling():
     ), f"Expected exactly one tool call, got {len(tool_calls)}"
 
     tool_call = tool_calls[0]
-    assert tool_call["type"] == "function"
-    assert tool_call["function"]["name"] == "get_weather"
+    assert tool_call.type == "function"
+    assert tool_call.name == "get_weather"
 
     import json
 
-    arguments = json.loads(tool_call["function"]["arguments"])
+    arguments = json.loads(tool_call.arguments)
     assert "location" in arguments
     assert "paris" in arguments["location"].lower()
 
@@ -912,6 +923,7 @@ def test_multi_tool_calling():
         "Do not calculate or provide facts without using the tools."
     )
 
+    # Use execute_tools=False to inspect the ToolCallMessage before execution
     response = (
         chat.add_message(system_msg)
         .add_message(
@@ -920,7 +932,7 @@ def test_multi_tool_calling():
                 "Calculate its area and give me an interesting fact about rectangles."
             )
         )
-        .complete()
+        .complete(execute_tools=False)
     )
 
     assert response.latest_message is not None
@@ -933,8 +945,8 @@ def test_multi_tool_calling():
         len(tool_calls) >= 1
     ), f"Expected at least one tool call, got {len(tool_calls)}"
 
-    # Verify we have the expected tool calls
-    tool_names = [tc["function"]["name"] for tc in tool_calls]
+    # Verify we have the expected tool calls (using dataclass attribute access)
+    tool_names = [tc.name for tc in tool_calls]
     assert (
         "calculate_area" in tool_names or "get_math_fact" in tool_names
     ), f"Expected calculate_area or get_math_fact in tool calls, got: {tool_names}"
@@ -1117,3 +1129,359 @@ def test_thinking_blocks_with_tool_calling():
                 assert max(thinking_indices) < min(
                     tool_use_indices
                 ), "Thinking blocks must come before tool_use blocks in Anthropic API format"
+
+
+def test_chat_persistence_and_resumption():
+    """
+    Test that chat history can be extracted, stored (simulated), and resumed.
+
+    This validates the persistence story for patterpunk:
+    1. Create a chat with tools and reasoning mode
+    2. Have the model call a tool with a specific input
+    3. Extract all message data and create NEW message objects (simulating DB load)
+    4. Resume the chat and verify the model can reference earlier tool call data
+
+    The key validation is that the model in step 4 correctly references:
+    - The input argument from the ToolCallMessage
+    - The output from the ToolResultMessage
+    """
+    from patterpunk.llm.messages.assistant import AssistantMessage
+    from patterpunk.llm.messages.tool_result import ToolResultMessage
+    from patterpunk.llm.types import ToolCall
+
+    # --- Setup: Define a tool with predictable input/output ---
+    def store_secret(input_code: str) -> str:
+        """Store a secret code and return a confirmation code.
+
+        Args:
+            input_code: The secret code to store
+        """
+        # Return a predictable but different output
+        return f"STORED-{input_code}-CONFIRMED-8472"
+
+    # --- Phase 1: Create initial chat and make a tool call ---
+    original_chat = Chat(
+        model=AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=2000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    ).with_tools([store_secret])
+
+    system_msg = SystemMessage(
+        "You are a helpful assistant. When asked to store a secret code, "
+        "you MUST use the store_secret tool with the exact code provided."
+    )
+
+    # Use a unique input code that we can verify later
+    user_msg = UserMessage(
+        "Please store the secret code ALPHA-9999 using the store_secret tool."
+    )
+
+    # Complete the chat with automatic tool execution
+    completed_chat = (
+        original_chat.add_message(system_msg).add_message(user_msg).complete()
+    )
+
+    # Verify we got a final response (tool was executed)
+    assert completed_chat.latest_message is not None
+    assert isinstance(
+        completed_chat.latest_message, AssistantMessage
+    ), f"Expected final AssistantMessage but got {type(completed_chat.latest_message).__name__}"
+
+    # --- Phase 2: Extract and reconstruct all messages ---
+    # This simulates loading from a database
+
+    reconstructed_messages = []
+
+    for msg in completed_chat.messages:
+        if isinstance(msg, SystemMessage):
+            # Reconstruct SystemMessage
+            new_msg = SystemMessage(msg.content)
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, UserMessage):
+            # Reconstruct UserMessage
+            new_msg = UserMessage(msg.content)
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, ToolCallMessage):
+            # Reconstruct ToolCallMessage with new ToolCall dataclasses
+            new_tool_calls = []
+            for tc in msg.tool_calls:
+                new_tc = ToolCall(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments=tc.arguments,
+                    type=tc.type,
+                )
+                new_tool_calls.append(new_tc)
+
+            # Also reconstruct thinking_blocks if present
+            new_thinking_blocks = None
+            if msg.thinking_blocks:
+                # Deep copy the thinking blocks (simulating JSON deserialization)
+                import json
+
+                new_thinking_blocks = json.loads(json.dumps(msg.thinking_blocks))
+
+            new_msg = ToolCallMessage(
+                new_tool_calls, thinking_blocks=new_thinking_blocks
+            )
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, ToolResultMessage):
+            # Reconstruct ToolResultMessage
+            new_msg = ToolResultMessage(
+                content=msg.content,
+                call_id=msg.call_id,
+                function_name=msg.function_name,
+                is_error=msg.is_error,
+            )
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, AssistantMessage):
+            # Reconstruct AssistantMessage with thinking_blocks if present
+            new_thinking_blocks = None
+            if msg.thinking_blocks:
+                import json
+
+                new_thinking_blocks = json.loads(json.dumps(msg.thinking_blocks))
+
+            new_msg = AssistantMessage(
+                content=msg.content,
+                thinking_blocks=new_thinking_blocks,
+            )
+            reconstructed_messages.append(new_msg)
+
+    # --- Phase 3: Create a new chat with reconstructed messages ---
+    # This simulates loading a chat from the database and resuming it
+
+    resumed_chat = Chat(
+        model=AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=2000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    ).with_tools([store_secret])
+
+    # Add all reconstructed messages
+    for msg in reconstructed_messages:
+        resumed_chat = resumed_chat.add_message(msg)
+
+    # --- Phase 4: Ask a follow-up question that requires referencing earlier data ---
+    follow_up = UserMessage(
+        "What was the exact input code you used when calling the store_secret tool, "
+        "and what was the confirmation code you received back?"
+    )
+
+    final_chat = resumed_chat.add_message(follow_up).complete()
+
+    # --- Phase 5: Verify the model correctly references the earlier data ---
+    final_response = final_chat.latest_message
+    assert final_response is not None
+    assert isinstance(final_response, AssistantMessage)
+
+    response_content = final_response.content.upper()
+
+    # The model should mention the input code from the ToolCallMessage arguments
+    assert (
+        "ALPHA-9999" in response_content
+    ), f"Model should reference input code ALPHA-9999. Got: {final_response.content}"
+
+    # The model should mention the confirmation code from the ToolResultMessage
+    assert (
+        "8472" in response_content or "CONFIRMED" in response_content
+    ), f"Model should reference confirmation code (8472 or CONFIRMED). Got: {final_response.content}"
+
+    print("\n=== Chat Persistence Test Passed ===")
+    print(f"Original messages: {len(completed_chat.messages)}")
+    print(f"Reconstructed messages: {len(reconstructed_messages)}")
+    print(
+        f"Final response mentions both input (ALPHA-9999) and output (8472/CONFIRMED)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_persistence_and_resumption_streaming():
+    """
+    Test that chat history from async streaming can be extracted, stored, and resumed.
+
+    This is the streaming version of test_chat_persistence_and_resumption.
+    It validates that the streaming API produces the same persistable chat state.
+
+    The key validation is that after streaming:
+    1. The chat contains all messages (including ToolCallMessage, ToolResultMessage)
+    2. These can be reconstructed and used to resume the conversation
+    3. The model correctly references data from the earlier tool interactions
+    """
+    from patterpunk.llm.messages.assistant import AssistantMessage
+    from patterpunk.llm.messages.tool_result import ToolResultMessage
+    from patterpunk.llm.types import ToolCall
+
+    # --- Setup: Define a tool with predictable input/output ---
+    def store_secret(input_code: str) -> str:
+        """Store a secret code and return a confirmation code.
+
+        Args:
+            input_code: The secret code to store
+        """
+        return f"STORED-{input_code}-CONFIRMED-8472"
+
+    # --- Phase 1: Create initial chat and stream a tool call ---
+    original_chat = Chat(
+        model=AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=2000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    ).with_tools([store_secret])
+
+    system_msg = SystemMessage(
+        "You are a helpful assistant. When asked to store a secret code, "
+        "you MUST use the store_secret tool with the exact code provided."
+    )
+
+    user_msg = UserMessage(
+        "Please store the secret code BETA-7777 using the store_secret tool."
+    )
+
+    # Stream the completion (tool will be auto-executed)
+    chat_with_messages = original_chat.add_message(system_msg).add_message(user_msg)
+
+    phase1_iterations = 0
+    async with chat_with_messages.complete_stream() as stream:
+        async for _ in stream.content:
+            phase1_iterations += 1
+
+    # Get the final chat state after streaming
+    completed_chat = await stream.chat
+
+    # Verify we actually streamed (not a single-chunk response)
+    assert phase1_iterations >= 3, (
+        f"Expected at least 3 streaming iterations in phase 1, got {phase1_iterations}. "
+        "This may indicate streaming is not working correctly."
+    )
+
+    # Verify we got a final response (tool was executed)
+    assert completed_chat.latest_message is not None
+    assert isinstance(
+        completed_chat.latest_message, AssistantMessage
+    ), f"Expected final AssistantMessage but got {type(completed_chat.latest_message).__name__}"
+
+    # --- Phase 2: Extract and reconstruct all messages ---
+    reconstructed_messages = []
+
+    for msg in completed_chat.messages:
+        if isinstance(msg, SystemMessage):
+            new_msg = SystemMessage(msg.content)
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, UserMessage):
+            new_msg = UserMessage(msg.content)
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, ToolCallMessage):
+            new_tool_calls = []
+            for tc in msg.tool_calls:
+                new_tc = ToolCall(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments=tc.arguments,
+                    type=tc.type,
+                )
+                new_tool_calls.append(new_tc)
+
+            new_thinking_blocks = None
+            if msg.thinking_blocks:
+                import json
+
+                new_thinking_blocks = json.loads(json.dumps(msg.thinking_blocks))
+
+            new_msg = ToolCallMessage(
+                new_tool_calls, thinking_blocks=new_thinking_blocks
+            )
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, ToolResultMessage):
+            new_msg = ToolResultMessage(
+                content=msg.content,
+                call_id=msg.call_id,
+                function_name=msg.function_name,
+                is_error=msg.is_error,
+            )
+            reconstructed_messages.append(new_msg)
+
+        elif isinstance(msg, AssistantMessage):
+            new_thinking_blocks = None
+            if msg.thinking_blocks:
+                import json
+
+                new_thinking_blocks = json.loads(json.dumps(msg.thinking_blocks))
+
+            new_msg = AssistantMessage(
+                content=msg.content,
+                thinking_blocks=new_thinking_blocks,
+            )
+            reconstructed_messages.append(new_msg)
+
+    # --- Phase 3: Create a new chat with reconstructed messages ---
+    resumed_chat = Chat(
+        model=AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=2000),
+            max_tokens=4000,
+            temperature=1.0,
+        )
+    ).with_tools([store_secret])
+
+    for msg in reconstructed_messages:
+        resumed_chat = resumed_chat.add_message(msg)
+
+    # --- Phase 4: Stream a follow-up question ---
+    follow_up = UserMessage(
+        "What was the exact input code you used when calling the store_secret tool, "
+        "and what was the confirmation code you received back?"
+    )
+
+    resumed_with_followup = resumed_chat.add_message(follow_up)
+
+    phase4_iterations = 0
+    async with resumed_with_followup.complete_stream() as stream:
+        async for _ in stream.content:
+            phase4_iterations += 1
+
+    final_chat = await stream.chat
+
+    # Verify we actually streamed on the resumed chat too
+    assert phase4_iterations >= 3, (
+        f"Expected at least 3 streaming iterations in phase 4, got {phase4_iterations}. "
+        "This may indicate streaming is not working correctly on resumed chat."
+    )
+
+    # --- Phase 5: Verify the model correctly references the earlier data ---
+    final_response = final_chat.latest_message
+    assert final_response is not None
+    assert isinstance(final_response, AssistantMessage)
+
+    response_content = final_response.content.upper()
+
+    # The model should mention the input code from the ToolCallMessage arguments
+    assert (
+        "BETA-7777" in response_content
+    ), f"Model should reference input code BETA-7777. Got: {final_response.content}"
+
+    # The model should mention the confirmation code from the ToolResultMessage
+    assert (
+        "8472" in response_content or "CONFIRMED" in response_content
+    ), f"Model should reference confirmation code (8472 or CONFIRMED). Got: {final_response.content}"
+
+    print("\n=== Streaming Chat Persistence Test Passed ===")
+    print(f"Phase 1 streaming iterations: {phase1_iterations}")
+    print(f"Phase 4 streaming iterations: {phase4_iterations}")
+    print(f"Original messages: {len(completed_chat.messages)}")
+    print(f"Reconstructed messages: {len(reconstructed_messages)}")
+    print(f"Final response mentions both input (BETA-7777) and output (8472/CONFIRMED)")

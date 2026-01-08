@@ -11,7 +11,7 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 
@@ -60,11 +60,15 @@ class OllamaModel(Model, ABC):
             for message in messages:
                 if message.role == "tool_call":
                     # Serialize ToolCallMessage as assistant message with tool_calls (OpenAI-compatible)
+                    # Convert ToolCall dataclasses to OpenAI format dicts
+                    tool_calls_dict = [
+                        tc.to_openai_format() for tc in message.tool_calls
+                    ]
                     ollama_messages.append(
                         {
                             "role": "assistant",
                             "content": "",
-                            "tool_calls": message.tool_calls,
+                            "tool_calls": tool_calls_dict,
                         }
                     )
                     continue
@@ -219,22 +223,19 @@ class OllamaModel(Model, ABC):
             return None
 
         tool_calls = []
-        for tool_call in response["message"]["tool_calls"]:
-            call_id = tool_call.get("id")
+        for tc in response["message"]["tool_calls"]:
+            call_id = tc.get("id")
             if not call_id:
-                call_id = (
-                    f"call_{tool_call['function']['name']}_{random.randint(1000, 9999)}"
-                )
+                call_id = f"call_{tc['function']['name']}_{random.randint(1000, 9999)}"
 
-            formatted_tool_call = {
-                "id": call_id,
-                "type": tool_call.get("type", "function"),
-                "function": {
-                    "name": tool_call["function"]["name"],
-                    "arguments": tool_call["function"]["arguments"],
-                },
-            }
-            tool_calls.append(formatted_tool_call)
+            tool_calls.append(
+                ToolCall(
+                    id=call_id,
+                    name=tc["function"]["name"],
+                    arguments=tc["function"]["arguments"],
+                    type=tc.get("type", "function"),
+                )
+            )
 
         if tool_calls:
             return ToolCallMessage(tool_calls)
