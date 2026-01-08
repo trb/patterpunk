@@ -1,7 +1,7 @@
 import base64
 import enum
 from abc import ABC
-from typing import List, Literal, Optional, Set, Union
+from typing import AsyncIterator, List, Literal, Optional, Set, Union
 
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
@@ -9,6 +9,7 @@ from patterpunk.config.defaults import (
 )
 from patterpunk.config.providers.openai import (
     openai,
+    openai_async,
     OPENAI_MAX_RETRIES,
 )
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
@@ -251,7 +252,13 @@ class OpenAiModel(Model, ABC):
             return False
 
         # Get all call_ids from this tool call message
-        call_ids = {tc["id"] for tc in tool_call_message.tool_calls}
+        # Handle both ToolCall dataclass objects and dict format
+        call_ids = set()
+        for tc in tool_call_message.tool_calls:
+            if hasattr(tc, "id"):
+                call_ids.add(tc.id)
+            elif isinstance(tc, dict):
+                call_ids.add(tc["id"])
 
         # Look for corresponding ToolResultMessage(s) after this tool call
         for i in range(tool_call_index + 1, len(messages)):
@@ -677,3 +684,166 @@ class OpenAiModel(Model, ABC):
     @staticmethod
     def get_available_models() -> List[str]:
         return [model.id for model in openai.models.list().data]
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Stream the assistant message response from OpenAI.
+
+        Yields StreamChunk objects for each streaming event.
+        Uses the OpenAI Responses API with stream=True.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        self._log_request_start(messages)
+
+        responses_parameters = self._prepare_request_parameters(
+            messages, tools, structured_output, output_types
+        )
+        responses_parameters["stream"] = True
+
+        self._log_request_parameters(responses_parameters)
+
+        stream = await openai_async.responses.create(**responses_parameters)
+
+        # Track current tool call state
+        current_tool_id = None
+        current_tool_name = None
+        usage_data = {}
+
+        async for event in stream:
+            chunk = self._convert_stream_event_to_chunk(
+                event, current_tool_id, current_tool_name
+            )
+
+            # Update tool call tracking based on events
+            event_type = getattr(event, "type", "")
+
+            if event_type == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if item and getattr(item, "type", "") == "function_call":
+                    current_tool_id = getattr(item, "call_id", None)
+                    current_tool_name = getattr(item, "name", None)
+
+            if event_type == "response.function_call_arguments.done":
+                # Reset after tool call completes
+                current_tool_id = None
+                current_tool_name = None
+
+            if event_type == "response.completed":
+                response = getattr(event, "response", None)
+                if response and hasattr(response, "usage"):
+                    usage = response.usage
+                    usage_data = {
+                        "input_tokens": getattr(usage, "input_tokens", 0),
+                        "output_tokens": getattr(usage, "output_tokens", 0),
+                    }
+
+            if chunk is not None:
+                yield chunk
+
+        # Yield final MESSAGE_END with usage data
+        yield StreamChunk(
+            event_type=StreamEventType.MESSAGE_END,
+            usage=usage_data if usage_data else None,
+        )
+
+    def _convert_stream_event_to_chunk(
+        self,
+        event,
+        current_tool_id: Optional[str],
+        current_tool_name: Optional[str],
+    ) -> Optional["StreamChunk"]:
+        """
+        Convert an OpenAI Responses API streaming event to a StreamChunk.
+
+        Returns None for events we don't need to expose.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        event_type = getattr(event, "type", "")
+
+        # Text delta - main content streaming
+        if event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.TEXT_DELTA,
+                    text=delta,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Tool use start - when a function call output item is added
+        elif event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", "") == "function_call":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_START,
+                    index=getattr(event, "output_index", 0),
+                    tool_call_id=getattr(item, "call_id", None),
+                    tool_name=getattr(item, "name", None),
+                )
+
+        # Tool arguments delta - incremental function arguments
+        elif event_type == "response.function_call_arguments.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_DELTA,
+                    tool_arguments_delta=delta,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Tool call complete - function arguments done
+        elif event_type == "response.function_call_arguments.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=getattr(event, "output_index", 0),
+            )
+
+        # Content block start - when text content part is added
+        elif event_type == "response.content_part.added":
+            part = getattr(event, "part", None)
+            if part and getattr(part, "type", "") == "output_text":
+                return StreamChunk(
+                    event_type=StreamEventType.CONTENT_BLOCK_START,
+                    index=getattr(event, "content_index", 0),
+                    block_type="text",
+                )
+
+        # Content block done
+        elif event_type == "response.content_part.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=getattr(event, "content_index", 0),
+            )
+
+        # Output item done
+        elif event_type == "response.output_item.done":
+            # Check if this was a function call completing
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", "") == "function_call":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_STOP,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Response completed - we handle usage in the main loop
+        elif event_type == "response.completed":
+            response = getattr(event, "response", None)
+            if response and hasattr(response, "usage"):
+                usage = response.usage
+                return StreamChunk(
+                    event_type=StreamEventType.MESSAGE_DELTA,
+                    usage={
+                        "input_tokens": getattr(usage, "input_tokens", 0),
+                        "output_tokens": getattr(usage, "output_tokens", 0),
+                    },
+                )
+
+        return None
