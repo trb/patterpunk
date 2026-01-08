@@ -4,6 +4,7 @@ from typing import AsyncIterator, List, Optional, Set, Union
 from patterpunk.config.providers.azure_openai import (
     azure_openai,
     azure_openai_async,
+    azure_openai_reasoning_async,
     AZURE_OPENAI_MAX_RETRIES,
 )
 from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
@@ -114,6 +115,42 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         # We cannot list them via API without additional permissions
         return []
 
+    def _is_reasoning_model(self, model: str) -> bool:
+        """Check if this is a reasoning model that uses thinking tokens."""
+        model_lower = model.lower()
+        return model_lower.startswith(("o1", "o3", "gpt-5"))
+
+    def _setup_model_parameters(
+        self,
+        model: str,
+        temperature: float,
+        top_p: float,
+        frequency_penalty: float,
+        presence_penalty: float,
+        logit_bias: dict,
+        reasoning_effort,
+    ) -> dict:
+        """
+        Override to add summary='auto' for reasoning models.
+
+        This enables streaming of thinking/reasoning summaries.
+        """
+        model_params = super()._setup_model_parameters(
+            model,
+            temperature,
+            top_p,
+            frequency_penalty,
+            presence_penalty,
+            logit_bias,
+            reasoning_effort,
+        )
+
+        # Add summary='auto' to get reasoning summaries streamed
+        if self._is_reasoning_model(model) and "reasoning" in model_params:
+            model_params["reasoning"]["summary"] = "auto"
+
+        return model_params
+
     async def stream_assistant_message(
         self,
         messages: List[Message],
@@ -125,14 +162,25 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         Stream the assistant message response from Azure OpenAI.
 
         Yields StreamChunk objects for each streaming event.
+        Uses the reasoning client for reasoning models (gpt-5.2, o1, o3-mini).
         """
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
-        if not azure_openai_async:
-            raise AzureOpenAiMissingConfigurationError(
-                "Azure OpenAI async client was not initialized. "
-                "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
-            )
+        # Use reasoning client for reasoning models, regular client otherwise
+        if self._is_reasoning_model(self.model):
+            if not azure_openai_reasoning_async:
+                raise AzureOpenAiMissingConfigurationError(
+                    "Azure OpenAI reasoning async client was not initialized. "
+                    "Check that PP_AZURE_OPENAI_API_KEY is set."
+                )
+            client = azure_openai_reasoning_async
+        else:
+            if not azure_openai_async:
+                raise AzureOpenAiMissingConfigurationError(
+                    "Azure OpenAI async client was not initialized. "
+                    "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
+                )
+            client = azure_openai_async
 
         self._log_request_start(messages)
 
@@ -143,7 +191,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
 
         self._log_request_parameters(responses_parameters)
 
-        stream = await azure_openai_async.responses.create(**responses_parameters)
+        stream = await client.responses.create(**responses_parameters)
 
         async for event in stream:
             chunk = self._convert_openai_event_to_chunk(event)
@@ -159,6 +207,27 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
         event_type = getattr(event, "type", None)
+
+        # Reasoning/thinking content deltas (for o1, o3-mini, etc.)
+        if event_type == "response.reasoning_summary_text.delta":
+            return StreamChunk(
+                event_type=StreamEventType.THINKING_DELTA,
+                text=event.delta,
+            )
+
+        # Reasoning summary part lifecycle (block start)
+        if event_type == "response.reasoning_summary_part.added":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_START,
+                block_type="thinking",
+            )
+
+        # Reasoning summary part done (block end)
+        if event_type == "response.reasoning_summary_part.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                block_type="thinking",
+            )
 
         # Text content deltas
         if event_type == "response.output_text.delta":
@@ -203,17 +272,60 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         # Response completed - end of stream
         if event_type == "response.completed":
             usage = None
+            thinking_blocks = None
             response = getattr(event, "response", None)
-            if response and hasattr(response, "usage"):
-                usage_obj = response.usage
-                usage = {
-                    "input_tokens": getattr(usage_obj, "input_tokens", 0),
-                    "output_tokens": getattr(usage_obj, "output_tokens", 0),
-                }
+
+            if response:
+                if hasattr(response, "usage"):
+                    usage_obj = response.usage
+                    usage = {
+                        "input_tokens": getattr(usage_obj, "input_tokens", 0),
+                        "output_tokens": getattr(usage_obj, "output_tokens", 0),
+                    }
+
+                # Extract reasoning/thinking blocks from completed response
+                thinking_blocks = self._extract_thinking_blocks_from_response(response)
 
             return StreamChunk(
                 event_type=StreamEventType.MESSAGE_END,
                 usage=usage,
+                thinking_blocks=thinking_blocks,
             )
 
         return None
+
+    def _extract_thinking_blocks_from_response(self, response) -> Optional[list]:
+        """
+        Extract thinking/reasoning blocks from OpenAI response.
+
+        OpenAI reasoning models include reasoning summaries in the response output.
+        We convert these to a format compatible with patterpunk's thinking_blocks.
+        """
+        thinking_blocks = []
+
+        output = getattr(response, "output", None)
+        if not output:
+            return None
+
+        for item in output:
+            item_type = getattr(item, "type", None)
+
+            # Handle reasoning summary items
+            if item_type == "reasoning":
+                summary = getattr(item, "summary", None)
+                if summary:
+                    # Summary can be a list of content parts
+                    if isinstance(summary, list):
+                        for part in summary:
+                            if getattr(part, "type", None) == "summary_text":
+                                thinking_blocks.append({
+                                    "type": "thinking",
+                                    "thinking": getattr(part, "text", ""),
+                                })
+                    elif isinstance(summary, str):
+                        thinking_blocks.append({
+                            "type": "thinking",
+                            "thinking": summary,
+                        })
+
+        return thinking_blocks if thinking_blocks else None
