@@ -2,7 +2,10 @@ import json
 import random
 import time
 from abc import ABC
-from typing import List, Optional, Set, Union
+from typing import AsyncIterator, List, Optional, Set, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from patterpunk.llm.streaming import StreamChunk
 
 from patterpunk.config.providers.google import (
     GOOGLE_APPLICATION_CREDENTIALS,
@@ -302,13 +305,71 @@ class GoogleModel(Model, ABC):
         finally:
             os.unlink(tmp_file_path)
 
+    def _batch_consecutive_tool_results(self, messages: List[Message]) -> List:
+        """
+        Batch consecutive tool_result messages into a single batch message.
+
+        Google requires all function responses for a single function call turn
+        to be in a single Content message. This method groups consecutive
+        tool_result messages together.
+        """
+        result = []
+        pending_results = []
+
+        for message in messages:
+            if message.role == "tool_result":
+                # Validate required field for Google
+                if not message.function_name:
+                    raise ValueError(
+                        "Google Vertex AI requires function_name in ToolResultMessage."
+                    )
+
+                # Parse content as JSON and ensure it's a dict
+                try:
+                    response_data = json.loads(message.content)
+                    if not isinstance(response_data, dict):
+                        response_data = {"result": response_data}
+                except (json.JSONDecodeError, TypeError):
+                    response_data = {"result": message.content}
+
+                pending_results.append(
+                    {"name": message.function_name, "response": response_data}
+                )
+            else:
+                # Flush any pending results before adding non-tool-result message
+                if pending_results:
+                    # Create a batch object with role and results
+                    batch = type(
+                        "ToolResultBatch",
+                        (),
+                        {"role": "tool_result_batch", "results": pending_results},
+                    )()
+                    result.append(batch)
+                    pending_results = []
+                result.append(message)
+
+        # Flush any remaining results at the end
+        if pending_results:
+            batch = type(
+                "ToolResultBatch",
+                (),
+                {"role": "tool_result_batch", "results": pending_results},
+            )()
+            result.append(batch)
+
+        return result
+
     def _convert_messages_for_google_with_cache(
         self, messages: List[Message]
     ) -> tuple[List[types.Content], dict[str, str]]:
         contents = []
         all_cache_mappings = {}
 
-        for message in messages:
+        # Pre-process: batch consecutive tool_result messages
+        # Google requires all function responses for a single turn in one Content
+        batched_messages = self._batch_consecutive_tool_results(messages)
+
+        for message in batched_messages:
             if message.role == ROLE_SYSTEM:
                 continue
 
@@ -332,6 +393,18 @@ class GoogleModel(Model, ABC):
                 contents.append(types.Content(role="model", parts=parts))
                 continue
 
+            if message.role == "tool_result_batch":
+                # Handle batched tool results (multiple results in one Content)
+                parts = []
+                for tool_result in message.results:
+                    parts.append(
+                        types.Part.from_function_response(
+                            name=tool_result["name"], response=tool_result["response"]
+                        )
+                    )
+                contents.append(types.Content(role="user", parts=parts))
+                continue
+
             if message.role == "tool_result":
                 # Validate required field for Google
                 if not message.function_name:
@@ -340,9 +413,12 @@ class GoogleModel(Model, ABC):
                         "Ensure ToolResultMessage is created with function_name from the original ToolCallMessage."
                     )
 
-                # Try to parse content as JSON; fall back to wrapping in result object
+                # Parse content as JSON and ensure it's a dict for Google API
                 try:
                     response_data = json.loads(message.content)
+                    # Google requires response to be a dict
+                    if not isinstance(response_data, dict):
+                        response_data = {"result": response_data}
                 except (json.JSONDecodeError, TypeError):
                     response_data = {"result": message.content}
 
@@ -647,3 +723,116 @@ class GoogleModel(Model, ABC):
             client=self.client,
             thinking_config=self.thinking_config,
         )
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Stream the assistant message response from Google Vertex AI.
+
+        Yields StreamChunk objects for each streaming event.
+        Uses the client.aio.models.generate_content_stream() async API.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        contents, config, _ = self._prepare_generation_request(
+            messages, tools, structured_output, output_types
+        )
+
+        usage_info = None
+
+        # Use the async streaming API via client.aio
+        async for chunk in await self.client.aio.models.generate_content_stream(
+            model=self.model, contents=contents, config=config
+        ):
+            # Yield all events from this chunk
+            for stream_chunk in self._convert_stream_chunk_to_events(chunk):
+                yield stream_chunk
+
+            # Check for usage metadata in the chunk
+            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                usage_info = {
+                    "input_tokens": getattr(
+                        chunk.usage_metadata, "prompt_token_count", 0
+                    ),
+                    "output_tokens": getattr(
+                        chunk.usage_metadata, "candidates_token_count", 0
+                    ),
+                }
+
+        # Yield final MESSAGE_END event with usage statistics
+        yield StreamChunk(
+            event_type=StreamEventType.MESSAGE_END,
+            usage=usage_info or {"input_tokens": 0, "output_tokens": 0},
+        )
+
+    def _convert_stream_chunk_to_events(self, chunk) -> List["StreamChunk"]:
+        """
+        Convert a Google streaming chunk to StreamChunk events.
+
+        Returns a list of events. Google returns function calls complete in a single
+        chunk, so we yield TOOL_USE_START, TOOL_USE_DELTA, and CONTENT_BLOCK_STOP
+        for each function call to match the expected streaming protocol.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        events = []
+
+        # Skip empty chunks or chunks without candidates
+        if not hasattr(chunk, "candidates") or not chunk.candidates:
+            return events
+
+        candidate = chunk.candidates[0]
+        if not hasattr(candidate, "content") or not candidate.content:
+            return events
+
+        if not hasattr(candidate.content, "parts") or not candidate.content.parts:
+            return events
+
+        for part in candidate.content.parts:
+            # Handle text content
+            if hasattr(part, "text") and part.text:
+                events.append(
+                    StreamChunk(
+                        event_type=StreamEventType.TEXT_DELTA,
+                        text=part.text,
+                    )
+                )
+
+            # Handle function calls
+            # Google returns function calls complete in a single chunk,
+            # so we emit TOOL_USE_START, TOOL_USE_DELTA, and CONTENT_BLOCK_STOP
+            elif hasattr(part, "function_call") and part.function_call is not None:
+                func_call = part.function_call
+                tool_call_id = f"call_{func_call.name}_{random.randint(1000, 9999)}"
+
+                # Emit TOOL_USE_START with id and name
+                events.append(
+                    StreamChunk(
+                        event_type=StreamEventType.TOOL_USE_START,
+                        tool_call_id=tool_call_id,
+                        tool_name=func_call.name,
+                    )
+                )
+
+                # Emit TOOL_USE_DELTA with arguments
+                args_json = json.dumps(dict(func_call.args)) if func_call.args else "{}"
+                events.append(
+                    StreamChunk(
+                        event_type=StreamEventType.TOOL_USE_DELTA,
+                        tool_arguments_delta=args_json,
+                    )
+                )
+
+                # Emit CONTENT_BLOCK_STOP to finalize the tool call
+                events.append(
+                    StreamChunk(
+                        event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                    )
+                )
+
+        return events

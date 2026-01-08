@@ -3,7 +3,7 @@ services:
     build: patterpunk
     restart: unless-stopped
     volumes:
-      - /home/thomas/Code/patterpunk/patterpunk/src:/app
+      - ./patterpunk/src:/app
     environment:
       # Flush print statements immediately
       PYTHONUNBUFFERED: 1
