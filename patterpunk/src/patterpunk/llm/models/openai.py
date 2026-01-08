@@ -251,7 +251,13 @@ class OpenAiModel(Model, ABC):
             return False
 
         # Get all call_ids from this tool call message
-        call_ids = {tc["id"] for tc in tool_call_message.tool_calls}
+        # Handle both ToolCall dataclass objects and dict format
+        call_ids = set()
+        for tc in tool_call_message.tool_calls:
+            if hasattr(tc, "id"):
+                call_ids.add(tc.id)
+            elif isinstance(tc, dict) and "id" in tc:
+                call_ids.add(tc["id"])
 
         # Look for corresponding ToolResultMessage(s) after this tool call
         for i in range(tool_call_index + 1, len(messages)):
