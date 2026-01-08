@@ -1,7 +1,8 @@
+import asyncio
 import json
 import random
 from abc import ABC
-from typing import List, Optional, Set, Union
+from typing import AsyncIterator, List, Optional, Set, Union
 import time
 
 from patterpunk.config.defaults import (
@@ -13,6 +14,7 @@ from patterpunk.config.defaults import (
 from patterpunk.config.providers.bedrock import (
     boto3,
     get_bedrock_client_by_region,
+    create_bedrock_client_for_streaming,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 
@@ -490,6 +492,171 @@ class BedrockModel(Model, ABC):
                 "modelSummaries"
             ]
         ]
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Stream the assistant message response from AWS Bedrock.
+
+        Yields StreamChunk objects for each streaming event.
+
+        Since boto3 doesn't have native async support, this method runs the
+        synchronous converse_stream call in a thread pool executor and yields
+        chunks asynchronously.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        logger.info("Request to AWS Bedrock (streaming) made")
+        logger_llm.info(
+            f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
+        )
+
+        converse_params = self._build_converse_params(
+            messages, tools, structured_output
+        )
+
+        # Get region from existing client for creating streaming client
+        region_name = self.client.meta.region_name
+
+        # Create a fresh client for this streaming operation
+        # This avoids thread-safety issues with sharing clients
+        streaming_client = create_bedrock_client_for_streaming(region=region_name)
+
+        # Run the synchronous API call in a thread pool
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: streaming_client.converse_stream(**converse_params)
+        )
+
+        stream = response.get("stream")
+        if not stream:
+            raise ValueError("No stream returned from converse_stream")
+
+        # Yield chunks from the EventStream
+        # Use a queue to pass events from sync iteration to async context
+        async for chunk in self._iterate_stream_events(stream):
+            yield chunk
+
+    async def _iterate_stream_events(self, stream) -> AsyncIterator["StreamChunk"]:
+        """
+        Iterate over boto3 EventStream and yield StreamChunks.
+
+        Since EventStream iteration is synchronous, we wrap each iteration
+        in run_in_executor to avoid blocking the event loop.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        loop = asyncio.get_event_loop()
+        iterator = iter(stream)
+        usage = None
+
+        while True:
+            try:
+                event = await loop.run_in_executor(None, next, iterator)
+            except StopIteration:
+                break
+
+            # Extract metadata/usage from metadata event
+            if "metadata" in event:
+                metadata = event["metadata"]
+                if "usage" in metadata:
+                    usage = {
+                        "input_tokens": metadata["usage"].get("inputTokens", 0),
+                        "output_tokens": metadata["usage"].get("outputTokens", 0),
+                    }
+                continue
+
+            chunk = self._convert_stream_event_to_chunk(event)
+            if chunk is not None:
+                yield chunk
+
+        # Yield MESSAGE_END with usage after stream completes
+        yield StreamChunk(
+            event_type=StreamEventType.MESSAGE_END,
+            usage=usage or {},
+        )
+
+    def _convert_stream_event_to_chunk(self, event: dict) -> Optional["StreamChunk"]:
+        """
+        Convert a Bedrock streaming event to a StreamChunk.
+
+        Returns None for events we don't need to expose.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        # messageStart - start of message
+        if "messageStart" in event:
+            return None  # We don't expose message start
+
+        # contentBlockStart - start of a content block
+        if "contentBlockStart" in event:
+            block_start = event["contentBlockStart"]
+            index = block_start.get("contentBlockIndex", 0)
+            start = block_start.get("start", {})
+
+            # Tool use start
+            if "toolUse" in start:
+                tool_use = start["toolUse"]
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_START,
+                    index=index,
+                    tool_call_id=tool_use.get("toolUseId"),
+                    tool_name=tool_use.get("name"),
+                )
+            # Text content start
+            elif "text" in start:
+                return StreamChunk(
+                    event_type=StreamEventType.CONTENT_BLOCK_START,
+                    index=index,
+                    block_type="text",
+                )
+
+            return None
+
+        # contentBlockDelta - incremental content
+        if "contentBlockDelta" in event:
+            block_delta = event["contentBlockDelta"]
+            index = block_delta.get("contentBlockIndex", 0)
+            delta = block_delta.get("delta", {})
+
+            # Text delta
+            if "text" in delta:
+                return StreamChunk(
+                    event_type=StreamEventType.TEXT_DELTA,
+                    text=delta["text"],
+                    index=index,
+                )
+            # Tool use input delta
+            elif "toolUse" in delta:
+                tool_delta = delta["toolUse"]
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_DELTA,
+                    tool_arguments_delta=tool_delta.get("input", ""),
+                    index=index,
+                )
+
+            return None
+
+        # contentBlockStop - end of a content block
+        if "contentBlockStop" in event:
+            block_stop = event["contentBlockStop"]
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=block_stop.get("contentBlockIndex", 0),
+            )
+
+        # messageStop - end of message (stop reason but not final)
+        if "messageStop" in event:
+            return StreamChunk(
+                event_type=StreamEventType.MESSAGE_DELTA,
+            )
+
+        return None
 
     def __deepcopy__(self, memo_dict):
         return BedrockModel(

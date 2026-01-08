@@ -51,6 +51,26 @@ def get_bedrock_client_by_region(
         )
 
 
+def create_bedrock_client_for_streaming(
+    region: Optional[str] = None,
+    aws_access_key_id: Optional[str] = None,
+    aws_secret_access_key: Optional[str] = None,
+):
+    """
+    Create a new boto3 bedrock-runtime client for streaming.
+
+    This creates a fresh client instance needed for async streaming operations.
+    The boto3 EventStream is not thread-safe, so each streaming operation
+    needs its own client when run in a thread pool.
+    """
+    return get_bedrock_client_by_region(
+        client_type="bedrock-runtime",
+        region=region,
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+    )
+
+
 def is_bedrock_available() -> bool:
     return AWS_REGION is not None
 
