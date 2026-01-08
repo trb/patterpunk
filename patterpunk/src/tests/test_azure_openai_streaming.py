@@ -440,7 +440,9 @@ async def test_stream_thinking_and_content():
     # We verify the iterator works but don't require thinking to be present
     # If thinking was produced, verify it's captured correctly
     if thinking_iterations > 0:
-        assert accumulated_thinking, "Thinking iterations occurred but no content captured"
+        assert (
+            accumulated_thinking
+        ), "Thinking iterations occurred but no content captured"
         assert final_chat.latest_message.has_thinking
         assert len(final_chat.latest_message.thinking_blocks) > 0
 
@@ -598,7 +600,9 @@ async def test_stream_thinking_delta_iterators():
     chat = Chat(
         model=AzureOpenAiModel(
             deployment_name=AZURE_REASONING_DEPLOYMENT,
-            thinking_config=ThinkingConfig(effort="medium"),  # Use medium to ensure reasoning
+            thinking_config=ThinkingConfig(
+                effort="medium"
+            ),  # Use medium to ensure reasoning
         )
     )
 

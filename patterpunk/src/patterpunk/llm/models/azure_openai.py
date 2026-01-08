@@ -318,14 +318,18 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                     if isinstance(summary, list):
                         for part in summary:
                             if getattr(part, "type", None) == "summary_text":
-                                thinking_blocks.append({
-                                    "type": "thinking",
-                                    "thinking": getattr(part, "text", ""),
-                                })
+                                thinking_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": getattr(part, "text", ""),
+                                    }
+                                )
                     elif isinstance(summary, str):
-                        thinking_blocks.append({
-                            "type": "thinking",
-                            "thinking": summary,
-                        })
+                        thinking_blocks.append(
+                            {
+                                "type": "thinking",
+                                "thinking": summary,
+                            }
+                        )
 
         return thinking_blocks if thinking_blocks else None
