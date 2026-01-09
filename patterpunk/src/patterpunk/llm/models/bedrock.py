@@ -222,7 +222,9 @@ class BedrockModel(Model, ABC):
                         # Only add blocks that have actual content (text or signature)
                         thinking_text = block.get("thinking", "")
                         signature = block.get("signature", "")
-                        if block.get("type") == "thinking" and (thinking_text or signature):
+                        if block.get("type") == "thinking" and (
+                            thinking_text or signature
+                        ):
                             reasoning_content = {
                                 "reasoningContent": {
                                     "reasoningText": {

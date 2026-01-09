@@ -236,15 +236,17 @@ def test_simple_tool_calling():
 
     # The response should include the weather info from the tool
     response_lower = response.latest_message.content.lower()
-    assert "sunny" in response_lower or "22" in response_lower, (
-        f"Expected weather info in response. Got: {response.latest_message.content}"
-    )
+    assert (
+        "sunny" in response_lower or "22" in response_lower
+    ), f"Expected weather info in response. Got: {response.latest_message.content}"
 
     # Verify a ToolCallMessage exists in the history (tool was called)
     tool_call_messages = [
         msg for msg in response.messages if isinstance(msg, ToolCallMessage)
     ]
-    assert len(tool_call_messages) >= 1, "Expected at least one ToolCallMessage in history"
+    assert (
+        len(tool_call_messages) >= 1
+    ), "Expected at least one ToolCallMessage in history"
 
 
 def test_tool_calling():
@@ -296,15 +298,17 @@ def test_tool_calling():
 
     # The response should include the area calculation result from the tool
     response_lower = response.latest_message.content.lower()
-    assert "15" in response_lower or "area" in response_lower, (
-        f"Expected area calculation result in response. Got: {response.latest_message.content}"
-    )
+    assert (
+        "15" in response_lower or "area" in response_lower
+    ), f"Expected area calculation result in response. Got: {response.latest_message.content}"
 
     # Verify ToolCallMessage exists in the history (tool was called)
     tool_call_messages = [
         msg for msg in response.messages if isinstance(msg, ToolCallMessage)
     ]
-    assert len(tool_call_messages) >= 1, "Expected at least one ToolCallMessage in history"
+    assert (
+        len(tool_call_messages) >= 1
+    ), "Expected at least one ToolCallMessage in history"
 
     # Get tool calls from history to verify correct parameters were used
     import json
