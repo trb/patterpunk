@@ -51,7 +51,8 @@ class BedrockModel(Model, ABC):
         self,
         model_id: str,
         temperature: float = DEFAULT_TEMPERATURE,
-        top_p: float = DEFAULT_TOP_P,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         region_name: Optional[str] = None,
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
@@ -59,7 +60,8 @@ class BedrockModel(Model, ABC):
     ):
         self.model_id = model_id
         self.temperature = temperature
-        self.top_p = top_p
+        self.top_p = top_p  # None means don't specify (some models don't allow both temp and top_p)
+        self.max_tokens = max_tokens
         self.thinking_config = thinking_config
 
         self.client = get_bedrock_client_by_region(
@@ -210,7 +212,27 @@ class BedrockModel(Model, ABC):
         for message in messages:
             if message.role == "tool_call":
                 # Serialize ToolCallMessage as assistant message with toolUse content blocks
+                # When extended thinking is enabled, thinking blocks must come FIRST
                 content_blocks = []
+
+                # Add thinking blocks first (required by Bedrock when thinking is enabled)
+                # Bedrock expects: {"reasoningContent": {"reasoningText": {"text": "...", "signature": "..."}}}
+                if hasattr(message, "thinking_blocks") and message.thinking_blocks:
+                    for block in message.thinking_blocks:
+                        # Only add blocks that have actual content (text or signature)
+                        thinking_text = block.get("thinking", "")
+                        signature = block.get("signature", "")
+                        if block.get("type") == "thinking" and (thinking_text or signature):
+                            reasoning_content = {
+                                "reasoningContent": {
+                                    "reasoningText": {
+                                        "text": thinking_text,
+                                        "signature": signature,
+                                    }
+                                }
+                            }
+                            content_blocks.append(reasoning_content)
+
                 for tool_call in message.tool_calls:
                     # Parse arguments from JSON string
                     try:
@@ -240,24 +262,31 @@ class BedrockModel(Model, ABC):
                         "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
                     )
 
-                # Serialize as user message with toolResult content block
+                # Create toolResult block
                 # Bedrock uses status field instead of is_error boolean
-                bedrock_messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "toolResult": {
-                                    "toolUseId": message.call_id,
-                                    "content": [{"text": message.content}],
-                                    "status": (
-                                        "error" if message.is_error else "success"
-                                    ),
-                                }
-                            }
-                        ],
+                tool_result_block = {
+                    "toolResult": {
+                        "toolUseId": message.call_id,
+                        "content": [{"text": message.content}],
+                        "status": "error" if message.is_error else "success",
                     }
-                )
+                }
+
+                # Bedrock requires consecutive tool results to be merged into a SINGLE user message
+                # Check if the previous message is also a user message with toolResult blocks
+                if (
+                    bedrock_messages
+                    and bedrock_messages[-1]["role"] == "user"
+                    and bedrock_messages[-1]["content"]
+                    and "toolResult" in bedrock_messages[-1]["content"][0]
+                ):
+                    # Append to existing user message with toolResult blocks
+                    bedrock_messages[-1]["content"].append(tool_result_block)
+                else:
+                    # Create new user message
+                    bedrock_messages.append(
+                        {"role": "user", "content": [tool_result_block]}
+                    )
 
             else:
                 # Handle regular messages (user, assistant)
@@ -321,12 +350,23 @@ class BedrockModel(Model, ABC):
     ) -> dict:
         inference_config = {
             "temperature": self.temperature,
-            "topP": self.top_p,
         }
+
+        # Only add topP if explicitly specified (some models like Claude 4.5 don't allow both)
+        if self.top_p is not None:
+            inference_config["topP"] = self.top_p
+
+        # Add max_tokens if specified
+        if self.max_tokens:
+            inference_config["maxTokens"] = self.max_tokens
 
         thinking_params = self._get_thinking_params()
         if thinking_params.get("reasoning_config"):
             inference_config.pop("topP", None)
+            # Extended thinking requires max_tokens > budget_tokens
+            budget = thinking_params["reasoning_config"].get("budget_tokens", 1024)
+            if not self.max_tokens or self.max_tokens <= budget:
+                inference_config["maxTokens"] = budget + 2000
 
         return inference_config
 
@@ -555,10 +595,22 @@ class BedrockModel(Model, ABC):
         iterator = iter(stream)
         usage = None
 
-        while True:
+        # Track thinking blocks with signatures for MESSAGE_END
+        # Key: contentBlockIndex, Value: {"text": accumulated_text, "signature": signature}
+        thinking_block_state: Dict[int, Dict[str, str]] = {}
+
+        # Sentinel to detect end of iteration - StopIteration can't propagate through run_in_executor
+        _STREAM_END = object()
+
+        def _next_event():
             try:
-                event = await loop.run_in_executor(None, next, iterator)
+                return next(iterator)
             except StopIteration:
+                return _STREAM_END
+
+        while True:
+            event = await loop.run_in_executor(None, _next_event)
+            if event is _STREAM_END:
                 break
 
             # Extract metadata/usage from metadata event
@@ -571,14 +623,46 @@ class BedrockModel(Model, ABC):
                     }
                 continue
 
+            # Track reasoning content for building complete thinking blocks
+            if "contentBlockDelta" in event:
+                block_delta = event["contentBlockDelta"]
+                index = block_delta.get("contentBlockIndex", 0)
+                delta = block_delta.get("delta", {})
+
+                if "reasoningContent" in delta:
+                    reasoning = delta["reasoningContent"]
+                    if index not in thinking_block_state:
+                        thinking_block_state[index] = {"text": "", "signature": ""}
+
+                    if "text" in reasoning:
+                        thinking_block_state[index]["text"] += reasoning["text"]
+                    if "signature" in reasoning:
+                        thinking_block_state[index]["signature"] = reasoning[
+                            "signature"
+                        ]
+
             chunk = self._convert_stream_event_to_chunk(event)
             if chunk is not None:
                 yield chunk
 
-        # Yield MESSAGE_END with usage after stream completes
+        # Build complete thinking blocks with signatures
+        thinking_blocks = []
+        for index in sorted(thinking_block_state.keys()):
+            block = thinking_block_state[index]
+            if block["text"] or block["signature"]:
+                thinking_blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block["text"],
+                        "signature": block["signature"],
+                    }
+                )
+
+        # Yield MESSAGE_END with usage and thinking blocks
         yield StreamChunk(
             event_type=StreamEventType.MESSAGE_END,
             usage=usage or {},
+            thinking_blocks=thinking_blocks if thinking_blocks else None,
         )
 
     def _convert_stream_event_to_chunk(self, event: dict) -> Optional["StreamChunk"]:
@@ -639,6 +723,15 @@ class BedrockModel(Model, ABC):
                     tool_arguments_delta=tool_delta.get("input", ""),
                     index=index,
                 )
+            # Reasoning/thinking content delta (for Claude models with extended thinking)
+            elif "reasoningContent" in delta:
+                reasoning_content = delta["reasoningContent"]
+                if "text" in reasoning_content:
+                    return StreamChunk(
+                        event_type=StreamEventType.THINKING_DELTA,
+                        text=reasoning_content["text"],
+                        index=index,
+                    )
 
             return None
 
@@ -663,6 +756,7 @@ class BedrockModel(Model, ABC):
             model_id=self.model_id,
             temperature=self.temperature,
             top_p=self.top_p,
+            max_tokens=self.max_tokens,
             region_name=self.client.meta.region_name,
             thinking_config=self.thinking_config,
         )
