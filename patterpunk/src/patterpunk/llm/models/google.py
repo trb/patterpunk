@@ -508,9 +508,9 @@ class GoogleModel(Model, ABC):
         if self.thinking_budget is not None or self.include_thoughts:
             thinking_config_kwargs = {}
             if self.thinking_budget is not None:
-                thinking_config_kwargs["thinking_budget"] = self.thinking_budget
+                thinking_config_kwargs["thinkingBudget"] = self.thinking_budget
             if self.include_thoughts:
-                thinking_config_kwargs["include_thoughts"] = self.include_thoughts
+                thinking_config_kwargs["includeThoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
 
         if system_instruction:
@@ -794,11 +794,18 @@ class GoogleModel(Model, ABC):
             return events
 
         for part in candidate.content.parts:
-            # Handle text content
+            # Handle text content (check if it's thinking or regular text)
             if hasattr(part, "text") and part.text:
+                # part.thought is a boolean flag indicating thinking content
+                is_thinking = getattr(part, "thought", False)
+                event_type = (
+                    StreamEventType.THINKING_DELTA
+                    if is_thinking
+                    else StreamEventType.TEXT_DELTA
+                )
                 events.append(
                     StreamChunk(
-                        event_type=StreamEventType.TEXT_DELTA,
+                        event_type=event_type,
                         text=part.text,
                     )
                 )

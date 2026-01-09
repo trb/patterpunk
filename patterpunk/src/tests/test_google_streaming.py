@@ -9,6 +9,7 @@ during streaming.
 import pytest
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.models.google import GoogleModel
+from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
@@ -18,16 +19,36 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 
 # Use a flash model for faster tests
 GOOGLE_TEST_MODEL = "gemini-2.5-flash"
-GOOGLE_TEST_LOCATION = "northamerica-northeast1"
+GOOGLE_TEST_LOCATION = (
+    "us-central1"  # Iowa - Canada regions no longer support Gemini models
+)
 
 
-def get_test_model(max_tokens: int = 256, temperature: float = 0.0) -> GoogleModel:
+@pytest.fixture(autouse=True)
+def reset_google_client():
+    """Reset the shared GoogleModel client before each test.
+
+    The GoogleModel uses a class-level shared client. When running multiple async
+    tests, the event loop closes between tests but the httpx client inside the
+    Google genai client becomes stale. Resetting forces a fresh client per test.
+    """
+    GoogleModel.client = None
+    yield
+    GoogleModel.client = None
+
+
+def get_test_model(
+    max_tokens: int = 256,
+    temperature: float = 0.0,
+    thinking_config: ThinkingConfig = None,
+) -> GoogleModel:
     """Create a GoogleModel for testing."""
     return GoogleModel(
         model=GOOGLE_TEST_MODEL,
         location=GOOGLE_TEST_LOCATION,
         temperature=temperature,
         max_tokens=max_tokens,
+        thinking_config=thinking_config,
     )
 
 
@@ -358,3 +379,215 @@ async def test_stream_multiple_tool_rounds():
     # Calculate sum returns 42 for 15 + 27
     assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
     assert "42" in accumulated_content
+
+
+@pytest.mark.asyncio
+async def test_stream_thinking_and_content():
+    """
+    Test streaming with thinking blocks enabled (reasoning model).
+
+    Validates that:
+    1. Thinking content streams first in the thinking phase
+    2. Content streams second in the content phase
+    3. Both thinking and content are captured in the final message
+
+    Note: Google's thought summaries require includeThoughts=True and a prompt
+    complex enough to trigger extended reasoning.
+    """
+    chat = Chat(
+        model=get_test_model(
+            max_tokens=8000,
+            temperature=1.0,
+            thinking_config=ThinkingConfig(token_budget=8000, include_thoughts=True),
+        )
+    )
+
+    # Use a brain teaser that requires extended reasoning to trigger thought summaries
+    chat = chat.add_message(
+        SystemMessage("You are a helpful puzzle solver. Show your complete reasoning.")
+    ).add_message(
+        UserMessage(
+            "A farmer needs to cross a river with a wolf, a goat, and a cabbage. "
+            "The boat can only carry the farmer and one item at a time. "
+            "If left alone together, the wolf will eat the goat, and the goat will eat the cabbage. "
+            "How can the farmer get everything across safely?"
+        )
+    )
+
+    accumulated_thinking = ""
+    accumulated_content = ""
+    thinking_iterations = 0
+    content_iterations = 0
+
+    async with chat.complete_stream() as stream:
+        # First iterate through thinking
+        async for thinking in stream.thinking:
+            thinking_iterations += 1
+            # Each yield should be accumulated
+            assert len(thinking) >= len(accumulated_thinking)
+            accumulated_thinking = thinking
+
+        # Then iterate through content
+        async for content in stream.content:
+            content_iterations += 1
+            assert len(content) >= len(accumulated_content)
+            accumulated_content = content
+
+    # Verify streaming occurred (Google may batch more aggressively)
+    assert (
+        thinking_iterations >= 1
+    ), f"Expected at least one thinking iteration, got {thinking_iterations}"
+    assert (
+        content_iterations >= 1
+    ), f"Expected at least one content iteration, got {content_iterations}"
+
+    # Verify final chat
+    final_chat = await stream.chat
+    assert final_chat is not None
+    assert final_chat.latest_message is not None
+
+    # Content should contain part of the solution (goat is taken first)
+    assert "goat" in accumulated_content.lower()
+
+    # Thinking should have been generated and captured
+    assert accumulated_thinking, "Expected thinking content to be generated"
+    assert final_chat.latest_message.has_thinking
+    assert len(final_chat.latest_message.thinking_blocks) > 0
+
+
+@pytest.mark.asyncio
+async def test_stream_content_only_auto_drains_thinking():
+    """
+    Test that iterating content without thinking auto-drains thinking.
+
+    When a consumer only cares about content, they shouldn't have to
+    explicitly iterate thinking first. The stream should auto-drain it.
+    """
+    chat = Chat(
+        model=get_test_model(
+            max_tokens=4000,
+            temperature=1.0,
+            thinking_config=ThinkingConfig(token_budget=2000, include_thoughts=True),
+        )
+    )
+
+    chat = chat.add_message(SystemMessage("You are a helpful assistant.")).add_message(
+        UserMessage("What is 5 + 7?")
+    )
+
+    accumulated_content = ""
+    content_iterations = 0
+
+    async with chat.complete_stream() as stream:
+        # Skip thinking, go straight to content
+        async for content in stream.content:
+            content_iterations += 1
+            accumulated_content = content
+
+    # Verify streaming occurred
+    assert (
+        content_iterations >= 1
+    ), f"Expected at least one content iteration, got {content_iterations}"
+
+    # Should still work and have the answer
+    final_chat = await stream.chat
+    assert final_chat is not None
+    assert "12" in accumulated_content
+
+
+@pytest.mark.asyncio
+async def test_stream_with_thinking_and_tool_call():
+    """
+    Test that tool calling works correctly when thinking is enabled.
+
+    Verifies:
+    1. Tool is called correctly during streaming
+    2. Tool result is incorporated into the response
+    3. Message history shows correct sequence
+    4. Thinking is captured if returned (Google's thought summaries are best-effort)
+    """
+    event_log = []
+
+    def tracked_calculate_sum(a: int, b: int) -> int:
+        """Calculate the sum of two numbers.
+
+        Args:
+            a: First number
+            b: Second number
+
+        Returns:
+            The sum of a and b
+        """
+        event_log.append(("tool_called", {"a": a, "b": b, "result": a + b}))
+        return a + b
+
+    chat = Chat(
+        model=get_test_model(
+            max_tokens=8000,
+            temperature=1.0,
+            thinking_config=ThinkingConfig(token_budget=8000, include_thoughts=True),
+        )
+    ).with_tools([tracked_calculate_sum])
+
+    chat = chat.add_message(
+        SystemMessage(
+            "You are a math assistant. You MUST use the tracked_calculate_sum tool "
+            "for ALL calculations. After getting the result, explain whether the sum "
+            "is odd or even and why."
+        )
+    ).add_message(UserMessage("What is 8473 + 9156? Is the result odd or even?"))
+
+    accumulated_content = ""
+    thinking_iterations = 0
+    content_iterations = 0
+
+    async with chat.complete_stream() as stream:
+        # Consume thinking (may or may not have content - Google's thought summaries are best-effort)
+        async for _ in stream.thinking:
+            thinking_iterations += 1
+
+        async for content in stream.content:
+            content_iterations += 1
+            accumulated_content = content
+
+    # Verify content streaming occurred
+    assert (
+        content_iterations >= 1
+    ), f"Expected content iterations, got {content_iterations}"
+
+    # Response should contain the correct answer (17629, possibly formatted as 17,629)
+    assert "17629" in accumulated_content or "17,629" in accumulated_content
+
+    final_chat = await stream.chat
+
+    # Verify tool was actually invoked via event log
+    tool_events = [e for e in event_log if e[0] == "tool_called"]
+    assert len(tool_events) >= 1, f"Tool was never invoked. Event log: {event_log}"
+    assert (
+        tool_events[0][1]["a"] == 8473
+    ), f"Expected a=8473, got {tool_events[0][1]['a']}"
+    assert (
+        tool_events[0][1]["b"] == 9156
+    ), f"Expected b=9156, got {tool_events[0][1]['b']}"
+    assert tool_events[0][1]["result"] == 17629
+
+    # Verify message history shows the correct sequence
+    message_types = [type(m).__name__ for m in final_chat.messages]
+    assert any(
+        isinstance(m, ToolCallMessage) for m in final_chat.messages
+    ), f"No ToolCallMessage found in message history. Types: {message_types}"
+    assert any(
+        isinstance(m, ToolResultMessage) for m in final_chat.messages
+    ), f"No ToolResultMessage found in message history. Types: {message_types}"
+
+    # Verify sequence: ToolCallMessage → ToolResultMessage → final AssistantMessage
+    tool_call_idx = next(
+        i for i, m in enumerate(final_chat.messages) if isinstance(m, ToolCallMessage)
+    )
+    tool_result_idx = next(
+        i for i, m in enumerate(final_chat.messages) if isinstance(m, ToolResultMessage)
+    )
+    assert tool_call_idx < tool_result_idx, (
+        f"ToolCallMessage (idx {tool_call_idx}) should come before "
+        f"ToolResultMessage (idx {tool_result_idx})"
+    )
