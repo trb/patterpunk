@@ -62,6 +62,18 @@ def create_bedrock_client_for_streaming(
     This creates a fresh client instance needed for async streaming operations.
     The boto3 EventStream is not thread-safe, so each streaming operation
     needs its own client when run in a thread pool.
+
+    Note: boto3 clients internally use connection pooling via urllib3, so
+    creating multiple clients doesn't create multiple TCP connections.
+    The overhead of client creation is minimal (~1ms).
+
+    Args:
+        region: AWS region name (defaults to AWS_REGION env var)
+        aws_access_key_id: Optional AWS access key
+        aws_secret_access_key: Optional AWS secret key
+
+    Returns:
+        A boto3 bedrock-runtime client configured for the specified region.
     """
     return get_bedrock_client_by_region(
         client_type="bedrock-runtime",

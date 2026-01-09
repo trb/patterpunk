@@ -1,9 +1,19 @@
 import asyncio
 import json
 import random
-from abc import ABC
-from typing import AsyncIterator, List, Optional, Set, Union
+import re
 import time
+from abc import ABC
+from typing import AsyncIterator, Dict, List, Optional, Set, Union
+
+# Optional dependency for URL downloads in multimodal content
+try:
+    import requests as _requests_lib
+
+    _requests_available = True
+except ImportError:
+    _requests_lib = None
+    _requests_available = False
 
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
@@ -32,6 +42,9 @@ from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
+
+# Timeout for streaming operations (per event, not total)
+BEDROCK_STREAM_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
 class BedrockMissingCredentialsError(Exception):
@@ -127,16 +140,13 @@ class BedrockModel(Model, ABC):
 
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "url":
+                    if not _requests_available:
+                        raise ImportError(
+                            "requests library required for URL support with Bedrock. "
+                            "Install with: pip install requests"
+                        )
                     if session is None:
-                        try:
-                            import requests
-
-                            session = requests.Session()
-                        except ImportError:
-                            raise ImportError(
-                                "requests library required for URL support with Bedrock"
-                            )
-
+                        session = _requests_lib.Session()
                     chunk = chunk.download(session)
 
                 media_type = chunk.media_type or "application/octet-stream"
@@ -185,8 +195,6 @@ class BedrockModel(Model, ABC):
                         getattr(chunk, "filename", None)
                         or f"document.{document_format}"
                     )
-                    import re
-
                     document_name = re.sub(r"[^\w\s\-\(\)\[\]]", "", raw_filename)
                     document_name = re.sub(r"\s+", " ", document_name).strip()
 
@@ -239,7 +247,11 @@ class BedrockModel(Model, ABC):
                     # Parse arguments from JSON string
                     try:
                         arguments = json.loads(tool_call.arguments)
-                    except (json.JSONDecodeError, KeyError):
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(
+                            f"Failed to parse tool arguments for '{tool_call.name}': {e}. "
+                            f"Arguments: {tool_call.arguments[:100] if tool_call.arguments else 'empty'}"
+                        )
                         arguments = {}
 
                     content_blocks.append(
@@ -456,6 +468,47 @@ class BedrockModel(Model, ABC):
 
         return AssistantMessage(full_response, structured_output=structured_output)
 
+    def _execute_with_retry(self, operation, operation_name: str = "Bedrock API call"):
+        """
+        Execute an operation with exponential backoff retry on throttling.
+
+        Args:
+            operation: Callable that performs the API operation
+            operation_name: Name for logging purposes
+
+        Returns:
+            The result of the operation
+
+        Raises:
+            ClientError: If non-throttling error or max retries exceeded
+        """
+        retry = 0
+        retry_sleep = random.randint(30, 60)
+
+        while True:
+            try:
+                return operation()
+            except ClientError as client_exception:
+                error_code = client_exception.response["Error"]["Code"]
+                if error_code == "ThrottlingException":
+                    if retry >= MAX_RETRIES:
+                        logger.error(
+                            f"ERROR: {operation_name} throttled, max retries ({MAX_RETRIES}) reached"
+                        )
+                        raise
+                    logger.warning(
+                        f"{operation_name} throttled, backing off ({retry_sleep}s) and retrying"
+                    )
+                    retry += 1
+                    time.sleep(retry_sleep)
+                    retry_sleep += random.randint(30, 60)
+                else:
+                    logger.error(
+                        f"{operation_name} client exception: {error_code}",
+                        exc_info=client_exception,
+                    )
+                    raise
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -478,35 +531,10 @@ class BedrockModel(Model, ABC):
         )
 
         try:
-            retry = 0
-            retry_sleep = random.randint(30, 60)
-            while True:
-                try:
-                    response = self.client.converse(**converse_params)
-                    break
-                except ClientError as client_exception:
-                    if (
-                        client_exception.response["Error"]["Code"]
-                        == "ThrottlingException"
-                    ):
-                        if retry > MAX_RETRIES:
-                            logger.error(
-                                f"ERROR: AWS Bedrock is throttling and max retries reached. Retries: {retry}, max retries: {MAX_RETRIES} "
-                            )
-                            raise
-                        else:
-                            logger.warning(
-                                "AWS Bedrock throttling detected, backing off and retrying"
-                            )
-                            retry += 1
-                            time.sleep(retry_sleep)
-                            retry_sleep += random.randint(30, 60)
-                    else:
-                        logger.error(
-                            "AWS Bedrock client exception detected",
-                            exc_info=client_exception,
-                        )
-                        raise
+            response = self._execute_with_retry(
+                lambda: self.client.converse(**converse_params),
+                "AWS Bedrock converse",
+            )
             logger.info("AWS Bedrock response received")
         except (ClientError, Exception) as e:
             logger.error(
@@ -570,8 +598,7 @@ class BedrockModel(Model, ABC):
         streaming_client = create_bedrock_client_for_streaming(region=region_name)
 
         # Run the synchronous API call in a thread pool
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
+        response = await asyncio.get_running_loop().run_in_executor(
             None, lambda: streaming_client.converse_stream(**converse_params)
         )
 
@@ -584,6 +611,58 @@ class BedrockModel(Model, ABC):
         async for chunk in self._iterate_stream_events(stream):
             yield chunk
 
+    def _extract_usage_from_event(self, event: dict) -> Optional[dict]:
+        """Extract usage statistics from a metadata event."""
+        if "metadata" not in event:
+            return None
+        metadata = event["metadata"]
+        if "usage" not in metadata:
+            return None
+        return {
+            "input_tokens": metadata["usage"].get("inputTokens", 0),
+            "output_tokens": metadata["usage"].get("outputTokens", 0),
+        }
+
+    def _track_reasoning_content(
+        self, event: dict, thinking_block_state: Dict[int, Dict[str, str]]
+    ) -> None:
+        """Track reasoning content deltas for building complete thinking blocks."""
+        if "contentBlockDelta" not in event:
+            return
+
+        block_delta = event["contentBlockDelta"]
+        index = block_delta.get("contentBlockIndex", 0)
+        delta = block_delta.get("delta", {})
+
+        if "reasoningContent" not in delta:
+            return
+
+        reasoning = delta["reasoningContent"]
+        if index not in thinking_block_state:
+            thinking_block_state[index] = {"text": "", "signature": ""}
+
+        if "text" in reasoning:
+            thinking_block_state[index]["text"] += reasoning["text"]
+        if "signature" in reasoning:
+            thinking_block_state[index]["signature"] = reasoning["signature"]
+
+    def _build_thinking_blocks(
+        self, thinking_block_state: Dict[int, Dict[str, str]]
+    ) -> List[dict]:
+        """Build complete thinking blocks from accumulated state."""
+        thinking_blocks = []
+        for index in sorted(thinking_block_state.keys()):
+            block = thinking_block_state[index]
+            if block["text"] or block["signature"]:
+                thinking_blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block["text"],
+                        "signature": block["signature"],
+                    }
+                )
+        return thinking_blocks
+
     async def _iterate_stream_events(self, stream) -> AsyncIterator["StreamChunk"]:
         """
         Iterate over boto3 EventStream and yield StreamChunks.
@@ -591,9 +670,13 @@ class BedrockModel(Model, ABC):
         Since EventStream iteration is synchronous, we wrap each iteration
         in run_in_executor to avoid blocking the event loop.
         """
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+        from patterpunk.llm.streaming import (
+            StreamChunk,
+            StreamEventType,
+            StreamingError,
+        )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         iterator = iter(stream)
         usage = None
 
@@ -611,54 +694,36 @@ class BedrockModel(Model, ABC):
                 return _STREAM_END
 
         while True:
-            event = await loop.run_in_executor(None, _next_event)
+            try:
+                event = await asyncio.wait_for(
+                    loop.run_in_executor(None, _next_event),
+                    timeout=BEDROCK_STREAM_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                raise StreamingError(
+                    f"Bedrock stream timed out waiting for next event "
+                    f"(timeout: {BEDROCK_STREAM_TIMEOUT_SECONDS}s)"
+                )
+
             if event is _STREAM_END:
                 break
 
-            # Extract metadata/usage from metadata event
-            if "metadata" in event:
-                metadata = event["metadata"]
-                if "usage" in metadata:
-                    usage = {
-                        "input_tokens": metadata["usage"].get("inputTokens", 0),
-                        "output_tokens": metadata["usage"].get("outputTokens", 0),
-                    }
+            # Handle metadata events (usage stats)
+            event_usage = self._extract_usage_from_event(event)
+            if event_usage:
+                usage = event_usage
                 continue
 
-            # Track reasoning content for building complete thinking blocks
-            if "contentBlockDelta" in event:
-                block_delta = event["contentBlockDelta"]
-                index = block_delta.get("contentBlockIndex", 0)
-                delta = block_delta.get("delta", {})
+            # Track reasoning content for thinking blocks
+            self._track_reasoning_content(event, thinking_block_state)
 
-                if "reasoningContent" in delta:
-                    reasoning = delta["reasoningContent"]
-                    if index not in thinking_block_state:
-                        thinking_block_state[index] = {"text": "", "signature": ""}
-
-                    if "text" in reasoning:
-                        thinking_block_state[index]["text"] += reasoning["text"]
-                    if "signature" in reasoning:
-                        thinking_block_state[index]["signature"] = reasoning[
-                            "signature"
-                        ]
-
+            # Convert and yield chunk
             chunk = self._convert_stream_event_to_chunk(event)
             if chunk is not None:
                 yield chunk
 
         # Build complete thinking blocks with signatures
-        thinking_blocks = []
-        for index in sorted(thinking_block_state.keys()):
-            block = thinking_block_state[index]
-            if block["text"] or block["signature"]:
-                thinking_blocks.append(
-                    {
-                        "type": "thinking",
-                        "thinking": block["text"],
-                        "signature": block["signature"],
-                    }
-                )
+        thinking_blocks = self._build_thinking_blocks(thinking_block_state)
 
         # Yield MESSAGE_END with usage and thinking blocks
         yield StreamChunk(
