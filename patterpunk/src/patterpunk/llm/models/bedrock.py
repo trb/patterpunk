@@ -115,7 +115,9 @@ class BedrockModel(Model, ABC):
             additional_fields["reasoning_effort"] = self.thinking_config.effort
 
         if self.thinking_config.token_budget is not None:
-            budget_tokens = max(MIN_THINKING_BUDGET_TOKENS, self.thinking_config.token_budget)
+            budget_tokens = max(
+                MIN_THINKING_BUDGET_TOKENS, self.thinking_config.token_budget
+            )
             additional_fields["reasoning_config"] = {
                 "type": "enabled",
                 "budget_tokens": budget_tokens,
