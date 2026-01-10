@@ -20,6 +20,7 @@ from patterpunk.config.defaults import (
     DEFAULT_TOP_P,
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
     MAX_RETRIES,
+    MIN_THINKING_BUDGET_TOKENS,
 )
 from patterpunk.config.providers.bedrock import (
     boto3,
@@ -41,6 +42,7 @@ from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
+from patterpunk.llm.streaming import StreamChunk, StreamEventType, StreamingError
 from patterpunk.logger import logger, logger_llm
 
 # Timeout for streaming operations (per event, not total)
@@ -113,7 +115,7 @@ class BedrockModel(Model, ABC):
             additional_fields["reasoning_effort"] = self.thinking_config.effort
 
         if self.thinking_config.token_budget is not None:
-            budget_tokens = max(1024, self.thinking_config.token_budget)
+            budget_tokens = max(MIN_THINKING_BUDGET_TOKENS, self.thinking_config.token_budget)
             additional_fields["reasoning_config"] = {
                 "type": "enabled",
                 "budget_tokens": budget_tokens,
@@ -378,7 +380,9 @@ class BedrockModel(Model, ABC):
         if thinking_params.get("reasoning_config"):
             inference_config.pop("topP", None)
             # Extended thinking requires max_tokens > budget_tokens
-            budget = thinking_params["reasoning_config"].get("budget_tokens", 1024)
+            budget = thinking_params["reasoning_config"].get(
+                "budget_tokens", MIN_THINKING_BUDGET_TOKENS
+            )
             if not self.max_tokens or self.max_tokens <= budget:
                 inference_config["maxTokens"] = budget + 2000
 
@@ -468,9 +472,16 @@ class BedrockModel(Model, ABC):
 
         return AssistantMessage(full_response, structured_output=structured_output)
 
+    # Error codes that indicate transient rate limiting and should trigger retry
+    RETRYABLE_ERROR_CODES = ("ThrottlingException", "ServiceUnavailableException")
+
     def _execute_with_retry(self, operation, operation_name: str = "Bedrock API call"):
         """
-        Execute an operation with exponential backoff retry on throttling.
+        Execute an operation with exponential backoff retry on transient errors.
+
+        Retries on:
+        - ThrottlingException (429): Account quotas exceeded
+        - ServiceUnavailableException (503): Service temporarily unavailable
 
         Args:
             operation: Callable that performs the API operation
@@ -480,7 +491,7 @@ class BedrockModel(Model, ABC):
             The result of the operation
 
         Raises:
-            ClientError: If non-throttling error or max retries exceeded
+            ClientError: If non-retryable error or max retries exceeded
         """
         retry = 0
         retry_sleep = random.randint(30, 60)
@@ -490,14 +501,16 @@ class BedrockModel(Model, ABC):
                 return operation()
             except ClientError as client_exception:
                 error_code = client_exception.response["Error"]["Code"]
-                if error_code == "ThrottlingException":
+                if error_code in self.RETRYABLE_ERROR_CODES:
                     if retry >= MAX_RETRIES:
                         logger.error(
-                            f"ERROR: {operation_name} throttled, max retries ({MAX_RETRIES}) reached"
+                            f"ERROR: {operation_name} failed with {error_code}, "
+                            f"max retries ({MAX_RETRIES}) reached"
                         )
                         raise
                     logger.warning(
-                        f"{operation_name} throttled, backing off ({retry_sleep}s) and retrying"
+                        f"{operation_name} received {error_code}, "
+                        f"backing off ({retry_sleep}s) and retrying"
                     )
                     retry += 1
                     time.sleep(retry_sleep)
@@ -579,8 +592,6 @@ class BedrockModel(Model, ABC):
         synchronous converse_stream call in a thread pool executor and yields
         chunks asynchronously.
         """
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
         logger.info("Request to AWS Bedrock (streaming) made")
         logger_llm.info(
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
@@ -670,12 +681,6 @@ class BedrockModel(Model, ABC):
         Since EventStream iteration is synchronous, we wrap each iteration
         in run_in_executor to avoid blocking the event loop.
         """
-        from patterpunk.llm.streaming import (
-            StreamChunk,
-            StreamEventType,
-            StreamingError,
-        )
-
         loop = asyncio.get_running_loop()
         iterator = iter(stream)
         usage = None
@@ -738,8 +743,6 @@ class BedrockModel(Model, ABC):
 
         Returns None for events we don't need to expose.
         """
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
         # messageStart - start of message
         if "messageStart" in event:
             return None  # We don't expose message start
