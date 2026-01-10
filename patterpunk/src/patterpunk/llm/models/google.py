@@ -1,8 +1,9 @@
 import json
-import random
 import time
+import uuid
 from abc import ABC
-from typing import AsyncIterator, List, Optional, Set, Union, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import AsyncIterator, Dict, Any, List, Optional, Set, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from patterpunk.llm.streaming import StreamChunk
@@ -62,6 +63,18 @@ class GoogleNotImplemented(Exception):
 
 class GoogleAPIError(Exception):
     pass
+
+
+@dataclass
+class ToolResultBatch:
+    """Batch of consecutive tool results for Google API.
+
+    Google requires all function responses for a single function call turn
+    to be in a single Content message. This dataclass holds the batched results.
+    """
+
+    results: List[Dict[str, Any]] = field(default_factory=list)
+    role: str = "tool_result_batch"
 
 
 class GoogleModel(Model, ABC):
@@ -305,57 +318,68 @@ class GoogleModel(Model, ABC):
         finally:
             os.unlink(tmp_file_path)
 
-    def _batch_consecutive_tool_results(self, messages: List[Message]) -> List:
+    def _parse_tool_response_data(self, content: str) -> Dict[str, Any]:
+        """Parse tool response content, ensuring dict format for Google API.
+
+        Google requires tool responses to be dicts. This method handles:
+        - Valid JSON dict: returned as-is
+        - Valid JSON non-dict: wrapped in {"result": value}
+        - Invalid JSON: wrapped in {"result": content}
+
+        Args:
+            content: The raw tool response content string
+
+        Returns:
+            A dict suitable for Google's function_response API
+        """
+        try:
+            response_data = json.loads(content)
+            if isinstance(response_data, dict):
+                return response_data
+            return {"result": response_data}
+        except (json.JSONDecodeError, TypeError):
+            return {"result": content}
+
+    def _batch_consecutive_tool_results(
+        self, messages: List[Message]
+    ) -> List[Union[Message, ToolResultBatch]]:
         """
         Batch consecutive tool_result messages into a single batch message.
 
         Google requires all function responses for a single function call turn
         to be in a single Content message. This method groups consecutive
         tool_result messages together.
+
+        Args:
+            messages: List of messages to process
+
+        Returns:
+            List with consecutive tool_results grouped into ToolResultBatch objects
         """
-        result = []
-        pending_results = []
+        result: List[Union[Message, ToolResultBatch]] = []
+        pending_results: List[Dict[str, Any]] = []
 
         for message in messages:
             if message.role == "tool_result":
-                # Validate required field for Google
                 if not message.function_name:
                     raise ValueError(
                         "Google Vertex AI requires function_name in ToolResultMessage."
                     )
 
-                # Parse content as JSON and ensure it's a dict
-                try:
-                    response_data = json.loads(message.content)
-                    if not isinstance(response_data, dict):
-                        response_data = {"result": response_data}
-                except (json.JSONDecodeError, TypeError):
-                    response_data = {"result": message.content}
-
+                response_data = self._parse_tool_response_data(message.content)
                 pending_results.append(
                     {"name": message.function_name, "response": response_data}
                 )
             else:
                 # Flush any pending results before adding non-tool-result message
                 if pending_results:
-                    # Create a batch object with role and results
-                    batch = type(
-                        "ToolResultBatch",
-                        (),
-                        {"role": "tool_result_batch", "results": pending_results},
-                    )()
-                    result.append(batch)
+                    result.append(ToolResultBatch(results=pending_results))
                     pending_results = []
                 result.append(message)
 
         # Flush any remaining results at the end
         if pending_results:
-            batch = type(
-                "ToolResultBatch",
-                (),
-                {"role": "tool_result_batch", "results": pending_results},
-            )()
-            result.append(batch)
+            result.append(ToolResultBatch(results=pending_results))
 
         return result
 
@@ -413,14 +437,7 @@ class GoogleModel(Model, ABC):
                         "Ensure ToolResultMessage is created with function_name from the original ToolCallMessage."
                     )
 
-                # Parse content as JSON and ensure it's a dict for Google API
-                try:
-                    response_data = json.loads(message.content)
-                    # Google requires response to be a dict
-                    if not isinstance(response_data, dict):
-                        response_data = {"result": response_data}
-                except (json.JSONDecodeError, TypeError):
-                    response_data = {"result": message.content}
+                response_data = self._parse_tool_response_data(message.content)
 
                 # Google uses functionResponse for tool results
                 parts = [
@@ -570,7 +587,7 @@ class GoogleModel(Model, ABC):
                     ):
                         tool_calls.append(
                             ToolCall(
-                                id=f"call_{part.function_call.name}_{random.randint(1000, 9999)}",
+                                id=f"call_{part.function_call.name}_{uuid.uuid4().hex[:8]}",
                                 name=part.function_call.name,
                                 arguments=json.dumps(dict(part.function_call.args)),
                             )
@@ -780,22 +797,20 @@ class GoogleModel(Model, ABC):
         """
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
-        events = []
+        events: List["StreamChunk"] = []
 
-        # Skip empty chunks or chunks without candidates
-        if not hasattr(chunk, "candidates") or not chunk.candidates:
+        # Extract parts from chunk, handling missing/empty attributes gracefully
+        try:
+            parts = chunk.candidates[0].content.parts
+            if not parts:
+                return events
+        except (AttributeError, IndexError, TypeError):
             return events
 
-        candidate = chunk.candidates[0]
-        if not hasattr(candidate, "content") or not candidate.content:
-            return events
-
-        if not hasattr(candidate.content, "parts") or not candidate.content.parts:
-            return events
-
-        for part in candidate.content.parts:
+        for part in parts:
             # Handle text content (check if it's thinking or regular text)
-            if hasattr(part, "text") and part.text:
+            text = getattr(part, "text", None)
+            if text:
                 # part.thought is a boolean flag indicating thinking content
                 is_thinking = getattr(part, "thought", False)
                 event_type = (
@@ -806,16 +821,16 @@ class GoogleModel(Model, ABC):
                 events.append(
                     StreamChunk(
                         event_type=event_type,
-                        text=part.text,
+                        text=text,
                     )
                 )
 
             # Handle function calls
             # Google returns function calls complete in a single chunk,
             # so we emit TOOL_USE_START, TOOL_USE_DELTA, and CONTENT_BLOCK_STOP
-            elif hasattr(part, "function_call") and part.function_call is not None:
-                func_call = part.function_call
-                tool_call_id = f"call_{func_call.name}_{random.randint(1000, 9999)}"
+            func_call = getattr(part, "function_call", None)
+            if func_call is not None:
+                tool_call_id = f"call_{func_call.name}_{uuid.uuid4().hex[:8]}"
 
                 # Emit TOOL_USE_START with id and name
                 events.append(

@@ -6,15 +6,18 @@ with the Google Vertex AI provider. They test content streaming and tool calling
 during streaming.
 """
 
+from typing import Optional
+
 import pytest
 from patterpunk.llm.chat.core import Chat
-from patterpunk.llm.models.google import GoogleModel
+from patterpunk.llm.models.google import GoogleModel, ToolResultBatch
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
+from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
 from patterpunk.llm.messages.tool_call import ToolCallMessage
-from patterpunk.llm.messages.tool_result import ToolResultMessage
 
 
 # Use a flash model for faster tests
@@ -40,7 +43,7 @@ def reset_google_client():
 def get_test_model(
     max_tokens: int = 256,
     temperature: float = 0.0,
-    thinking_config: ThinkingConfig = None,
+    thinking_config: Optional[ThinkingConfig] = None,
 ) -> GoogleModel:
     """Create a GoogleModel for testing."""
     return GoogleModel(
@@ -158,7 +161,8 @@ async def test_stream_chat_cancelled_raises():
 
     Note: Google may return all content in a single chunk for short responses,
     so this test may not be able to cancel the stream if the response completes
-    before we can break. In that case, we verify the stream completed successfully.
+    before we can break. We track which path was taken to ensure at least one
+    code path is always verified.
     """
     chat = Chat(model=get_test_model(max_tokens=1024))
 
@@ -171,24 +175,29 @@ async def test_stream_chat_cancelled_raises():
     )
 
     was_cancelled = False
+    iteration_count = 0
     async with chat.complete_stream() as stream:
-        # Start iterating but try to exit early
-        count = 0
+        # Start iterating but try to exit early on first iteration
+        # Breaking on count >= 1 increases chance of actually cancelling
         async for _ in stream.content:
-            count += 1
-            if count >= 2:
+            iteration_count += 1
+            if iteration_count >= 1:
                 was_cancelled = True
                 break  # Exit early - this should cancel the stream
 
+    # At least one of these paths must execute and pass
     if was_cancelled:
         # If we broke early, await stream.chat should raise
         with pytest.raises(StreamIncompleteError) as exc_info:
             _ = await stream.chat
         assert "cancelled" in str(exc_info.value).lower()
     else:
-        # If the stream completed before we could cancel, verify it worked
+        # If the stream completed before we could cancel (iteration_count == 0),
+        # that's still valid - verify the stream completed successfully
         final_chat = await stream.chat
         assert final_chat is not None
+        # Log for debugging: this path means Google returned 0 chunks before completion
+        # which is unusual but technically possible
 
 
 @pytest.mark.asyncio
@@ -271,14 +280,16 @@ async def test_stream_with_function_tool_call():
             content_iterations += 1
             accumulated_content = content
 
-    # Verify streaming occurred
+    # Verify streaming occurred - tool calling should produce multiple iterations
+    # (tool call chunk + response chunk at minimum)
     assert (
         content_iterations > 1
-    ), f"Expected multiple iterations, got {content_iterations}"
+    ), f"Expected multiple iterations for tool calling, got {content_iterations}"
 
     # The final response should mention the weather from our tool
+    # Tool returns "sunny and 72F", so both should be present
     final_chat = await stream.chat
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert "sunny" in accumulated_content.lower() and "72" in accumulated_content
     assert final_chat.latest_message.content == accumulated_content
 
 
@@ -375,9 +386,9 @@ async def test_stream_multiple_tool_rounds():
             accumulated_content = content
 
     # Response should contain results from both tools
-    # Weather tool returns "sunny and 72F" for any location
+    # Weather tool returns "sunny and 72F" for any location - both should be present
     # Calculate sum returns 42 for 15 + 27
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert "sunny" in accumulated_content.lower() and "72" in accumulated_content
     assert "42" in accumulated_content
 
 
@@ -581,13 +592,154 @@ async def test_stream_with_thinking_and_tool_call():
     ), f"No ToolResultMessage found in message history. Types: {message_types}"
 
     # Verify sequence: ToolCallMessage → ToolResultMessage → final AssistantMessage
-    tool_call_idx = next(
+    call_idx = next(
         i for i, m in enumerate(final_chat.messages) if isinstance(m, ToolCallMessage)
     )
     tool_result_idx = next(
         i for i, m in enumerate(final_chat.messages) if isinstance(m, ToolResultMessage)
     )
-    assert tool_call_idx < tool_result_idx, (
-        f"ToolCallMessage (idx {tool_call_idx}) should come before "
+    assert call_idx < tool_result_idx, (
+        f"ToolCallMessage (idx {call_idx}) should come before "
         f"ToolResultMessage (idx {tool_result_idx})"
     )
+
+
+# =============================================================================
+# Unit tests for _batch_consecutive_tool_results and _parse_tool_response_data
+# =============================================================================
+
+
+class TestBatchConsecutiveToolResults:
+    """Unit tests for the _batch_consecutive_tool_results method."""
+
+    def test_batch_consecutive_tool_results_groups_consecutive(self):
+        """Test that consecutive tool_result messages are grouped into a single batch."""
+        model = get_test_model()
+
+        # Create messages: user -> tool_result -> tool_result -> assistant
+        messages = [
+            UserMessage("What is 1+1 and 2+2?"),
+            ToolResultMessage(content="2", function_name="add", call_id="call_1"),
+            ToolResultMessage(content="4", function_name="add", call_id="call_2"),
+            AssistantMessage("The answers are 2 and 4."),
+        ]
+
+        result = model._batch_consecutive_tool_results(messages)
+
+        # Should be: UserMessage, ToolResultBatch, AssistantMessage
+        assert len(result) == 3
+        assert isinstance(result[0], UserMessage)
+        assert isinstance(result[1], ToolResultBatch)
+        assert isinstance(result[2], AssistantMessage)
+
+        # The batch should contain both tool results
+        batch = result[1]
+        assert len(batch.results) == 2
+        assert batch.results[0]["name"] == "add"
+        # "2" is valid JSON that parses to integer 2, then wrapped in {"result": ...}
+        assert batch.results[0]["response"] == {"result": 2}
+        assert batch.results[1]["name"] == "add"
+        assert batch.results[1]["response"] == {"result": 4}
+
+    def test_batch_tool_results_at_end(self):
+        """Test that tool_result messages at the end are properly batched."""
+        model = get_test_model()
+
+        messages = [
+            UserMessage("Calculate something"),
+            ToolResultMessage(content="42", function_name="calc", call_id="call_1"),
+        ]
+
+        result = model._batch_consecutive_tool_results(messages)
+
+        # Should be: UserMessage, ToolResultBatch
+        assert len(result) == 2
+        assert isinstance(result[0], UserMessage)
+        assert isinstance(result[1], ToolResultBatch)
+        assert len(result[1].results) == 1
+
+    def test_batch_non_consecutive_tool_results(self):
+        """Test that non-consecutive tool_results are in separate batches."""
+        model = get_test_model()
+
+        messages = [
+            UserMessage("First question"),
+            ToolResultMessage(content="1", function_name="func1", call_id="call_1"),
+            AssistantMessage("First answer"),
+            UserMessage("Second question"),
+            ToolResultMessage(content="2", function_name="func2", call_id="call_2"),
+        ]
+
+        result = model._batch_consecutive_tool_results(messages)
+
+        # Should be: UserMessage, ToolResultBatch, AssistantMessage, UserMessage, ToolResultBatch
+        assert len(result) == 5
+        assert isinstance(result[1], ToolResultBatch)
+        assert isinstance(result[4], ToolResultBatch)
+        # Each batch should have exactly one result
+        assert len(result[1].results) == 1
+        assert len(result[4].results) == 1
+
+    def test_batch_raises_on_missing_function_name(self):
+        """Test that ValueError is raised when function_name is missing."""
+        model = get_test_model()
+
+        messages = [
+            UserMessage("Test"),
+            ToolResultMessage(
+                content="result",
+                function_name=None,  # Missing function_name
+                call_id="call_1",
+            ),
+        ]
+
+        with pytest.raises(ValueError) as exc_info:
+            model._batch_consecutive_tool_results(messages)
+
+        assert "function_name" in str(exc_info.value).lower()
+
+
+class TestParseToolResponseData:
+    """Unit tests for the _parse_tool_response_data method."""
+
+    def test_parse_valid_json_dict(self):
+        """Test that valid JSON dict is returned as-is."""
+        model = get_test_model()
+        result = model._parse_tool_response_data('{"key": "value", "num": 42}')
+        assert result == {"key": "value", "num": 42}
+
+    def test_parse_valid_json_non_dict_wrapped(self):
+        """Test that valid JSON non-dict is wrapped in result dict."""
+        model = get_test_model()
+
+        # String
+        result = model._parse_tool_response_data('"hello"')
+        assert result == {"result": "hello"}
+
+        # Number
+        result = model._parse_tool_response_data("42")
+        assert result == {"result": 42}
+
+        # Array
+        result = model._parse_tool_response_data("[1, 2, 3]")
+        assert result == {"result": [1, 2, 3]}
+
+        # Boolean
+        result = model._parse_tool_response_data("true")
+        assert result == {"result": True}
+
+    def test_parse_invalid_json_wrapped(self):
+        """Test that invalid JSON is wrapped as string in result dict."""
+        model = get_test_model()
+
+        result = model._parse_tool_response_data("This is not JSON")
+        assert result == {"result": "This is not JSON"}
+
+        result = model._parse_tool_response_data("{invalid json}")
+        assert result == {"result": "{invalid json}"}
+
+    def test_parse_empty_string(self):
+        """Test that empty string is wrapped in result dict."""
+        model = get_test_model()
+        result = model._parse_tool_response_data("")
+        assert result == {"result": ""}
