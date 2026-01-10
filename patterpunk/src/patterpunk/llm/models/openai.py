@@ -257,7 +257,7 @@ class OpenAiModel(Model, ABC):
         for tc in tool_call_message.tool_calls:
             if hasattr(tc, "id"):
                 call_ids.add(tc.id)
-            elif isinstance(tc, dict):
+            elif isinstance(tc, dict) and "id" in tc:
                 call_ids.add(tc["id"])
 
         # Look for corresponding ToolResultMessage(s) after this tool call
