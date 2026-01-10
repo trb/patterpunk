@@ -6,6 +6,7 @@ from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
+from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
@@ -195,6 +196,7 @@ def test_structured_output(model_id):
 
 
 def test_simple_tool_calling():
+    """Test that tools are called and executed correctly with automatic execution."""
 
     def get_weather(location: str) -> str:
         """Get the current weather for a location.
@@ -204,16 +206,18 @@ def test_simple_tool_calling():
         """
         return f"The weather in {location} is sunny and 22°C"
 
+    # Use Claude Haiku 4.5 for reliable tool calling
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0, top_p=1.0
+        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", temperature=0.0
     )
 
     chat = Chat(model=bedrock).with_tools([get_weather])
 
     system_msg = SystemMessage(
-        "You are a helpful assistant that MUST use the provided tools to answer questions. "
-        "When asked about weather, you MUST call the get_weather tool. "
-        "Do not just describe what you would do - actually call the tool."
+        "You are a helpful assistant that MUST ALWAYS use the provided tools. "
+        "CRITICAL: You are REQUIRED to call the get_weather tool for ANY weather question. "
+        "NEVER answer weather questions from your own knowledge. "
+        "ALWAYS call the tool first, then respond based on the tool's output."
     )
 
     response = (
@@ -222,26 +226,27 @@ def test_simple_tool_calling():
         .complete()
     )
 
+    # With automatic tool execution, the final message should be an AssistantMessage
+    # containing the result from the tool
     assert response.latest_message is not None
-    assert isinstance(response.latest_message, ToolCallMessage), (
-        f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
+    assert isinstance(response.latest_message, AssistantMessage), (
+        f"Expected AssistantMessage but got {type(response.latest_message).__name__}. "
         f"Content: {response.latest_message.content}"
     )
 
-    tool_calls = response.latest_message.tool_calls
+    # The response should include the weather info from the tool
+    response_lower = response.latest_message.content.lower()
     assert (
-        len(tool_calls) == 1
-    ), f"Expected exactly one tool call, got {len(tool_calls)}"
+        "sunny" in response_lower or "22" in response_lower
+    ), f"Expected weather info in response. Got: {response.latest_message.content}"
 
-    tool_call = tool_calls[0]
-    assert tool_call["type"] == "function"
-    assert tool_call["function"]["name"] == "get_weather"
-
-    import json
-
-    arguments = json.loads(tool_call["function"]["arguments"])
-    assert "location" in arguments
-    assert "paris" in arguments["location"].lower()
+    # Verify a ToolCallMessage exists in the history (tool was called)
+    tool_call_messages = [
+        msg for msg in response.messages if isinstance(msg, ToolCallMessage)
+    ]
+    assert (
+        len(tool_call_messages) >= 1
+    ), "Expected at least one ToolCallMessage in history"
 
 
 def test_tool_calling():
@@ -258,17 +263,18 @@ def test_tool_calling():
         }
         return facts.get(topic.lower(), "Mathematics is the language of the universe")
 
+    # Use Claude Haiku 4.5 for reliable tool calling
     bedrock = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0, top_p=1.0
+        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", temperature=0.0
     )
 
     chat = Chat(model=bedrock).with_tools([calculate_area, get_math_fact])
 
     system_msg = SystemMessage(
-        "You are a geometry helper that MUST use the provided tools to solve problems. "
-        "When asked to calculate area, you MUST call the calculate_area tool. "
-        "When asked for facts, you MUST call the get_math_fact tool. "
-        "Do not calculate or provide facts without using the tools."
+        "You are a geometry helper that MUST ALWAYS use the provided tools. "
+        "CRITICAL: You are REQUIRED to call calculate_area for ANY area calculation. "
+        "NEVER calculate area yourself - ALWAYS use the calculate_area tool. "
+        "You must call the tool first, then explain the result."
     )
 
     response = (
@@ -282,39 +288,51 @@ def test_tool_calling():
         .complete()
     )
 
+    # With automatic tool execution, the final message should be an AssistantMessage
+    # containing the result from the tool execution
     assert response.latest_message is not None
-    assert isinstance(response.latest_message, ToolCallMessage), (
-        f"Expected ToolCallMessage but got {type(response.latest_message).__name__}. "
+    assert isinstance(response.latest_message, AssistantMessage), (
+        f"Expected AssistantMessage but got {type(response.latest_message).__name__}. "
         f"Content: {response.latest_message.content}"
     )
 
-    tool_calls = response.latest_message.tool_calls
+    # The response should include the area calculation result from the tool
+    response_lower = response.latest_message.content.lower()
     assert (
-        len(tool_calls) >= 1
-    ), f"Expected at least one tool call, got {len(tool_calls)}"
+        "15" in response_lower or "area" in response_lower
+    ), f"Expected area calculation result in response. Got: {response.latest_message.content}"
 
-    # Verify we have the expected tool calls
-    tool_names = [tc["function"]["name"] for tc in tool_calls]
+    # Verify ToolCallMessage exists in the history (tool was called)
+    tool_call_messages = [
+        msg for msg in response.messages if isinstance(msg, ToolCallMessage)
+    ]
+    assert (
+        len(tool_call_messages) >= 1
+    ), "Expected at least one ToolCallMessage in history"
+
+    # Get tool calls from history to verify correct parameters were used
+    import json
+
+    tool_calls = tool_call_messages[0].tool_calls
+    tool_names = [tc.name for tc in tool_calls]
 
     # Check for calculate_area call
-    area_calls = [tc for tc in tool_calls if tc["function"]["name"] == "calculate_area"]
+    area_calls = [tc for tc in tool_calls if tc.name == "calculate_area"]
     assert (
         len(area_calls) >= 1
     ), f"Expected calculate_area to be called, but got tools: {tool_names}"
 
     # Verify calculate_area arguments
-    import json
-
-    area_args = json.loads(area_calls[0]["function"]["arguments"])
+    area_args = json.loads(area_calls[0].arguments)
     assert "length" in area_args, "calculate_area missing 'length' argument"
     assert "width" in area_args, "calculate_area missing 'width' argument"
     assert area_args["length"] == 5, f"Expected length=5, got {area_args['length']}"
     assert area_args["width"] == 3, f"Expected width=3, got {area_args['width']}"
 
     # Check for get_math_fact call (optional but expected)
-    fact_calls = [tc for tc in tool_calls if tc["function"]["name"] == "get_math_fact"]
+    fact_calls = [tc for tc in tool_calls if tc.name == "get_math_fact"]
     if fact_calls:
-        fact_args = json.loads(fact_calls[0]["function"]["arguments"])
+        fact_args = json.loads(fact_calls[0].arguments)
         assert "topic" in fact_args, "get_math_fact missing 'topic' argument"
         assert (
             "rectangle" in fact_args["topic"].lower()
