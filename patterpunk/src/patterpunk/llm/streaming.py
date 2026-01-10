@@ -48,6 +48,21 @@ class StreamEventType(Enum):
     TOOL_USE_STOP = "tool_use_stop"
 
 
+class StreamingError(Exception):
+    """
+    Raised when a streaming operation fails.
+
+    This covers errors during stream iteration such as:
+    - Timeouts waiting for stream events
+    - Connection errors during streaming
+    - Invalid stream state
+    """
+
+    def __init__(self, message: str = "Streaming operation failed"):
+        self.message = message
+        super().__init__(self.message)
+
+
 class StreamIncompleteError(Exception):
     """
     Raised when accessing stream.chat before the stream has completed.

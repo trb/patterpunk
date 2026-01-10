@@ -15,6 +15,7 @@ from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.bedrock import BedrockModel
+from patterpunk.llm.tool_types import ToolCall
 
 
 class TestBedrockToolResultSerialization:
@@ -28,14 +29,11 @@ class TestBedrockToolResultSerialization:
             UserMessage("What's the weather in Paris?"),
             ToolCallMessage(
                 [
-                    {
-                        "id": "tooluse_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris"}',
-                        },
-                    }
+                    ToolCall(
+                        id="tooluse_abc123",
+                        name="get_weather",
+                        arguments='{"location": "Paris"}',
+                    )
                 ]
             ),
             ToolResultMessage(
@@ -105,14 +103,11 @@ class TestBedrockToolResultSerialization:
         messages = [
             ToolCallMessage(
                 [
-                    {
-                        "id": "tooluse_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris", "unit": "celsius"}',
-                        },
-                    }
+                    ToolCall(
+                        id="tooluse_abc123",
+                        name="get_weather",
+                        arguments='{"location": "Paris", "unit": "celsius"}',
+                    )
                 ]
             )
         ]
@@ -131,29 +126,27 @@ class TestBedrockToolResultSerialization:
         assert tool_use["input"]["unit"] == "celsius"
 
     def test_multiple_tool_calls_and_results(self):
-        """Test multiple tool calls and results in sequence."""
+        """Test multiple tool calls and results are merged into single user message.
+
+        Bedrock requires consecutive tool results to be in a SINGLE user message
+        with multiple toolResult blocks, not separate user messages.
+        """
         model = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
 
         messages = [
             UserMessage("What's the weather in Paris and London?"),
             ToolCallMessage(
                 [
-                    {
-                        "id": "tooluse_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris"}',
-                        },
-                    },
-                    {
-                        "id": "tooluse_2",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "London"}',
-                        },
-                    },
+                    ToolCall(
+                        id="tooluse_1",
+                        name="get_weather",
+                        arguments='{"location": "Paris"}',
+                    ),
+                    ToolCall(
+                        id="tooluse_2",
+                        name="get_weather",
+                        arguments='{"location": "London"}',
+                    ),
                 ]
             ),
             ToolResultMessage(
@@ -166,6 +159,9 @@ class TestBedrockToolResultSerialization:
 
         bedrock_messages = model._convert_messages_for_bedrock(messages)
 
+        # Should have 3 messages: user, assistant (toolUse), user (merged toolResults)
+        assert len(bedrock_messages) == 3
+
         # User message
         assert bedrock_messages[0]["role"] == "user"
 
@@ -176,21 +172,22 @@ class TestBedrockToolResultSerialization:
         assert tool_call_msg["content"][0]["toolUse"]["toolUseId"] == "tooluse_1"
         assert tool_call_msg["content"][1]["toolUse"]["toolUseId"] == "tooluse_2"
 
+        # Both tool results merged into single user message
+        tool_results_msg = bedrock_messages[2]
+        assert tool_results_msg["role"] == "user"
+        assert len(tool_results_msg["content"]) == 2  # Two toolResult blocks
+
         # First tool result
-        tool_result_1 = bedrock_messages[2]
-        assert tool_result_1["role"] == "user"
-        assert tool_result_1["content"][0]["toolResult"]["toolUseId"] == "tooluse_1"
+        assert tool_results_msg["content"][0]["toolResult"]["toolUseId"] == "tooluse_1"
         assert (
-            tool_result_1["content"][0]["toolResult"]["content"][0]["text"]
+            tool_results_msg["content"][0]["toolResult"]["content"][0]["text"]
             == "sunny, 22°C"
         )
 
         # Second tool result
-        tool_result_2 = bedrock_messages[3]
-        assert tool_result_2["role"] == "user"
-        assert tool_result_2["content"][0]["toolResult"]["toolUseId"] == "tooluse_2"
+        assert tool_results_msg["content"][1]["toolResult"]["toolUseId"] == "tooluse_2"
         assert (
-            tool_result_2["content"][0]["toolResult"]["content"][0]["text"]
+            tool_results_msg["content"][1]["toolResult"]["content"][0]["text"]
             == "rainy, 15°C"
         )
 
@@ -201,12 +198,13 @@ class TestBedrockToolResultIntegration:
     @pytest.fixture
     def model(self):
         """Create Bedrock model for testing."""
+        # Use Claude Haiku 4.5 for reliable tool calling
         return BedrockModel(
-            model_id="anthropic.claude-3-sonnet-20240229-v1:0", temperature=0.0
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0", temperature=0.0
         )
 
     def test_tool_call_and_result_flow(self, model):
-        """Test complete flow: question → tool call → result → answer."""
+        """Test complete flow: question → tool call → result → answer (manual execution)."""
         from patterpunk.llm.chat.core import Chat
         from patterpunk.llm.messages.assistant import AssistantMessage
 
@@ -220,15 +218,18 @@ class TestBedrockToolResultIntegration:
 
         chat = Chat(model=model).with_tools([get_weather])
 
-        # Turn 1: Ask question, expect tool call
+        # Turn 1: Ask question, expect tool call (disable auto-execution for manual flow)
         chat = (
             chat.add_message(
                 SystemMessage(
-                    "You are a helpful assistant. Use tools to answer questions."
+                    "You are a helpful assistant that MUST ALWAYS use the provided tools. "
+                    "CRITICAL: You are REQUIRED to call get_weather for ANY weather question. "
+                    "NEVER answer weather questions from your own knowledge. "
+                    "ALWAYS call the tool first."
                 )
             )
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete()
+            .complete(execute_tools=False)
         )
 
         assert chat.latest_message is not None
@@ -237,9 +238,9 @@ class TestBedrockToolResultIntegration:
 
         # Extract tool call details
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "get_weather"
         assert "location" in arguments
@@ -284,8 +285,8 @@ class TestBedrockToolResultIntegration:
             chat = chat.add_message(
                 ToolResultMessage(
                     content="Error: Invalid location provided",
-                    call_id=tool_call["id"],
-                    function_name=tool_call["function"]["name"],
+                    call_id=tool_call.id,
+                    function_name=tool_call.name,
                     is_error=True,
                 )
             ).complete()
@@ -318,8 +319,8 @@ class TestBedrockToolResultIntegration:
             chat = chat.add_message(
                 ToolResultMessage(
                     content=result,
-                    call_id=tool_call["id"],
-                    function_name=tool_call["function"]["name"],
+                    call_id=tool_call.id,
+                    function_name=tool_call.name,
                 )
             ).complete()
 
@@ -364,7 +365,10 @@ class TestBedrockToolResultIntegration:
         # Step 1: Build conversation with all message types
         chat = chat.add_message(
             SystemMessage(
-                "You are an image analysis assistant. When provided an image, call the analyze_image tool with a detailed description."
+                "You are an image analysis assistant that MUST ALWAYS use the provided tools. "
+                "CRITICAL: You are REQUIRED to call the analyze_image tool for EVERY image you receive. "
+                "NEVER describe images directly - ALWAYS call the analyze_image tool first. "
+                "When you see an image, immediately call the tool with a description."
             )
         )
 
@@ -398,8 +402,8 @@ class TestBedrockToolResultIntegration:
             )
         )
 
-        # Step 5: Complete and expect ToolCallMessage
-        chat = chat.complete()
+        # Step 5: Complete and expect ToolCallMessage (disable auto-execution for manual flow)
+        chat = chat.complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(
@@ -409,9 +413,9 @@ class TestBedrockToolResultIntegration:
 
         # Step 6: Execute tool manually
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "analyze_image"
         assert "description" in arguments
