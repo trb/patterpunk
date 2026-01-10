@@ -451,7 +451,10 @@ class OpenAiModel(Model, ABC):
         model_params = {}
 
         if self._is_reasoning_model(model):
-            model_params["reasoning"] = {"effort": reasoning_effort.name.lower()}
+            model_params["reasoning"] = {
+                "effort": reasoning_effort.name.lower(),
+                "summary": "auto",  # Enable streaming reasoning summaries
+            }
         else:
             model_params["temperature"] = temperature
             model_params["top_p"] = top_p
@@ -714,7 +717,6 @@ class OpenAiModel(Model, ABC):
         # Track current tool call state
         current_tool_id = None
         current_tool_name = None
-        usage_data = {}
 
         async for event in stream:
             chunk = self._convert_stream_event_to_chunk(
@@ -735,23 +737,8 @@ class OpenAiModel(Model, ABC):
                 current_tool_id = None
                 current_tool_name = None
 
-            if event_type == "response.completed":
-                response = getattr(event, "response", None)
-                if response and hasattr(response, "usage"):
-                    usage = response.usage
-                    usage_data = {
-                        "input_tokens": getattr(usage, "input_tokens", 0),
-                        "output_tokens": getattr(usage, "output_tokens", 0),
-                    }
-
             if chunk is not None:
                 yield chunk
-
-        # Yield final MESSAGE_END with usage data
-        yield StreamChunk(
-            event_type=StreamEventType.MESSAGE_END,
-            usage=usage_data if usage_data else None,
-        )
 
     def _convert_stream_event_to_chunk(
         self,
@@ -768,8 +755,31 @@ class OpenAiModel(Model, ABC):
 
         event_type = getattr(event, "type", "")
 
+        # Reasoning/thinking content deltas (for o1, o3-mini, etc.)
+        if event_type == "response.reasoning_summary_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.THINKING_DELTA,
+                    text=delta,
+                )
+
+        # Reasoning summary part lifecycle (block start)
+        elif event_type == "response.reasoning_summary_part.added":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_START,
+                block_type="thinking",
+            )
+
+        # Reasoning summary part done (block end)
+        elif event_type == "response.reasoning_summary_part.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                block_type="thinking",
+            )
+
         # Text delta - main content streaming
-        if event_type == "response.output_text.delta":
+        elif event_type == "response.output_text.delta":
             delta = getattr(event, "delta", "")
             if delta:
                 return StreamChunk(
@@ -833,17 +843,67 @@ class OpenAiModel(Model, ABC):
                     index=getattr(event, "output_index", 0),
                 )
 
-        # Response completed - we handle usage in the main loop
+        # Response completed - emit MESSAGE_END with usage and thinking blocks
         elif event_type == "response.completed":
             response = getattr(event, "response", None)
-            if response and hasattr(response, "usage"):
-                usage = response.usage
-                return StreamChunk(
-                    event_type=StreamEventType.MESSAGE_DELTA,
-                    usage={
-                        "input_tokens": getattr(usage, "input_tokens", 0),
-                        "output_tokens": getattr(usage, "output_tokens", 0),
-                    },
-                )
+            usage = None
+            thinking_blocks = None
+
+            if response:
+                if hasattr(response, "usage"):
+                    usage_obj = response.usage
+                    usage = {
+                        "input_tokens": getattr(usage_obj, "input_tokens", 0),
+                        "output_tokens": getattr(usage_obj, "output_tokens", 0),
+                    }
+
+                # Extract reasoning/thinking blocks from completed response
+                thinking_blocks = self._extract_thinking_blocks_from_response(response)
+
+            return StreamChunk(
+                event_type=StreamEventType.MESSAGE_END,
+                usage=usage,
+                thinking_blocks=thinking_blocks,
+            )
 
         return None
+
+    def _extract_thinking_blocks_from_response(self, response) -> Optional[list]:
+        """
+        Extract thinking/reasoning blocks from OpenAI response.
+
+        OpenAI reasoning models include reasoning summaries in the response output.
+        We convert these to a format compatible with patterpunk's thinking_blocks.
+        """
+        thinking_blocks = []
+
+        output = getattr(response, "output", None)
+        if not output:
+            return None
+
+        for item in output:
+            item_type = getattr(item, "type", None)
+
+            # Handle reasoning summary items
+            if item_type == "reasoning":
+                summary = getattr(item, "summary", None)
+                if summary:
+                    # Summary can be a list of content parts
+                    if isinstance(summary, list):
+                        for part in summary:
+                            if getattr(part, "type", None) == "summary_text":
+                                thinking_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": getattr(part, "text", ""),
+                                    }
+                                )
+                    elif isinstance(summary, str):
+                        thinking_blocks.append(
+                            {
+                                "type": "thinking",
+                                "thinking": summary,
+                            }
+                        )
+
+        return thinking_blocks if thinking_blocks else None
