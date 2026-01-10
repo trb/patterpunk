@@ -257,7 +257,9 @@ async def test_stream_with_function_tool_call():
 
     # The final response should mention the weather from our tool
     final_chat = await stream.chat
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert (
+        "sunny" in accumulated_content.lower() and "72" in accumulated_content
+    ), f"Expected both 'sunny' and '72' in tool response. Got: {accumulated_content[:200]}"
     assert final_chat.latest_message.content == accumulated_content
 
 
@@ -297,6 +299,17 @@ async def test_stream_tool_error_continues():
     assert any(
         word in response_lower
         for word in ["error", "fail", "sorry", "unable", "couldn't"]
+    )
+
+    # Verify that ToolResultMessage with is_error=True was created
+    error_tool_results = [
+        msg
+        for msg in final_chat.messages
+        if isinstance(msg, ToolResultMessage) and msg.is_error
+    ]
+    assert len(error_tool_results) >= 1, (
+        f"Expected ToolResultMessage with is_error=True. "
+        f"Messages: {[type(m).__name__ for m in final_chat.messages]}"
     )
 
 
@@ -369,7 +382,9 @@ async def test_stream_multiple_tool_rounds():
     # Response should contain results from both tools
     # Weather tool returns "sunny and 72F" for any location
     # Calculate sum returns 42 for 15 + 27
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert (
+        "sunny" in accumulated_content.lower() and "72" in accumulated_content
+    ), f"Expected both 'sunny' and '72' in tool response. Got: {accumulated_content[:200]}"
     assert "42" in accumulated_content
 
 
@@ -438,11 +453,15 @@ async def test_stream_thinking_and_content():
 
     # NOTE: Bedrock reasoning models may or may not produce thinking content
     # depending on the model configuration and question complexity.
-    # We verify the iterator works but don't strictly require thinking to be present.
-    if thinking_iterations > 0:
-        assert accumulated_thinking, "Expected thinking content to be generated"
-        assert final_chat.latest_message.has_thinking
-        assert len(final_chat.latest_message.thinking_blocks) > 0
+    # Use pytest.skip to make "no thinking" path visible in test output
+    if thinking_iterations == 0:
+        pytest.skip(
+            "Reasoning model did not produce thinking summaries - expected for simple questions"
+        )
+
+    assert accumulated_thinking, "Expected thinking content to be generated"
+    assert final_chat.latest_message.has_thinking
+    assert len(final_chat.latest_message.thinking_blocks) > 0
 
 
 @pytest.mark.asyncio

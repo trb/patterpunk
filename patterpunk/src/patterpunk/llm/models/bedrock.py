@@ -219,117 +219,134 @@ class BedrockModel(Model, ABC):
         return bedrock_content
 
     def _convert_messages_for_bedrock(self, messages: List[Message]) -> List[dict]:
+        """Convert patterpunk messages to Bedrock converse format."""
         bedrock_messages = []
 
         for message in messages:
             if message.role == "tool_call":
-                # Serialize ToolCallMessage as assistant message with toolUse content blocks
-                # When extended thinking is enabled, thinking blocks must come FIRST
-                content_blocks = []
-
-                # Add thinking blocks first (required by Bedrock when thinking is enabled)
-                # Bedrock expects: {"reasoningContent": {"reasoningText": {"text": "...", "signature": "..."}}}
-                if hasattr(message, "thinking_blocks") and message.thinking_blocks:
-                    for block in message.thinking_blocks:
-                        # Only add blocks that have actual content (text or signature)
-                        thinking_text = block.get("thinking", "")
-                        signature = block.get("signature", "")
-                        if block.get("type") == "thinking" and (
-                            thinking_text or signature
-                        ):
-                            reasoning_content = {
-                                "reasoningContent": {
-                                    "reasoningText": {
-                                        "text": thinking_text,
-                                        "signature": signature,
-                                    }
-                                }
-                            }
-                            content_blocks.append(reasoning_content)
-
-                for tool_call in message.tool_calls:
-                    # Parse arguments from JSON string
-                    try:
-                        arguments = json.loads(tool_call.arguments)
-                    except (json.JSONDecodeError, KeyError) as e:
-                        logger.warning(
-                            f"Failed to parse tool arguments for '{tool_call.name}': {e}. "
-                            f"Arguments: {tool_call.arguments[:100] if tool_call.arguments else 'empty'}"
-                        )
-                        arguments = {}
-
-                    content_blocks.append(
-                        {
-                            "toolUse": {
-                                "toolUseId": tool_call.id,
-                                "name": tool_call.name,
-                                "input": arguments,
-                            }
-                        }
-                    )
-
-                bedrock_messages.append(
-                    {"role": "assistant", "content": content_blocks}
-                )
-
+                bedrock_messages.append(self._convert_tool_call_message(message))
             elif message.role == "tool_result":
-                # Validate required field for Bedrock
-                if not message.call_id:
-                    raise ValueError(
-                        "AWS Bedrock requires call_id (as toolUseId) in ToolResultMessage. "
-                        "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
-                    )
-
-                # Create toolResult block
-                # Bedrock uses status field instead of is_error boolean
-                tool_result_block = {
-                    "toolResult": {
-                        "toolUseId": message.call_id,
-                        "content": [{"text": message.content}],
-                        "status": "error" if message.is_error else "success",
-                    }
-                }
-
-                # Bedrock requires consecutive tool results to be merged into a SINGLE user message
-                # Check if the previous message is also a user message with toolResult blocks
-                if (
-                    bedrock_messages
-                    and bedrock_messages[-1]["role"] == "user"
-                    and bedrock_messages[-1]["content"]
-                    and "toolResult" in bedrock_messages[-1]["content"][0]
-                ):
-                    # Append to existing user message with toolResult blocks
-                    bedrock_messages[-1]["content"].append(tool_result_block)
-                else:
-                    # Create new user message
-                    bedrock_messages.append(
-                        {"role": "user", "content": [tool_result_block]}
-                    )
-
+                self._append_tool_result(message, bedrock_messages)
             else:
-                # Handle regular messages (user, assistant)
-                if isinstance(message.content, list):
-                    content = self._convert_content_to_bedrock_format(message.content)
-
-                    has_text = any("text" in chunk for chunk in content)
-                    has_document = any("document" in chunk for chunk in content)
-
-                    if has_document and not has_text:
-                        raise ValueError(
-                            "Bedrock requires at least one text block when documents are present. "
-                            "Please include text content along with your documents."
-                        )
-                else:
-                    content_str = message.get_content_as_string()
-                    if message.structured_output and has_model_schema(
-                        message.structured_output
-                    ):
-                        content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
-                    content = [{"text": content_str}]
-
-                bedrock_messages.append({"role": message.role, "content": content})
+                bedrock_messages.append(self._convert_regular_message(message))
 
         return bedrock_messages
+
+    def _convert_tool_call_message(self, message) -> dict:
+        """Convert ToolCallMessage to Bedrock assistant message with toolUse blocks.
+
+        When extended thinking is enabled, thinking blocks must come FIRST
+        in the content array (required by Bedrock).
+        """
+        content_blocks = []
+        content_blocks.extend(self._extract_thinking_content_blocks(message))
+        content_blocks.extend(self._extract_tool_use_blocks(message))
+        return {"role": "assistant", "content": content_blocks}
+
+    def _extract_thinking_content_blocks(self, message) -> List[dict]:
+        """Extract thinking blocks for Bedrock format (must come first in content).
+
+        Bedrock expects: {"reasoningContent": {"reasoningText": {"text": "...", "signature": "..."}}}
+        """
+        blocks = []
+        if not hasattr(message, "thinking_blocks") or not message.thinking_blocks:
+            return blocks
+
+        for block in message.thinking_blocks:
+            thinking_text = block.get("thinking", "")
+            signature = block.get("signature", "")
+            if block.get("type") == "thinking" and (thinking_text or signature):
+                blocks.append(
+                    {
+                        "reasoningContent": {
+                            "reasoningText": {
+                                "text": thinking_text,
+                                "signature": signature,
+                            }
+                        }
+                    }
+                )
+        return blocks
+
+    def _extract_tool_use_blocks(self, message) -> List[dict]:
+        """Extract tool use blocks from ToolCallMessage."""
+        blocks = []
+        for tool_call in message.tool_calls:
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(
+                    f"Failed to parse tool arguments for '{tool_call.name}': {e}. "
+                    f"Arguments: {tool_call.arguments[:100] if tool_call.arguments else 'empty'}"
+                )
+                arguments = {}
+
+            blocks.append(
+                {
+                    "toolUse": {
+                        "toolUseId": tool_call.id,
+                        "name": tool_call.name,
+                        "input": arguments,
+                    }
+                }
+            )
+        return blocks
+
+    def _append_tool_result(self, message, bedrock_messages: List[dict]) -> None:
+        """Append tool result, merging with previous user message if needed.
+
+        Bedrock requires consecutive tool results to be in a SINGLE user message
+        with multiple toolResult blocks, not separate user messages.
+        """
+        if not message.call_id:
+            raise ValueError(
+                "AWS Bedrock requires call_id (as toolUseId) in ToolResultMessage. "
+                "Ensure ToolResultMessage is created with call_id from the original ToolCallMessage."
+            )
+
+        tool_result_block = {
+            "toolResult": {
+                "toolUseId": message.call_id,
+                "content": [{"text": message.content}],
+                "status": "error" if message.is_error else "success",
+            }
+        }
+
+        # Check if previous message is a user message with toolResult blocks
+        should_merge = (
+            bedrock_messages
+            and bedrock_messages[-1]["role"] == "user"
+            and bedrock_messages[-1]["content"]
+            and "toolResult" in bedrock_messages[-1]["content"][0]
+        )
+
+        if should_merge:
+            bedrock_messages[-1]["content"].append(tool_result_block)
+        else:
+            bedrock_messages.append({"role": "user", "content": [tool_result_block]})
+
+    def _convert_regular_message(self, message: Message) -> dict:
+        """Convert regular user/assistant message to Bedrock format."""
+        if isinstance(message.content, list):
+            content = self._convert_content_to_bedrock_format(message.content)
+
+            has_text = any("text" in chunk for chunk in content)
+            has_document = any("document" in chunk for chunk in content)
+
+            if has_document and not has_text:
+                raise ValueError(
+                    "Bedrock requires at least one text block when documents are present. "
+                    "Please include text content along with your documents."
+                )
+        else:
+            content_str = message.get_content_as_string()
+            if message.structured_output and has_model_schema(
+                message.structured_output
+            ):
+                content_str = f"{content_str}\n{GENERATE_STRUCTURED_OUTPUT_PROMPT}{get_model_schema(message.structured_output)}"
+            content = [{"text": content_str}]
+
+        return {"role": message.role, "content": content}
 
     def _convert_system_messages_for_bedrock(
         self, messages: List[Message]

@@ -108,7 +108,9 @@ async def test_stream_with_function_tool_call():
 
     # The final response should mention the weather from our tool
     final_chat = await stream.chat
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert (
+        "sunny" in accumulated_content.lower() and "72" in accumulated_content
+    ), f"Expected both 'sunny' and '72' in tool response. Got: {accumulated_content[:200]}"
     assert final_chat.latest_message.content == accumulated_content
 
 
@@ -149,6 +151,17 @@ async def test_stream_tool_error_continues():
     assert any(
         word in response_lower
         for word in ["error", "fail", "sorry", "unable", "couldn't"]
+    )
+
+    # Verify that ToolResultMessage with is_error=True was created
+    error_tool_results = [
+        msg
+        for msg in final_chat.messages
+        if isinstance(msg, ToolResultMessage) and msg.is_error
+    ]
+    assert len(error_tool_results) >= 1, (
+        f"Expected ToolResultMessage with is_error=True. "
+        f"Messages: {[type(m).__name__ for m in final_chat.messages]}"
     )
 
 
@@ -223,7 +236,9 @@ async def test_stream_multiple_tool_rounds():
     # Response should contain results from both tools
     # Weather tool returns "sunny and 72°F" for any location
     # Calculate sum returns 42 for 15 + 27
-    assert "sunny" in accumulated_content.lower() or "72" in accumulated_content
+    assert (
+        "sunny" in accumulated_content.lower() and "72" in accumulated_content
+    ), f"Expected both 'sunny' and '72' in tool response. Got: {accumulated_content[:200]}"
     assert "42" in accumulated_content
 
 

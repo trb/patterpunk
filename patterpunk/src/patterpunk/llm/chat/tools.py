@@ -8,9 +8,12 @@ including function tool conversion, MCP server integration, and tool execution.
 import asyncio
 import inspect
 import json
-from typing import Union, List, Callable, Optional, Dict, Tuple, Any
+from typing import Union, List, Callable, Optional, Dict, Tuple, Any, TYPE_CHECKING
 
 from patterpunk.lib.function_to_tool.converter import functions_to_tools
+
+if TYPE_CHECKING:
+    from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.tool_types import ToolDefinition
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
@@ -242,14 +245,17 @@ async def _execute_function_async(func: Callable, arguments: Dict[str, Any]) -> 
         return await loop.run_in_executor(None, lambda: func(**arguments))
 
 
-def execute_all_tool_calls(chat_instance):
+def execute_all_tool_calls(chat_instance: "Chat") -> "Chat":
     """
     Execute all tool calls from the latest ToolCallMessage (sync version).
 
     Handles both Python function tools and MCP tools.
 
-    :param chat_instance: The Chat instance with tool calls to execute
-    :return: New Chat instance with tool execution results, then completed
+    Args:
+        chat_instance: The Chat instance with tool calls to execute
+
+    Returns:
+        New Chat instance with tool execution results, then completed
     """
     from patterpunk.llm.streaming import ToolExecutionAbortError
 

@@ -326,6 +326,17 @@ async def test_stream_tool_error_continues():
         for word in ["error", "fail", "sorry", "unable", "couldn't", "cannot"]
     )
 
+    # Verify that ToolResultMessage with is_error=True was created
+    error_tool_results = [
+        msg
+        for msg in final_chat.messages
+        if isinstance(msg, ToolResultMessage) and msg.is_error
+    ]
+    assert len(error_tool_results) >= 1, (
+        f"Expected ToolResultMessage with is_error=True. "
+        f"Messages: {[type(m).__name__ for m in final_chat.messages]}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_stream_tool_abort_stops():
