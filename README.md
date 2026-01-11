@@ -136,6 +136,25 @@ response = Chat(model=model).add_message(
 weather_data = response.parsed_output  # Typed WeatherReport instance
 ```
 
+### Message Persistence
+
+Store conversations in databases and resume them later:
+
+```python
+from patterpunk.llm.messages import message_from_dict
+
+# Serialize a conversation for storage
+serialized = [msg.serialize() for msg in chat.messages]
+# Store serialized (list of dicts) in PostgreSQL JSONB, MongoDB, etc.
+
+# Later: restore and continue the conversation
+messages = [message_from_dict(data) for data in serialized]
+restored_chat = Chat().add_messages(messages)
+continued = restored_chat.add_message(UserMessage("Follow-up question")).complete()
+```
+
+All message types, including multimodal content, thinking blocks, tool calls, and structured output, serialize to self-contained dictionaries. See [SERIALIZATION.md](SERIALIZATION.md) for database integration patterns.
+
 ## Architecture
 
 Patterpunk uses a **chainable immutable interface** where every operation returns new instances, enabling conversation branching and functional composition. Provider-specific code is isolated in model implementations, ensuring consistent behavior across all LLM providers.
@@ -175,6 +194,7 @@ For detailed information on specific features:
 - **[Prompt Caching](PROMPT_CACHING.md)** - Cache control, provider support, cost optimization
 - **[Multimodal Content](MULTIMODAL.md)** - Images, files, content chunking, provider support
 - **[Agent Workflows](AGENTS.md)** - Sequential chains, parallel execution, type-safe agents
+- **[Serialization](SERIALIZATION.md)** - Message persistence, database storage, conversation resumption
 
 ## AWS Bedrock Setup
 

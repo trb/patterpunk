@@ -238,6 +238,33 @@ class MultimodalChunk:
             filename=filename or getattr(file_obj, "name", None),
         )
 
+    def serialize(self) -> dict:
+        """
+        Serialize to dict for persistence.
+
+        URLs and GCS URIs are downloaded and converted to base64 to ensure
+        the serialized data is self-contained.
+        """
+        # Normalize to base64 for persistence
+        if self.source_type in ["url", "gcs_uri"]:
+            chunk = self.download()
+        else:
+            chunk = self
+
+        return {
+            "type": "multimodal",
+            "media_type": chunk.media_type,
+            "data": chunk.to_base64(),
+            "filename": chunk.filename,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MultimodalChunk":
+        """Deserialize from dict."""
+        chunk = cls.from_base64(data["data"], media_type=data.get("media_type"))
+        chunk.filename = data.get("filename")
+        return chunk
+
     def __repr__(self):
         source_preview = (
             str(self.source)[:50] + "..."
