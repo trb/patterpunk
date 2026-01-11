@@ -222,7 +222,9 @@ class TestMessageHistorySerialization:
                 )
             )
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         # Verify we got a tool call
@@ -231,7 +233,9 @@ class TestMessageHistorySerialization:
 
         # Second turn: Continue conversation with tool call in history
         # This is the critical test - the ToolCallMessage should be properly serialized
-        chat = chat.add_message(UserMessage("And what about London?")).complete(execute_tools=False)
+        chat = chat.add_message(UserMessage("And what about London?")).complete(
+            execute_tools=False
+        )
 
         # Should get another tool call for London
         assert chat.latest_message is not None
@@ -450,7 +454,9 @@ class TestComprehensiveMessageFlow:
         )
 
         # Step 5: Complete and expect ToolCallMessage
-        chat = chat.complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+        chat = chat.complete(
+            execute_tools=False
+        )  # Don't auto-execute to verify ToolCallMessage
 
         assert chat.latest_message is not None
         assert isinstance(

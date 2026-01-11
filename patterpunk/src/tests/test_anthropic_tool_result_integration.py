@@ -232,7 +232,9 @@ class TestAnthropicToolResultIntegration:
                 )
             )
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         assert chat.latest_message is not None
@@ -277,7 +279,9 @@ class TestAnthropicToolResultIntegration:
         chat = (
             chat.add_message(SystemMessage("Use tools to answer questions."))
             .add_message(UserMessage("What's the weather?"))
-            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         if isinstance(chat.latest_message, ToolCallMessage):
@@ -311,7 +315,9 @@ class TestAnthropicToolResultIntegration:
         chat = (
             chat.add_message(SystemMessage("Use tools to answer questions."))
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         if isinstance(chat.latest_message, ToolCallMessage):
@@ -327,7 +333,9 @@ class TestAnthropicToolResultIntegration:
             ).complete(execute_tools=False)
 
         # Turn 2: Second question (with first tool call/result in history)
-        chat = chat.add_message(UserMessage("What about London?")).complete(execute_tools=False)
+        chat = chat.add_message(UserMessage("What about London?")).complete(
+            execute_tools=False
+        )
 
         # Should get another tool call
         assert chat.latest_message is not None
@@ -407,7 +415,9 @@ class TestAnthropicToolResultIntegration:
         )
 
         # Step 5: Complete and expect ToolCallMessage
-        chat = chat.complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+        chat = chat.complete(
+            execute_tools=False
+        )  # Don't auto-execute to verify ToolCallMessage
 
         assert chat.latest_message is not None
         assert isinstance(
@@ -552,7 +562,9 @@ class TestClaude45Models:
                 )
             )
             .add_message(UserMessage("What is 15 plus 27?"))
-            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         assert chat.latest_message is not None
