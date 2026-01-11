@@ -7,11 +7,12 @@ to enable storing conversations in databases and resuming them later.
 
 import importlib
 import json
-from typing import Any, List, Optional, Union
+from typing import Any, Optional
 
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk, TextChunk
 from patterpunk.llm.types import ContentType
+from patterpunk.logger import logger_llm
 
 
 class DynamicStructuredOutput:
@@ -67,13 +68,28 @@ def deserialize_content(data: dict) -> ContentType:
 
     Returns:
         Either a string or a list of chunk objects
+
+    Raises:
+        ValueError: If required fields are missing or content type is unknown
     """
-    if data["type"] == "string":
+    content_type = data.get("type")
+    if not content_type:
+        raise ValueError("Content data missing required 'type' field")
+
+    if content_type == "string":
+        if "value" not in data:
+            raise ValueError("String content missing required 'value' field")
         return data["value"]
 
-    chunks: List[Union[TextChunk, CacheChunk, MultimodalChunk]] = []
+    if content_type != "chunks":
+        raise ValueError(f"Unknown content type: {content_type}")
+
+    if "chunks" not in data:
+        raise ValueError("Chunks content missing required 'chunks' field")
+
+    chunks: list[TextChunk | CacheChunk | MultimodalChunk] = []
     for chunk_data in data["chunks"]:
-        chunk_type = chunk_data["type"]
+        chunk_type = chunk_data.get("type")
         if chunk_type == "text":
             chunks.append(TextChunk.from_dict(chunk_data))
         elif chunk_type == "cache":
@@ -144,12 +160,16 @@ def deserialize_structured_output(data: Optional[dict]) -> Any:
 
     # Try dynamic import from stored class reference
     if "class_ref" in data:
+        class_ref = data["class_ref"]
         try:
-            module_path, class_name = data["class_ref"].rsplit(".", 1)
+            module_path, class_name = class_ref.rsplit(".", 1)
             module = importlib.import_module(module_path)
             return getattr(module, class_name)
-        except (ImportError, AttributeError, ValueError):
-            pass  # Fall through to fallback
+        except (ImportError, AttributeError, ValueError) as e:
+            logger_llm.debug(
+                f"Could not import structured_output class '{class_ref}', "
+                f"falling back to DynamicStructuredOutput: {e}"
+            )
 
     # Fallback to dynamic wrapper (no validation, just JSON parsing)
     if "schema" in data:
@@ -174,7 +194,7 @@ def serialize_message(message) -> dict:
     return message.serialize()
 
 
-def message_from_dict(data: dict) -> "Message":
+def message_from_dict(data: dict):
     """
     Deserialize any message type from dict.
 
@@ -189,7 +209,8 @@ def message_from_dict(data: dict) -> "Message":
         data: Serialized message dict with 'type' or 'role' field
 
     Returns:
-        The appropriate Message subclass instance
+        One of: SystemMessage, UserMessage, AssistantMessage,
+        ToolCallMessage, or ToolResultMessage
 
     Raises:
         ValueError: If the message type is unknown
@@ -201,18 +222,21 @@ def message_from_dict(data: dict) -> "Message":
     from patterpunk.llm.messages.tool_call import ToolCallMessage
     from patterpunk.llm.messages.tool_result import ToolResultMessage
 
+    deserializers = {
+        "system": SystemMessage.from_dict,
+        "user": UserMessage.from_dict,
+        "assistant": AssistantMessage.from_dict,
+        "tool_call": ToolCallMessage.from_dict,
+        "tool-call": ToolCallMessage.from_dict,
+        "tool_result": ToolResultMessage.from_dict,
+        "tool-result": ToolResultMessage.from_dict,
+    }
+
     # Support both 'type' (new format) and 'role' (legacy format)
     msg_type = data.get("type") or data.get("role")
+    deserializer = deserializers.get(msg_type)
 
-    if msg_type == "system":
-        return SystemMessage.from_dict(data)
-    elif msg_type == "user":
-        return UserMessage.from_dict(data)
-    elif msg_type == "assistant":
-        return AssistantMessage.from_dict(data)
-    elif msg_type in ("tool_call", "tool-call"):
-        return ToolCallMessage.from_dict(data)
-    elif msg_type in ("tool_result", "tool-result"):
-        return ToolResultMessage.from_dict(data)
-    else:
+    if deserializer is None:
         raise ValueError(f"Unknown message type: {msg_type}")
+
+    return deserializer(data)

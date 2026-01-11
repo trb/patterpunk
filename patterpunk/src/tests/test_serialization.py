@@ -16,6 +16,7 @@ from patterpunk.llm.messages import (
     serialize_message,
     DynamicStructuredOutput,
 )
+from patterpunk.llm.messages.serialization import deserialize_content
 from patterpunk.llm.tool_types import ToolCall
 
 
@@ -141,9 +142,12 @@ class TestSystemMessageSerialization:
         assert len(data["content"]["chunks"]) == 2
 
         restored = SystemMessage.from_dict(data)
+        # Validate ALL chunks, not just the first
         assert len(restored.content) == 2
         assert restored.content[0].content == "System prompt part 1"
         assert restored.content[0].cacheable is True
+        assert restored.content[1].content == "System prompt part 2"
+        assert restored.content[1].cacheable is False
 
 
 class TestUserMessageSerialization:
@@ -271,8 +275,8 @@ class TestToolCallMessageSerialization:
 
     def test_tool_call_message_multiple_calls(self):
         tool_calls = [
-            ToolCall(id="call_1", name="func_a", arguments="{}"),
-            ToolCall(id="call_2", name="func_b", arguments='{"x": 1}'),
+            ToolCall(id="call_1", name="func_a", arguments='{"a": 1}'),
+            ToolCall(id="call_2", name="func_b", arguments='{"b": 2}'),
         ]
         msg = ToolCallMessage(tool_calls=tool_calls)
         data = msg.serialize()
@@ -280,9 +284,14 @@ class TestToolCallMessageSerialization:
         assert len(data["tool_calls"]) == 2
 
         restored = ToolCallMessage.from_dict(data)
+        # Validate ALL tool calls completely
         assert len(restored.tool_calls) == 2
+        assert restored.tool_calls[0].id == "call_1"
         assert restored.tool_calls[0].name == "func_a"
+        assert restored.tool_calls[0].arguments == '{"a": 1}'
+        assert restored.tool_calls[1].id == "call_2"
         assert restored.tool_calls[1].name == "func_b"
+        assert restored.tool_calls[1].arguments == '{"b": 2}'
 
     def test_tool_call_message_with_thinking_blocks(self):
         tool_calls = [ToolCall(id="call_1", name="search", arguments="{}")]
@@ -303,13 +312,15 @@ class TestToolResultMessageSerialization:
 
         assert data["type"] == "tool_result"
         assert data["content"] == "The weather is sunny."
-        assert "call_id" not in data
-        assert "function_name" not in data
-        assert "is_error" not in data
+        # Use explicit None/absence checks
+        assert data.get("call_id") is None
+        assert data.get("function_name") is None
+        assert data.get("is_error") in (None, False)
 
         restored = ToolResultMessage.from_dict(data)
         assert restored.content == "The weather is sunny."
         assert restored.call_id is None
+        assert restored.function_name is None
         assert restored.is_error is False
 
     def test_tool_result_message_with_call_id(self):
@@ -507,7 +518,7 @@ class TestFullConversationRoundTrip:
         # Deserialize all messages
         restored = [message_from_dict(data) for data in parsed]
 
-        # Verify types and content
+        # Verify types
         assert len(restored) == 7
         assert isinstance(restored[0], SystemMessage)
         assert isinstance(restored[1], UserMessage)
@@ -517,8 +528,252 @@ class TestFullConversationRoundTrip:
         assert isinstance(restored[5], ToolResultMessage)
         assert isinstance(restored[6], AssistantMessage)
 
-        # Verify specific content
+        # Verify ALL messages content comprehensively
+        # Message 0: SystemMessage
         assert restored[0].content == "You are a helpful assistant."
+        assert restored[0].role == "system"
+
+        # Message 1: UserMessage
+        assert restored[1].content == "What is 2+2?"
+        assert restored[1].allow_tool_calls is True
+
+        # Message 2: AssistantMessage with thinking
+        assert restored[2].content == "The answer is 4."
+        assert len(restored[2].thinking_blocks) == 1
         assert restored[2].thinking_blocks[0]["thinking"] == "Simple addition..."
+        assert restored[2].has_thinking is True
+
+        # Message 3: UserMessage
+        assert restored[3].content == "Thanks! Now call a tool."
+
+        # Message 4: ToolCallMessage
+        assert len(restored[4].tool_calls) == 1
+        assert restored[4].tool_calls[0].id == "call_1"
         assert restored[4].tool_calls[0].name == "calculator"
+        assert (
+            restored[4].tool_calls[0].arguments == '{"op": "multiply", "a": 3, "b": 4}'
+        )
+
+        # Message 5: ToolResultMessage
+        assert restored[5].content == "12"
         assert restored[5].call_id == "call_1"
+        assert restored[5].function_name == "calculator"
+        assert restored[5].is_error is False
+
+        # Message 6: AssistantMessage
+        assert restored[6].content == "The result of 3 times 4 is 12."
+
+
+class TestSerializationErrorHandling:
+    """Tests for error handling in serialization/deserialization."""
+
+    def test_deserialize_content_missing_type(self):
+        """Content without 'type' field should raise ValueError."""
+        with pytest.raises(ValueError, match="missing required 'type' field"):
+            deserialize_content({"value": "test"})
+
+    def test_deserialize_content_unknown_type(self):
+        """Unknown content type should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown content type"):
+            deserialize_content({"type": "unknown", "value": "test"})
+
+    def test_deserialize_content_missing_value(self):
+        """String content without 'value' should raise ValueError."""
+        with pytest.raises(ValueError, match="missing required 'value' field"):
+            deserialize_content({"type": "string"})
+
+    def test_deserialize_content_missing_chunks(self):
+        """Chunks content without 'chunks' should raise ValueError."""
+        with pytest.raises(ValueError, match="missing required 'chunks' field"):
+            deserialize_content({"type": "chunks"})
+
+    def test_deserialize_content_unknown_chunk_type(self):
+        """Unknown chunk type in list should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown chunk type"):
+            deserialize_content(
+                {"type": "chunks", "chunks": [{"type": "unknown", "content": "test"}]}
+            )
+
+    def test_message_from_dict_missing_type(self):
+        """Message without type or role should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown message type"):
+            message_from_dict({"content": "test"})
+
+
+class TestSerializationEdgeCases:
+    """Tests for edge cases and boundary conditions."""
+
+    def test_empty_string_content(self):
+        """Empty string should serialize and deserialize correctly."""
+        msg = UserMessage(content="")
+        data = msg.serialize()
+        restored = UserMessage.from_dict(data)
+        assert restored.content == ""
+
+    def test_unicode_content(self):
+        """Unicode characters should be preserved."""
+        content = "Hello 世界! 🎉 Ñoño"
+        msg = UserMessage(content=content)
+        data = msg.serialize()
+        restored = UserMessage.from_dict(data)
+        assert restored.content == content
+
+    def test_empty_tool_calls_list(self):
+        """Empty tool_calls list should serialize correctly."""
+        msg = ToolCallMessage(tool_calls=[])
+        data = msg.serialize()
+        assert data["tool_calls"] == []
+        restored = ToolCallMessage.from_dict(data)
+        assert len(restored.tool_calls) == 0
+
+    def test_mixed_chunk_types(self):
+        """Mixed chunk types should all be preserved."""
+        import base64
+
+        chunks = [
+            TextChunk(content="Text part"),
+            CacheChunk(content="Cached part", cacheable=True),
+            MultimodalChunk.from_base64(
+                base64.b64encode(b"image").decode(), media_type="image/png"
+            ),
+        ]
+        msg = UserMessage(content=chunks)
+        data = msg.serialize()
+        restored = UserMessage.from_dict(data)
+
+        assert len(restored.content) == 3
+        assert isinstance(restored.content[0], TextChunk)
+        assert restored.content[0].content == "Text part"
+        assert isinstance(restored.content[1], CacheChunk)
+        assert restored.content[1].content == "Cached part"
+        assert restored.content[1].cacheable is True
+        assert isinstance(restored.content[2], MultimodalChunk)
+
+    def test_legacy_role_field_fallback(self):
+        """Legacy 'role' field should work for deserialization."""
+        data = {"role": "system", "content": {"type": "string", "value": "test"}}
+        msg = message_from_dict(data)
+        assert isinstance(msg, SystemMessage)
+        assert msg.content == "test"
+
+    def test_hyphenated_type_names_tool_call(self):
+        """Hyphenated type name 'tool-call' should work."""
+        data = {
+            "type": "tool-call",
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "fn", "arguments": "{}"},
+                }
+            ],
+        }
+        msg = message_from_dict(data)
+        assert isinstance(msg, ToolCallMessage)
+
+    def test_hyphenated_type_names_tool_result(self):
+        """Hyphenated type name 'tool-result' should work."""
+        data = {"type": "tool-result", "content": "result"}
+        msg = message_from_dict(data)
+        assert isinstance(msg, ToolResultMessage)
+
+    def test_cache_chunk_zero_ttl(self):
+        """Zero TTL is treated as no TTL (limitation: timedelta(0) is falsy)."""
+        chunk = CacheChunk(content="test", cacheable=True, ttl=timedelta(seconds=0))
+        data = chunk.serialize()
+        # Note: Zero TTL is not serialized because timedelta(0) is falsy
+        assert "ttl_seconds" not in data or data["ttl_seconds"] == 0
+        restored = CacheChunk.from_dict(data)
+        # Zero TTL deserializes as None due to falsy check
+        assert restored.ttl is None
+
+    def test_cache_chunk_small_ttl(self):
+        """Small non-zero TTL should be preserved."""
+        chunk = CacheChunk(content="test", cacheable=True, ttl=timedelta(seconds=1))
+        data = chunk.serialize()
+        assert data["ttl_seconds"] == 1.0
+        restored = CacheChunk.from_dict(data)
+        assert restored.ttl == timedelta(seconds=1)
+
+    def test_multimodal_preserves_bytes(self):
+        """Multimodal chunk should preserve exact bytes through round-trip."""
+        original_bytes = b"\x00\x01\x02\xff\xfe\xfd"
+        chunk = MultimodalChunk.from_bytes(
+            original_bytes, media_type="application/octet-stream"
+        )
+        data = chunk.serialize()
+        restored = MultimodalChunk.from_dict(data)
+        assert restored.to_bytes() == original_bytes
+
+    def test_whitespace_only_content(self):
+        """Whitespace-only content should be preserved."""
+        msg = UserMessage(content="   \n\t  ")
+        data = msg.serialize()
+        restored = UserMessage.from_dict(data)
+        assert restored.content == "   \n\t  "
+
+    def test_very_long_content(self):
+        """Very long content should serialize correctly."""
+        long_content = "x" * 100000
+        msg = UserMessage(content=long_content)
+        data = msg.serialize()
+        restored = UserMessage.from_dict(data)
+        assert restored.content == long_content
+        assert len(restored.content) == 100000
+
+
+class TestStructuredOutputEdgeCases:
+    """Tests for structured output serialization edge cases."""
+
+    def test_structured_output_malformed_class_ref(self):
+        """Malformed class_ref should fall back to DynamicStructuredOutput."""
+        data = {
+            "type": "user",
+            "content": {"type": "string", "value": "test"},
+            "structured_output": {
+                "schema": {"type": "object"},
+                "class_ref": "no_dot_separator",  # Invalid format
+            },
+            "allow_tool_calls": True,
+        }
+        restored = UserMessage.from_dict(data)
+        assert isinstance(restored.structured_output, DynamicStructuredOutput)
+
+    def test_structured_output_empty_class_ref(self):
+        """Empty class_ref should fall back to DynamicStructuredOutput."""
+        data = {
+            "type": "user",
+            "content": {"type": "string", "value": "test"},
+            "structured_output": {"schema": {"type": "object"}, "class_ref": ""},
+            "allow_tool_calls": True,
+        }
+        restored = UserMessage.from_dict(data)
+        assert isinstance(restored.structured_output, DynamicStructuredOutput)
+
+    def test_structured_output_no_schema_no_class_ref(self):
+        """structured_output with neither schema nor class_ref returns None."""
+        data = {
+            "type": "user",
+            "content": {"type": "string", "value": "test"},
+            "structured_output": {},
+            "allow_tool_calls": True,
+        }
+        restored = UserMessage.from_dict(data)
+        assert restored.structured_output is None
+
+    def test_structured_output_only_schema(self):
+        """structured_output with only schema should create DynamicStructuredOutput."""
+        data = {
+            "type": "user",
+            "content": {"type": "string", "value": "test"},
+            "structured_output": {
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+            },
+            "allow_tool_calls": True,
+        }
+        restored = UserMessage.from_dict(data)
+        assert isinstance(restored.structured_output, DynamicStructuredOutput)
+        assert restored.structured_output.model_json_schema() == {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+        }

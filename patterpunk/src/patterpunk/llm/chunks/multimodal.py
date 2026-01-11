@@ -244,10 +244,18 @@ class MultimodalChunk:
 
         URLs and GCS URIs are downloaded and converted to base64 to ensure
         the serialized data is self-contained.
+
+        Raises:
+            ValueError: If downloading URL/GCS content fails
         """
         # Normalize to base64 for persistence
         if self.source_type in ["url", "gcs_uri"]:
-            chunk = self.download()
+            try:
+                chunk = self.download()
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to download {self.source_type} content for serialization: {e}"
+                ) from e
         else:
             chunk = self
 
