@@ -20,6 +20,30 @@ response = Chat().add_message(
 print(response.latest_message.content)
 ```
 
+### Streaming
+
+Stream responses token-by-token for real-time display:
+
+```python
+import asyncio
+from patterpunk.llm.chat import Chat
+from patterpunk.llm.messages import UserMessage
+
+async def main():
+    chat = Chat().add_message(UserMessage("Write a haiku about coding"))
+
+    async with chat.complete_stream() as stream:
+        async for content in stream.content:
+            print(content, end="\r")  # Each yield is accumulated text
+
+    final_chat = await stream.chat
+    print(f"\nComplete: {final_chat.latest_message.content}")
+
+asyncio.run(main())
+```
+
+The streaming API works uniformly across all providers. For advanced patterns including thinking/reasoning streams, delta iteration, and tool calling with streaming, see [STREAMING.md](STREAMING.md).
+
 ### Tool Calling
 
 ```python
@@ -129,7 +153,7 @@ All providers implement the same unified interface with automatic credential det
 
 - **OpenAI** (`PP_OPENAI_API_KEY`) - GPT models with native tool calling, reasoning support
 - **Anthropic** (`PP_ANTHROPIC_API_KEY`) - Claude models with tool use, thinking modes
-- **AWS Bedrock** (`PP_AWS_*`) - Multiple model families (Claude, Llama, Mistral, Titan)
+- **AWS Bedrock** (`PP_AWS_*`) - Multiple model families (Claude, Llama, Mistral, Titan) - [Setup Guide](#aws-bedrock-setup)
 - **Google Vertex AI** (`PP_GOOGLE_*`) - Gemini models with tool calling
 - **Ollama** (`PP_OLLAMA_API_ENDPOINT`) - Local model serving
 
@@ -146,10 +170,66 @@ anthropic_model = AnthropicModel(model="claude-sonnet-4-20250514")
 
 For detailed information on specific features:
 
+- **[Streaming](STREAMING.md)** - Async streaming, thinking/reasoning, tool calling with streams
 - **[Tool Calling](TOOL_CALLING.md)** - Function conversion, MCP servers, execution flows
-- **[Promtp Caching](PROMPT_CACHING.md)** - Images, files, content chunking, provider support
+- **[Prompt Caching](PROMPT_CACHING.md)** - Cache control, provider support, cost optimization
 - **[Multimodal Content](MULTIMODAL.md)** - Images, files, content chunking, provider support
 - **[Agent Workflows](AGENTS.md)** - Sequential chains, parallel execution, type-safe agents
+
+## AWS Bedrock Setup
+
+AWS Bedrock requires additional setup for Claude models beyond standard IAM permissions.
+
+### Environment Variables
+
+```bash
+export PP_AWS_ACCESS_KEY_ID="your-access-key"
+export PP_AWS_SECRET_ACCESS_KEY="your-secret-key"
+export PP_AWS_REGION="us-east-1"  # or your preferred region
+```
+
+### AWS Marketplace Subscription
+
+Claude models on Bedrock are served through AWS Marketplace and require a one-time subscription activation per model family. Even with proper IAM permissions, you'll get `AccessDeniedException` until this is done.
+
+**Required IAM permissions for subscription:**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "aws-marketplace:ViewSubscriptions",
+                "aws-marketplace:Subscribe"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+**Activation process:**
+
+1. Add the above IAM permissions to your user/role
+2. Invoke each model once (via API or AWS Console Bedrock Playground)
+3. Wait for AWS Marketplace confirmation email (typically immediate)
+4. The subscription is now active account-wide for all users
+
+**Available Claude 4.5 inference profile IDs:**
+
+| Model | Inference Profile ID |
+|-------|---------------------|
+| Claude Sonnet 4.5 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| Claude Opus 4.5 | `us.anthropic.claude-opus-4-5-20251101-v1:0` |
+| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+
+```python
+from patterpunk.llm.models.bedrock import BedrockModel
+
+model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+```
 
 ## Design Philosophy
 

@@ -222,7 +222,9 @@ class TestMessageHistorySerialization:
                 )
             )
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete()
+            .complete(
+                execute_tools=False
+            )  # Don't auto-execute to verify ToolCallMessage
         )
 
         # Verify we got a tool call
@@ -231,7 +233,9 @@ class TestMessageHistorySerialization:
 
         # Second turn: Continue conversation with tool call in history
         # This is the critical test - the ToolCallMessage should be properly serialized
-        chat = chat.add_message(UserMessage("And what about London?")).complete()
+        chat = chat.add_message(UserMessage("And what about London?")).complete(
+            execute_tools=False
+        )
 
         # Should get another tool call for London
         assert chat.latest_message is not None
@@ -450,7 +454,9 @@ class TestComprehensiveMessageFlow:
         )
 
         # Step 5: Complete and expect ToolCallMessage
-        chat = chat.complete()
+        chat = chat.complete(
+            execute_tools=False
+        )  # Don't auto-execute to verify ToolCallMessage
 
         assert chat.latest_message is not None
         assert isinstance(
@@ -460,9 +466,9 @@ class TestComprehensiveMessageFlow:
 
         # Step 6: Execute tool manually
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "analyze_image"
         assert "description" in arguments
@@ -479,7 +485,7 @@ class TestComprehensiveMessageFlow:
         )
 
         # Step 8: Complete to get response incorporating tool result
-        chat = chat.complete()
+        chat = chat.complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(chat.latest_message, AssistantMessage)
@@ -489,7 +495,7 @@ class TestComprehensiveMessageFlow:
             UserMessage(
                 "What unusual thing did you detect in the background of the image?"
             )
-        ).complete()
+        ).complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(chat.latest_message, AssistantMessage)

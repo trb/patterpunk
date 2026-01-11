@@ -14,9 +14,7 @@ def test_google_multimodal_text_and_image_generation():
     if not GOOGLE_APPLICATION_CREDENTIALS:
         pytest.skip("Google credentials not available")
 
-    model = GoogleModel(
-        model="gemini-1.5-pro-002", location="us-central1", temperature=0.7
-    )
+    model = GoogleModel(model="gemini-2.5-flash", temperature=0.7)
 
     chat = Chat(model=model)
 

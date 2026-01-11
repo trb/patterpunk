@@ -1,7 +1,7 @@
 import base64
 import enum
 from abc import ABC
-from typing import List, Literal, Optional, Set, Union
+from typing import AsyncIterator, List, Literal, Optional, Set, Union
 
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
@@ -9,6 +9,7 @@ from patterpunk.config.defaults import (
 )
 from patterpunk.config.providers.openai import (
     openai,
+    openai_async,
     OPENAI_MAX_RETRIES,
 )
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
@@ -20,7 +21,7 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall, ToolCallList
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
@@ -251,7 +252,13 @@ class OpenAiModel(Model, ABC):
             return False
 
         # Get all call_ids from this tool call message
-        call_ids = {tc["id"] for tc in tool_call_message.tool_calls}
+        # Handle both ToolCall dataclass objects and dict format
+        call_ids = set()
+        for tc in tool_call_message.tool_calls:
+            if hasattr(tc, "id"):
+                call_ids.add(tc.id)
+            elif isinstance(tc, dict) and "id" in tc:
+                call_ids.add(tc["id"])
 
         # Look for corresponding ToolResultMessage(s) after this tool call
         for i in range(tool_call_index + 1, len(messages)):
@@ -323,9 +330,9 @@ class OpenAiModel(Model, ABC):
                         responses_input.append(
                             {
                                 "type": "function_call",
-                                "call_id": tool_call["id"],
-                                "name": tool_call["function"]["name"],
-                                "arguments": tool_call["function"]["arguments"],
+                                "call_id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments,
                             }
                         )
                 else:
@@ -444,7 +451,10 @@ class OpenAiModel(Model, ABC):
         model_params = {}
 
         if self._is_reasoning_model(model):
-            model_params["reasoning"] = {"effort": reasoning_effort.name.lower()}
+            model_params["reasoning"] = {
+                "effort": reasoning_effort.name.lower(),
+                "summary": "auto",  # Enable streaming reasoning summaries
+            }
         else:
             model_params["temperature"] = temperature
             model_params["top_p"] = top_p
@@ -468,33 +478,28 @@ class OpenAiModel(Model, ABC):
                 return image_chunk
         return None
 
-    def _process_tool_calls_output(self, output_item) -> List[dict]:
-        tool_calls = []
+    def _process_tool_calls_output(self, output_item) -> ToolCallList:
+        tool_calls: ToolCallList = []
 
         # Check if output_item IS a tool call (ResponseFunctionToolCall)
         if hasattr(output_item, "type") and output_item.type == "function_call":
             tool_calls.append(
-                {
-                    "id": output_item.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": output_item.name,
-                        "arguments": output_item.arguments,
-                    },
-                }
+                ToolCall(
+                    id=output_item.call_id,
+                    name=output_item.name,
+                    arguments=output_item.arguments,
+                )
             )
         # Legacy format: check if output_item has tool_calls attribute
         elif hasattr(output_item, "tool_calls") and output_item.tool_calls:
-            for tool_call in output_item.tool_calls:
+            for tc in output_item.tool_calls:
                 tool_calls.append(
-                    {
-                        "id": tool_call.id,
-                        "type": tool_call.type,
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=tc.function.arguments,
+                        type=tc.type,
+                    )
                 )
         return tool_calls
 
@@ -682,3 +687,223 @@ class OpenAiModel(Model, ABC):
     @staticmethod
     def get_available_models() -> List[str]:
         return [model.id for model in openai.models.list().data]
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Stream the assistant message response from OpenAI.
+
+        Yields StreamChunk objects for each streaming event.
+        Uses the OpenAI Responses API with stream=True.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        self._log_request_start(messages)
+
+        responses_parameters = self._prepare_request_parameters(
+            messages, tools, structured_output, output_types
+        )
+        responses_parameters["stream"] = True
+
+        self._log_request_parameters(responses_parameters)
+
+        stream = await openai_async.responses.create(**responses_parameters)
+
+        # Track current tool call state
+        current_tool_id = None
+        current_tool_name = None
+
+        async for event in stream:
+            chunk = self._convert_stream_event_to_chunk(
+                event, current_tool_id, current_tool_name
+            )
+
+            # Update tool call tracking based on events
+            event_type = getattr(event, "type", "")
+
+            if event_type == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if item and getattr(item, "type", "") == "function_call":
+                    current_tool_id = getattr(item, "call_id", None)
+                    current_tool_name = getattr(item, "name", None)
+
+            if event_type == "response.function_call_arguments.done":
+                # Reset after tool call completes
+                current_tool_id = None
+                current_tool_name = None
+
+            if chunk is not None:
+                yield chunk
+
+    def _convert_stream_event_to_chunk(
+        self,
+        event,
+        current_tool_id: Optional[str],
+        current_tool_name: Optional[str],
+    ) -> Optional["StreamChunk"]:
+        """
+        Convert an OpenAI Responses API streaming event to a StreamChunk.
+
+        Returns None for events we don't need to expose.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        event_type = getattr(event, "type", "")
+
+        # Reasoning/thinking content deltas (for o1, o3-mini, etc.)
+        if event_type == "response.reasoning_summary_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.THINKING_DELTA,
+                    text=delta,
+                )
+
+        # Reasoning summary part lifecycle (block start)
+        elif event_type == "response.reasoning_summary_part.added":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_START,
+                block_type="thinking",
+            )
+
+        # Reasoning summary part done (block end)
+        elif event_type == "response.reasoning_summary_part.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                block_type="thinking",
+            )
+
+        # Text delta - main content streaming
+        elif event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.TEXT_DELTA,
+                    text=delta,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Tool use start - when a function call output item is added
+        elif event_type == "response.output_item.added":
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", "") == "function_call":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_START,
+                    index=getattr(event, "output_index", 0),
+                    tool_call_id=getattr(item, "call_id", None),
+                    tool_name=getattr(item, "name", None),
+                )
+
+        # Tool arguments delta - incremental function arguments
+        elif event_type == "response.function_call_arguments.delta":
+            delta = getattr(event, "delta", "")
+            if delta:
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_DELTA,
+                    tool_arguments_delta=delta,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Tool call complete - function arguments done
+        elif event_type == "response.function_call_arguments.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=getattr(event, "output_index", 0),
+            )
+
+        # Content block start - when text content part is added
+        elif event_type == "response.content_part.added":
+            part = getattr(event, "part", None)
+            if part and getattr(part, "type", "") == "output_text":
+                return StreamChunk(
+                    event_type=StreamEventType.CONTENT_BLOCK_START,
+                    index=getattr(event, "content_index", 0),
+                    block_type="text",
+                )
+
+        # Content block done
+        elif event_type == "response.content_part.done":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=getattr(event, "content_index", 0),
+            )
+
+        # Output item done
+        elif event_type == "response.output_item.done":
+            # Check if this was a function call completing
+            item = getattr(event, "item", None)
+            if item and getattr(item, "type", "") == "function_call":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_STOP,
+                    index=getattr(event, "output_index", 0),
+                )
+
+        # Response completed - emit MESSAGE_END with usage and thinking blocks
+        elif event_type == "response.completed":
+            response = getattr(event, "response", None)
+            usage = None
+            thinking_blocks = None
+
+            if response:
+                if hasattr(response, "usage"):
+                    usage_obj = response.usage
+                    usage = {
+                        "input_tokens": getattr(usage_obj, "input_tokens", 0),
+                        "output_tokens": getattr(usage_obj, "output_tokens", 0),
+                    }
+
+                # Extract reasoning/thinking blocks from completed response
+                thinking_blocks = self._extract_thinking_blocks_from_response(response)
+
+            return StreamChunk(
+                event_type=StreamEventType.MESSAGE_END,
+                usage=usage,
+                thinking_blocks=thinking_blocks,
+            )
+
+        return None
+
+    def _extract_thinking_blocks_from_response(self, response) -> Optional[list]:
+        """
+        Extract thinking/reasoning blocks from OpenAI response.
+
+        OpenAI reasoning models include reasoning summaries in the response output.
+        We convert these to a format compatible with patterpunk's thinking_blocks.
+        """
+        thinking_blocks = []
+
+        output = getattr(response, "output", None)
+        if not output:
+            return None
+
+        for item in output:
+            item_type = getattr(item, "type", None)
+
+            # Handle reasoning summary items
+            if item_type == "reasoning":
+                summary = getattr(item, "summary", None)
+                if summary:
+                    # Summary can be a list of content parts
+                    if isinstance(summary, list):
+                        for part in summary:
+                            if getattr(part, "type", None) == "summary_text":
+                                thinking_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": getattr(part, "text", ""),
+                                    }
+                                )
+                    elif isinstance(summary, str):
+                        thinking_blocks.append(
+                            {
+                                "type": "thinking",
+                                "thinking": summary,
+                            }
+                        )
+
+        return thinking_blocks if thinking_blocks else None

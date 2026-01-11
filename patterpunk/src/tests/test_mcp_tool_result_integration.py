@@ -12,6 +12,7 @@ from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.chat.tools import execute_mcp_tool_calls
+from patterpunk.llm.tool_types import ToolCall
 
 
 class TestMCPToolResultCreation:
@@ -23,14 +24,11 @@ class TestMCPToolResultCreation:
         mock_chat = Mock()
         mock_chat.latest_message = ToolCallMessage(
             [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "weather__get_weather",
-                        "arguments": '{"location": "Paris"}',
-                    },
-                }
+                ToolCall(
+                    id="call_abc123",
+                    name="weather__get_weather",
+                    arguments='{"location": "Paris"}',
+                )
             ]
         )
         mock_chat.tools = [
@@ -80,14 +78,11 @@ class TestMCPToolResultCreation:
         mock_chat = Mock()
         mock_chat.latest_message = ToolCallMessage(
             [
-                {
-                    "id": "call_error123",
-                    "type": "function",
-                    "function": {
-                        "name": "weather__get_weather",
-                        "arguments": '{"location": "InvalidCity"}',
-                    },
-                }
+                ToolCall(
+                    id="call_error123",
+                    name="weather__get_weather",
+                    arguments='{"location": "InvalidCity"}',
+                )
             ]
         )
         mock_chat.tools = [
@@ -132,22 +127,16 @@ class TestMCPToolResultCreation:
         mock_chat = Mock()
         mock_chat.latest_message = ToolCallMessage(
             [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "weather__get_weather",
-                        "arguments": '{"location": "Paris"}',
-                    },
-                },
-                {
-                    "id": "call_2",
-                    "type": "function",
-                    "function": {
-                        "name": "weather__get_weather",
-                        "arguments": '{"location": "London"}',
-                    },
-                },
+                ToolCall(
+                    id="call_1",
+                    name="weather__get_weather",
+                    arguments='{"location": "Paris"}',
+                ),
+                ToolCall(
+                    id="call_2",
+                    name="weather__get_weather",
+                    arguments='{"location": "London"}',
+                ),
             ]
         )
         mock_chat.tools = [
@@ -204,14 +193,11 @@ class TestMCPToolResultCreation:
         mock_chat = Mock()
         mock_chat.latest_message = ToolCallMessage(
             [
-                {
-                    "id": "call_test",
-                    "type": "function",
-                    "function": {
-                        "name": "filesystem__read_file",
-                        "arguments": '{"path": "/test.txt"}',
-                    },
-                }
+                ToolCall(
+                    id="call_test",
+                    name="filesystem__read_file",
+                    arguments='{"path": "/test.txt"}',
+                )
             ]
         )
         mock_chat.tools = [
@@ -257,11 +243,11 @@ class TestMCPToolResultCreation:
         mock_chat = Mock()
         mock_chat.latest_message = ToolCallMessage(
             [
-                {
-                    "id": "call_test",
-                    "type": "function",
-                    "function": {"name": "some_tool", "arguments": "{}"},
-                }
+                ToolCall(
+                    id="call_test",
+                    name="some_tool",
+                    arguments="{}",
+                )
             ]
         )
         mock_chat._mcp_client = None

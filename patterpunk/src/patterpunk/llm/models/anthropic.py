@@ -2,10 +2,20 @@ import json
 import time
 from abc import ABC
 from dataclasses import dataclass
-from typing import List, Optional, Callable, get_args, Set, Union, Literal
+from typing import (
+    AsyncIterator,
+    List,
+    Optional,
+    Callable,
+    get_args,
+    Set,
+    Union,
+    Literal,
+)
 
 from patterpunk.config.providers.anthropic import (
     anthropic,
+    anthropic_async,
     ANTHROPIC_DEFAULT_TEMPERATURE,
     ANTHROPIC_DEFAULT_TOP_P,
     ANTHROPIC_DEFAULT_TOP_K,
@@ -20,7 +30,7 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
-from patterpunk.llm.types import ToolDefinition, CacheChunk
+from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
@@ -205,10 +215,19 @@ Please extract the relevant information from this reasoning and format it exactl
     def _parse_model_version(self) -> tuple[int, int]:
         import re
 
-        # Claude 3.x format: claude-3-7-sonnet-20250219
-        claude3_match = re.search(r"claude-3-(\d+)", self.model)
-        if claude3_match:
-            return (3, int(claude3_match.group(1)))
+        # Claude 3.x with minor version: claude-3-7-sonnet-20250219, claude-3-5-haiku-20241022
+        claude3_minor_match = re.search(
+            r"claude-3-(\d+)-(?:opus|sonnet|haiku)", self.model
+        )
+        if claude3_minor_match:
+            return (3, int(claude3_minor_match.group(1)))
+
+        # Claude 3.0 base format: claude-3-haiku-20240307, claude-3-opus-20240229
+        claude3_base_match = re.search(
+            r"claude-3-(?:opus|sonnet|haiku)-\d{8}", self.model
+        )
+        if claude3_base_match:
+            return (3, 0)
 
         # Claude 4+ format: claude-opus-4-20250514, claude-sonnet-4-5-20250614
         # Need to distinguish between minor version and date
@@ -332,6 +351,13 @@ Please extract the relevant information from this reasoning and format it exactl
                 "type": self.thinking.type,
                 "budget_tokens": self.thinking.budget_tokens,
             }
+            # Enable interleaved thinking for tool calls with Claude 4.5+ models
+            # This allows thinking blocks between tool calls for more sophisticated reasoning
+            major, minor = self._parse_model_version()
+            if major >= 4 and minor >= 5:
+                api_params["extra_headers"] = {
+                    "anthropic-beta": "interleaved-thinking-2025-05-14"
+                }
         # Always apply parameter compatibility checks for Claude 4+ models
         # to handle temperature/top_p conflicts and thinking mode requirements
         api_params = self._get_compatible_params(api_params)
@@ -502,7 +528,7 @@ Please extract the relevant information from this reasoning and format it exactl
                     )
         return None
 
-    def _convert_tool_call_block(self, block) -> dict:
+    def _convert_tool_call_block(self, block) -> ToolCall:
         arguments = "{}"
         if hasattr(block, "input") and block.input:
             try:
@@ -510,15 +536,11 @@ Please extract the relevant information from this reasoning and format it exactl
             except (TypeError, ValueError):
                 arguments = str(block.input)
 
-        tool_call = {
-            "id": block.id,
-            "type": "function",
-            "function": {
-                "name": block.name,
-                "arguments": arguments,
-            },
-        }
-        return tool_call
+        return ToolCall(
+            id=block.id,
+            name=block.name,
+            arguments=arguments,
+        )
 
     def _assemble_text_content(
         self, response, structured_output: Optional[object]
@@ -810,15 +832,15 @@ Please extract the relevant information from this reasoning and format it exactl
                 for tool_call in message.tool_calls:
                     # Parse arguments from JSON string
                     try:
-                        arguments = json.loads(tool_call["function"]["arguments"])
+                        arguments = json.loads(tool_call.arguments)
                     except (json.JSONDecodeError, KeyError):
                         arguments = {}
 
                     content_blocks.append(
                         {
                             "type": "tool_use",
-                            "id": tool_call["id"],
-                            "name": tool_call["function"]["name"],
+                            "id": tool_call.id,
+                            "name": tool_call.name,
                             "input": arguments,
                         }
                     )
@@ -922,3 +944,122 @@ Please extract the relevant information from this reasoning and format it exactl
     @staticmethod
     def get_name():
         return "Anthropic"
+
+    async def stream_assistant_message(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition] = None,
+        structured_output: Optional[object] = None,
+        output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Stream the assistant message response from Anthropic.
+
+        Yields StreamChunk objects for each streaming event.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        # Build API parameters (same as sync, but we'll use async client)
+        system_prompt = self._prepare_system_prompt(messages)
+        api_params = self._build_base_api_parameters(messages, system_prompt)
+        api_params = self._apply_thinking_configuration(api_params)
+        api_params = self._configure_tools_and_structured_output(
+            api_params, tools, structured_output
+        )
+
+        # Remove timeout from params (context manager handles it)
+        api_params.pop("timeout", None)
+
+        async with anthropic_async.messages.stream(**api_params) as stream:
+            async for event in stream:
+                chunk = self._convert_stream_event_to_chunk(event)
+                if chunk is not None:
+                    yield chunk
+
+            # Get final message for complete data
+            final_message = stream.current_message_snapshot
+
+            # Extract thinking blocks with signatures from final message
+            thinking_blocks = self._extract_thinking_blocks(final_message)
+
+            # Yield final message end event
+            yield StreamChunk(
+                event_type=StreamEventType.MESSAGE_END,
+                usage={
+                    "input_tokens": final_message.usage.input_tokens,
+                    "output_tokens": final_message.usage.output_tokens,
+                },
+                thinking_blocks=thinking_blocks if thinking_blocks else None,
+            )
+
+    def _convert_stream_event_to_chunk(self, event) -> Optional["StreamChunk"]:
+        """
+        Convert an Anthropic streaming event to a StreamChunk.
+
+        Returns None for events we don't need to expose.
+        """
+        from patterpunk.llm.streaming import StreamChunk, StreamEventType
+
+        event_type = getattr(event, "type", None)
+
+        if event_type == "content_block_start":
+            block = event.content_block
+            if block.type == "thinking":
+                return StreamChunk(
+                    event_type=StreamEventType.CONTENT_BLOCK_START,
+                    index=event.index,
+                    block_type="thinking",
+                )
+            elif block.type == "text":
+                return StreamChunk(
+                    event_type=StreamEventType.CONTENT_BLOCK_START,
+                    index=event.index,
+                    block_type="text",
+                )
+            elif block.type == "tool_use":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_START,
+                    index=event.index,
+                    tool_call_id=block.id,
+                    tool_name=block.name,
+                )
+
+        elif event_type == "content_block_delta":
+            delta = event.delta
+            delta_type = getattr(delta, "type", None)
+
+            if delta_type == "thinking_delta":
+                return StreamChunk(
+                    event_type=StreamEventType.THINKING_DELTA,
+                    text=delta.thinking,
+                    index=event.index,
+                )
+            elif delta_type == "text_delta":
+                return StreamChunk(
+                    event_type=StreamEventType.TEXT_DELTA,
+                    text=delta.text,
+                    index=event.index,
+                )
+            elif delta_type == "input_json_delta":
+                return StreamChunk(
+                    event_type=StreamEventType.TOOL_USE_DELTA,
+                    tool_arguments_delta=delta.partial_json,
+                    index=event.index,
+                )
+
+        elif event_type == "content_block_stop":
+            return StreamChunk(
+                event_type=StreamEventType.CONTENT_BLOCK_STOP,
+                index=event.index,
+            )
+
+        elif event_type == "message_delta":
+            # Contains usage info and stop reason
+            return StreamChunk(
+                event_type=StreamEventType.MESSAGE_DELTA,
+                usage={
+                    "output_tokens": getattr(event.usage, "output_tokens", 0),
+                },
+            )
+
+        return None
