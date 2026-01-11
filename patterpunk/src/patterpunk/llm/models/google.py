@@ -684,17 +684,13 @@ class GoogleModel(Model, ABC):
     @staticmethod
     def get_available_models(location: Optional[str] = None) -> List[str]:
         default_models = [
-            "gemini-1.5-pro-002",
-            "gemini-1.5-pro-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-flash-001",
-            "gemini-1.0-pro-001",
-            "gemini-1.0-pro",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
         ]
 
         if not google_genai_available:
-            print("no vertex")
-            return []
+            return default_models
 
         try:
             if not GoogleModel.client:
@@ -715,14 +711,9 @@ class GoogleModel(Model, ABC):
                     gemini_models.append(model_name)
 
             if not gemini_models:
-                logger.warning(
-                    "VertexAI: No gemini models found, substituting with pre-set default models, which may or may not work"
-                )
                 return default_models
             return gemini_models
-        except Exception as e:
-            logger.error(f"Error listing Vertex AI models: {str(e)}")
-
+        except Exception:
             return default_models
 
     @staticmethod

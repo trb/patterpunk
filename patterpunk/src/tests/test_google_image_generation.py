@@ -21,8 +21,8 @@ def get_working_image_model():
     Work around Googles api being flakey
     """
     image_generation_models = [
-        "gemini-2.0-flash-preview-image-generation",
-        "gemini-2.5-flash-image-preview",
+        "gemini-2.5-flash-image",  # GA version
+        "gemini-2.5-flash-image-preview",  # Preview version
     ]
 
     for model_name in image_generation_models:
@@ -103,7 +103,7 @@ def test_google_generate_new_image():
     if not working_model:
         pytest.skip(
             "No Google image generation models available. "
-            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "Tried: gemini-2.5-flash-image, gemini-2.5-flash-image-preview. "
             "These models require the 'global' location and may have limited availability."
         )
 
@@ -254,7 +254,7 @@ def test_google_edit_existing_image_ducks_to_pelicans():
     if not working_model:
         pytest.skip(
             "No Google image generation models available. "
-            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "Tried: gemini-2.5-flash-image, gemini-2.5-flash-image-preview. "
             "These models require the 'global' location and may have limited availability."
         )
 
@@ -408,7 +408,7 @@ def test_google_multimodal_generation_with_multiple_images():
     if not working_model:
         pytest.skip(
             "No Google image generation models available. "
-            "Tried: gemini-2.0-flash-preview-image-generation, gemini-2.5-flash-image-preview. "
+            "Tried: gemini-2.5-flash-image, gemini-2.5-flash-image-preview. "
             "These models require the 'global' location and may have limited availability."
         )
 

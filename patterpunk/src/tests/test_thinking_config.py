@@ -51,7 +51,7 @@ def test_google_model_thinking_config_integration():
     thinking_config = ThinkingConfig(token_budget=2000, include_thoughts=True)
     model = GoogleModel(
         model="gemini-2.5-flash",
-        location="northamerica-northeast1",
+        location="us-central1",
         thinking_config=thinking_config,
     )
     assert model.thinking_config == thinking_config

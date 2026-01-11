@@ -274,7 +274,7 @@ def test_simple_tool_calling():
     response = (
         chat.add_message(system_msg)
         .add_message(UserMessage("What's the weather in Paris?"))
-        .complete()
+        .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
     )
 
     assert response.latest_message is not None
@@ -289,12 +289,12 @@ def test_simple_tool_calling():
     ), f"Expected exactly one tool call, got {len(tool_calls)}"
 
     tool_call = tool_calls[0]
-    assert tool_call["type"] == "function"
-    assert tool_call["function"]["name"] == "get_weather"
+    assert tool_call.type == "function"
+    assert tool_call.name == "get_weather"
 
     import json
 
-    arguments = json.loads(tool_call["function"]["arguments"])
+    arguments = json.loads(tool_call.arguments)
     assert "location" in arguments
     assert "paris" in arguments["location"].lower()
 
@@ -344,7 +344,7 @@ def test_multi_tool_calling():
                 "Calculate its area and give me an interesting fact about rectangles."
             )
         )
-        .complete()
+        .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
     )
 
     assert response.latest_message is not None
@@ -359,7 +359,7 @@ def test_multi_tool_calling():
     ), f"Expected at least one tool call, got {len(tool_calls)}"
 
     # Verify we have the expected tool calls
-    tool_names = [tc["function"]["name"] for tc in tool_calls]
+    tool_names = [tc.name for tc in tool_calls]
     assert (
         "calculate_area" in tool_names or "get_math_fact" in tool_names
     ), f"Expected calculate_area or get_math_fact in tool calls, got: {tool_names}"

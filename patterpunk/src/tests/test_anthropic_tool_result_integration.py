@@ -16,6 +16,7 @@ from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.anthropic import AnthropicModel
+from patterpunk.llm.tool_types import ToolCall
 
 
 class TestAnthropicToolResultSerialization:
@@ -30,14 +31,11 @@ class TestAnthropicToolResultSerialization:
             UserMessage("What's the weather in Paris?"),
             ToolCallMessage(
                 [
-                    {
-                        "id": "toolu_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris"}',
-                        },
-                    }
+                    ToolCall(
+                        id="toolu_abc123",
+                        name="get_weather",
+                        arguments='{"location": "Paris"}',
+                    )
                 ]
             ),
             ToolResultMessage(
@@ -105,14 +103,11 @@ class TestAnthropicToolResultSerialization:
         messages = [
             ToolCallMessage(
                 [
-                    {
-                        "id": "toolu_abc123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris", "unit": "celsius"}',
-                        },
-                    }
+                    ToolCall(
+                        id="toolu_abc123",
+                        name="get_weather",
+                        arguments='{"location": "Paris", "unit": "celsius"}',
+                    )
                 ]
             )
         ]
@@ -136,22 +131,16 @@ class TestAnthropicToolResultSerialization:
             UserMessage("What's the weather in Paris and London?"),
             ToolCallMessage(
                 [
-                    {
-                        "id": "toolu_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "Paris"}',
-                        },
-                    },
-                    {
-                        "id": "toolu_2",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "London"}',
-                        },
-                    },
+                    ToolCall(
+                        id="toolu_1",
+                        name="get_weather",
+                        arguments='{"location": "Paris"}',
+                    ),
+                    ToolCall(
+                        id="toolu_2",
+                        name="get_weather",
+                        arguments='{"location": "London"}',
+                    ),
                 ]
             ),
             ToolResultMessage(
@@ -243,7 +232,7 @@ class TestAnthropicToolResultIntegration:
                 )
             )
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete()
+            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
         )
 
         assert chat.latest_message is not None
@@ -252,9 +241,9 @@ class TestAnthropicToolResultIntegration:
 
         # Extract tool call details
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "get_weather"
         assert "location" in arguments
@@ -267,7 +256,7 @@ class TestAnthropicToolResultIntegration:
             ToolResultMessage(
                 content=result, call_id=call_id, function_name=function_name
             )
-        ).complete()
+        ).complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(chat.latest_message, AssistantMessage)
@@ -288,7 +277,7 @@ class TestAnthropicToolResultIntegration:
         chat = (
             chat.add_message(SystemMessage("Use tools to answer questions."))
             .add_message(UserMessage("What's the weather?"))
-            .complete()
+            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
         )
 
         if isinstance(chat.latest_message, ToolCallMessage):
@@ -298,11 +287,11 @@ class TestAnthropicToolResultIntegration:
             chat = chat.add_message(
                 ToolResultMessage(
                     content="Error: Invalid location provided",
-                    call_id=tool_call["id"],
-                    function_name=tool_call["function"]["name"],
+                    call_id=tool_call.id,
+                    function_name=tool_call.name,
                     is_error=True,
                 )
-            ).complete()
+            ).complete(execute_tools=False)
 
             # Model should handle the error gracefully
             assert chat.latest_message is not None
@@ -322,7 +311,7 @@ class TestAnthropicToolResultIntegration:
         chat = (
             chat.add_message(SystemMessage("Use tools to answer questions."))
             .add_message(UserMessage("What's the weather in Paris?"))
-            .complete()
+            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
         )
 
         if isinstance(chat.latest_message, ToolCallMessage):
@@ -332,13 +321,13 @@ class TestAnthropicToolResultIntegration:
             chat = chat.add_message(
                 ToolResultMessage(
                     content=result,
-                    call_id=tool_call["id"],
-                    function_name=tool_call["function"]["name"],
+                    call_id=tool_call.id,
+                    function_name=tool_call.name,
                 )
-            ).complete()
+            ).complete(execute_tools=False)
 
         # Turn 2: Second question (with first tool call/result in history)
-        chat = chat.add_message(UserMessage("What about London?")).complete()
+        chat = chat.add_message(UserMessage("What about London?")).complete(execute_tools=False)
 
         # Should get another tool call
         assert chat.latest_message is not None
@@ -418,7 +407,7 @@ class TestAnthropicToolResultIntegration:
         )
 
         # Step 5: Complete and expect ToolCallMessage
-        chat = chat.complete()
+        chat = chat.complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
 
         assert chat.latest_message is not None
         assert isinstance(
@@ -428,9 +417,9 @@ class TestAnthropicToolResultIntegration:
 
         # Step 6: Execute tool manually
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "analyze_image"
         assert "description" in arguments
@@ -445,7 +434,7 @@ class TestAnthropicToolResultIntegration:
         )
 
         # Step 8: Complete to get response incorporating tool result
-        chat = chat.complete()
+        chat = chat.complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(chat.latest_message, AssistantMessage)
@@ -456,7 +445,7 @@ class TestAnthropicToolResultIntegration:
             UserMessage(
                 "Based on your analysis, what unusual thing did you find in the background?"
             )
-        ).complete()
+        ).complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(
@@ -563,7 +552,7 @@ class TestClaude45Models:
                 )
             )
             .add_message(UserMessage("What is 15 plus 27?"))
-            .complete()
+            .complete(execute_tools=False)  # Don't auto-execute to verify ToolCallMessage
         )
 
         assert chat.latest_message is not None
@@ -573,9 +562,9 @@ class TestClaude45Models:
 
         # Extract and execute tool call
         tool_call = chat.latest_message.tool_calls[0]
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
+        call_id = tool_call.id
+        function_name = tool_call.name
+        arguments = json.loads(tool_call.arguments)
 
         assert function_name == "calculate_sum"
         result = calculate_sum(**arguments)
@@ -585,7 +574,7 @@ class TestClaude45Models:
             ToolResultMessage(
                 content=result, call_id=call_id, function_name=function_name
             )
-        ).complete()
+        ).complete(execute_tools=False)
 
         assert chat.latest_message is not None
         assert isinstance(chat.latest_message, AssistantMessage)
