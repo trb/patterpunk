@@ -9,6 +9,7 @@ You MUST access the following files if you work on related features of patterpun
 - './AGENTS.md': Principles and design choices and goals for the agentic features in patterpunk, like the Agent base class or the agent chain functionality
 - './MULTIMODAL.md': Patterpunk supports multi-modal input like files, images, audio, video, etc - this file include information about how patterpunk handles multi-model content
 - './PROMPT_CACHING.md': Some providers support prompt caching for performance/cost-reduction reasons, this file details how patterpunk supports prompt caching
+- './STREAMING.md': Documentation on async streaming API for real-time token-by-token responses, including thinking/reasoning streams and tool calling integration
 - './TOOL_CALLING.md': Documentation on how patterpunk implements tool calling
 - './README.md': Developer-oriented documentation on how to use patterpunk, helpful to understand how patterpunk is intended to be used
 

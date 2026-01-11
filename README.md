@@ -20,6 +20,30 @@ response = Chat().add_message(
 print(response.latest_message.content)
 ```
 
+### Streaming
+
+Stream responses token-by-token for real-time display:
+
+```python
+import asyncio
+from patterpunk.llm.chat import Chat
+from patterpunk.llm.messages import UserMessage
+
+async def main():
+    chat = Chat().add_message(UserMessage("Write a haiku about coding"))
+
+    async with chat.complete_stream() as stream:
+        async for content in stream.content:
+            print(content, end="\r")  # Each yield is accumulated text
+
+    final_chat = await stream.chat
+    print(f"\nComplete: {final_chat.latest_message.content}")
+
+asyncio.run(main())
+```
+
+The streaming API works uniformly across all providers. For advanced patterns including thinking/reasoning streams, delta iteration, and tool calling with streaming, see [STREAMING.md](STREAMING.md).
+
 ### Tool Calling
 
 ```python
@@ -146,8 +170,9 @@ anthropic_model = AnthropicModel(model="claude-sonnet-4-20250514")
 
 For detailed information on specific features:
 
+- **[Streaming](STREAMING.md)** - Async streaming, thinking/reasoning, tool calling with streams
 - **[Tool Calling](TOOL_CALLING.md)** - Function conversion, MCP servers, execution flows
-- **[Promtp Caching](PROMPT_CACHING.md)** - Images, files, content chunking, provider support
+- **[Prompt Caching](PROMPT_CACHING.md)** - Cache control, provider support, cost optimization
 - **[Multimodal Content](MULTIMODAL.md)** - Images, files, content chunking, provider support
 - **[Agent Workflows](AGENTS.md)** - Sequential chains, parallel execution, type-safe agents
 
