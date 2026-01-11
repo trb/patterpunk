@@ -221,7 +221,9 @@ class TestAssistantMessageSerialization:
             {"type": "thinking", "thinking": "Let me consider this..."},
             {"type": "thinking", "thinking": "The answer should be..."},
         ]
-        msg = AssistantMessage(content="The answer is 42.", thinking_blocks=thinking_blocks)
+        msg = AssistantMessage(
+            content="The answer is 42.", thinking_blocks=thinking_blocks
+        )
         data = msg.serialize()
 
         assert data["thinking_blocks"] == thinking_blocks
@@ -386,7 +388,11 @@ class TestMessageFromDict:
         data = {
             "type": "tool_call",
             "tool_calls": [
-                {"id": "1", "type": "function", "function": {"name": "fn", "arguments": "{}"}}
+                {
+                    "id": "1",
+                    "type": "function",
+                    "function": {"name": "fn", "arguments": "{}"},
+                }
             ],
         }
         msg = message_from_dict(data)
@@ -428,13 +434,14 @@ class TestDynamicStructuredOutput:
 class TestStructuredOutputDynamicImport:
     def test_structured_output_import_success(self):
         """Test that structured_output can be dynamically imported."""
-        msg = UserMessage(
-            content="Test", structured_output=TestResponseModel
-        )
+        msg = UserMessage(content="Test", structured_output=TestResponseModel)
         data = msg.serialize()
 
         # Verify class_ref is stored
-        assert "tests.test_serialization.TestResponseModel" in data["structured_output"]["class_ref"]
+        assert (
+            "tests.test_serialization.TestResponseModel"
+            in data["structured_output"]["class_ref"]
+        )
 
         # Deserialize and verify import worked
         restored = UserMessage.from_dict(data)
@@ -470,15 +477,23 @@ class TestFullConversationRoundTrip:
             UserMessage("What is 2+2?"),
             AssistantMessage(
                 "The answer is 4.",
-                thinking_blocks=[{"type": "thinking", "thinking": "Simple addition..."}],
+                thinking_blocks=[
+                    {"type": "thinking", "thinking": "Simple addition..."}
+                ],
             ),
             UserMessage("Thanks! Now call a tool."),
             ToolCallMessage(
                 tool_calls=[
-                    ToolCall(id="call_1", name="calculator", arguments='{"op": "multiply", "a": 3, "b": 4}')
+                    ToolCall(
+                        id="call_1",
+                        name="calculator",
+                        arguments='{"op": "multiply", "a": 3, "b": 4}',
+                    )
                 ]
             ),
-            ToolResultMessage(content="12", call_id="call_1", function_name="calculator"),
+            ToolResultMessage(
+                content="12", call_id="call_1", function_name="calculator"
+            ),
             AssistantMessage("The result of 3 times 4 is 12."),
         ]
 
