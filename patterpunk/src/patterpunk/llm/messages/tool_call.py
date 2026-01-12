@@ -14,9 +14,12 @@ class ToolCallMessage(Message):
     """
 
     def __init__(
-        self, tool_calls: ToolCallList, thinking_blocks: Optional[List[dict]] = None
+        self,
+        tool_calls: ToolCallList,
+        thinking_blocks: Optional[List[dict]] = None,
+        id: Optional[str] = None,
     ):
-        super().__init__("", ROLE_TOOL_CALL)
+        super().__init__("", ROLE_TOOL_CALL, id=id)
         self.tool_calls = tool_calls
         self.thinking_blocks = thinking_blocks or []
 
@@ -45,6 +48,7 @@ class ToolCallMessage(Message):
         """
         result = {
             "type": "tool_call",
+            "id": self.id,
             "tool_calls": [tc.to_openai_format() for tc in self.tool_calls],
         }
         if self.thinking_blocks:
@@ -52,12 +56,13 @@ class ToolCallMessage(Message):
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ToolCallMessage":
+    def deserialize(cls, data: dict) -> "ToolCallMessage":
         """Deserialize from dict."""
         tool_calls = [ToolCall.from_openai_format(tc) for tc in data["tool_calls"]]
         return cls(
             tool_calls=tool_calls,
             thinking_blocks=data.get("thinking_blocks"),
+            id=data.get("id"),
         )
 
     def __repr__(self, truncate=True):

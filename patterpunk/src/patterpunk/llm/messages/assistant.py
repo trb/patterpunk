@@ -21,8 +21,9 @@ class AssistantMessage(Message):
         structured_output: Optional[Any] = None,
         parsed_output: Optional[Any] = None,
         thinking_blocks: Optional[List[dict]] = None,
+        id: Optional[str] = None,
     ):
-        super().__init__(content, ROLE_ASSISTANT)
+        super().__init__(content, ROLE_ASSISTANT, id=id)
         self.structured_output = structured_output
         self._parsed_output = parsed_output
         self._raw_content = content
@@ -143,6 +144,7 @@ class AssistantMessage(Message):
         """
         result = {
             "type": "assistant",
+            "id": self.id,
             "content": serialize_content(self._raw_content),
         }
         if self.thinking_blocks:
@@ -154,7 +156,7 @@ class AssistantMessage(Message):
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> "AssistantMessage":
+    def deserialize(cls, data: dict) -> "AssistantMessage":
         """
         Deserialize from dict.
 
@@ -172,4 +174,5 @@ class AssistantMessage(Message):
                 data.get("structured_output")
             ),
             thinking_blocks=data.get("thinking_blocks"),
+            id=data.get("id"),
         )

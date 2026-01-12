@@ -19,6 +19,7 @@ class ToolResultMessage(Message):
         call_id: Optional ID linking to original ToolCallMessage (OpenAI/Anthropic/Bedrock)
         function_name: Optional name of executed function (Google/general use)
         is_error: Whether the tool execution failed (Anthropic error handling)
+        id: Optional unique identifier for the message
     """
 
     def __init__(
@@ -27,8 +28,9 @@ class ToolResultMessage(Message):
         call_id: Optional[str] = None,
         function_name: Optional[str] = None,
         is_error: bool = False,
+        id: Optional[str] = None,
     ):
-        super().__init__(content, ROLE_TOOL_RESULT)
+        super().__init__(content, ROLE_TOOL_RESULT, id=id)
         self.call_id = call_id
         self.function_name = function_name
         self.is_error = is_error
@@ -61,6 +63,7 @@ class ToolResultMessage(Message):
         """
         result = {
             "type": "tool_result",
+            "id": self.id,
             "content": self.content,
         }
         if self.call_id is not None:
@@ -72,13 +75,14 @@ class ToolResultMessage(Message):
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ToolResultMessage":
+    def deserialize(cls, data: dict) -> "ToolResultMessage":
         """Deserialize from dict."""
         return cls(
             content=data["content"],
             call_id=data.get("call_id"),
             function_name=data.get("function_name"),
             is_error=data.get("is_error", False),
+            id=data.get("id"),
         )
 
     def __repr__(self, truncate=True):

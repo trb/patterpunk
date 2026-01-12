@@ -27,7 +27,7 @@ class TextChunk:
         return {"type": "text", "content": self.content}
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TextChunk":
+    def deserialize(cls, data: dict) -> "TextChunk":
         """Deserialize from dict."""
         return cls(content=data["content"])
 

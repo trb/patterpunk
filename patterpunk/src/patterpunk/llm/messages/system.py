@@ -1,4 +1,4 @@
-from typing import Union, List
+from typing import Optional, Union, List
 
 from ..chunks import CacheChunk
 from .base import Message
@@ -8,8 +8,8 @@ from .serialization import serialize_content, deserialize_content
 
 class SystemMessage(Message):
 
-    def __init__(self, content: Union[str, List[CacheChunk]]):
-        super().__init__(content, ROLE_SYSTEM)
+    def __init__(self, content: Union[str, List[CacheChunk]], id: Optional[str] = None):
+        super().__init__(content, ROLE_SYSTEM, id=id)
 
     def serialize(self) -> dict:
         """
@@ -20,11 +20,12 @@ class SystemMessage(Message):
         """
         return {
             "type": "system",
+            "id": self.id,
             "content": serialize_content(self.content),
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "SystemMessage":
+    def deserialize(cls, data: dict) -> "SystemMessage":
         """
         Deserialize from dict.
 
@@ -36,4 +37,4 @@ class SystemMessage(Message):
             content = deserialize_content(raw_content)
         else:
             content = raw_content
-        return cls(content=content)
+        return cls(content=content, id=data.get("id"))

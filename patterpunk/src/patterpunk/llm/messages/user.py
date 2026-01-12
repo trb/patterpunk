@@ -19,8 +19,9 @@ class UserMessage(Message):
         content: ContentType,
         structured_output: Optional[Any] = None,
         allow_tool_calls: bool = True,
+        id: Optional[str] = None,
     ):
-        super().__init__(content, ROLE_USER)
+        super().__init__(content, ROLE_USER, id=id)
         self.structured_output = structured_output
         self.allow_tool_calls = allow_tool_calls
 
@@ -33,6 +34,7 @@ class UserMessage(Message):
         """
         result = {
             "type": "user",
+            "id": self.id,
             "content": serialize_content(self.content),
             "allow_tool_calls": self.allow_tool_calls,
         }
@@ -43,7 +45,7 @@ class UserMessage(Message):
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> "UserMessage":
+    def deserialize(cls, data: dict) -> "UserMessage":
         """
         Deserialize from dict.
 
@@ -61,4 +63,5 @@ class UserMessage(Message):
                 data.get("structured_output")
             ),
             allow_tool_calls=data.get("allow_tool_calls", True),
+            id=data.get("id"),
         )

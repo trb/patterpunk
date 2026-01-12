@@ -141,19 +141,21 @@ weather_data = response.parsed_output  # Typed WeatherReport instance
 Store conversations in databases and resume them later:
 
 ```python
-from patterpunk.llm.messages import message_from_dict
+from patterpunk.llm.messages import deserialize_message
 
 # Serialize a conversation for storage
 serialized = [msg.serialize() for msg in chat.messages]
 # Store serialized (list of dicts) in PostgreSQL JSONB, MongoDB, etc.
 
 # Later: restore and continue the conversation
-messages = [message_from_dict(data) for data in serialized]
+messages = [deserialize_message(data) for data in serialized]
 restored_chat = Chat().add_messages(messages)
 continued = restored_chat.add_message(UserMessage("Follow-up question")).complete()
 ```
 
-All message types, including multimodal content, thinking blocks, tool calls, and structured output, serialize to self-contained dictionaries. See [SERIALIZATION.md](SERIALIZATION.md) for database integration patterns.
+Each message has a unique `id` (UUID) preserved through serialization—useful for database sync.
+
+All message types, including multimodal content, thinking blocks, tool calls, and structured output, serialize to self-contained dictionaries. See [SERIALIZATION.md](SERIALIZATION.md) for database integration patterns and details on message IDs.
 
 ## Architecture
 

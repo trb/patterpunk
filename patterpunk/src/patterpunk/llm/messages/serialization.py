@@ -91,11 +91,11 @@ def deserialize_content(data: dict) -> ContentType:
     for chunk_data in data["chunks"]:
         chunk_type = chunk_data.get("type")
         if chunk_type == "text":
-            chunks.append(TextChunk.from_dict(chunk_data))
+            chunks.append(TextChunk.deserialize(chunk_data))
         elif chunk_type == "cache":
-            chunks.append(CacheChunk.from_dict(chunk_data))
+            chunks.append(CacheChunk.deserialize(chunk_data))
         elif chunk_type == "multimodal":
-            chunks.append(MultimodalChunk.from_dict(chunk_data))
+            chunks.append(MultimodalChunk.deserialize(chunk_data))
         else:
             raise ValueError(f"Unknown chunk type: {chunk_type}")
     return chunks
@@ -194,7 +194,7 @@ def serialize_message(message) -> dict:
     return message.serialize()
 
 
-def message_from_dict(data: dict):
+def deserialize_message(data: dict):
     """
     Deserialize any message type from dict.
 
@@ -223,13 +223,13 @@ def message_from_dict(data: dict):
     from patterpunk.llm.messages.tool_result import ToolResultMessage
 
     deserializers = {
-        "system": SystemMessage.from_dict,
-        "user": UserMessage.from_dict,
-        "assistant": AssistantMessage.from_dict,
-        "tool_call": ToolCallMessage.from_dict,
-        "tool-call": ToolCallMessage.from_dict,
-        "tool_result": ToolResultMessage.from_dict,
-        "tool-result": ToolResultMessage.from_dict,
+        "system": SystemMessage.deserialize,
+        "user": UserMessage.deserialize,
+        "assistant": AssistantMessage.deserialize,
+        "tool_call": ToolCallMessage.deserialize,
+        "tool-call": ToolCallMessage.deserialize,
+        "tool_result": ToolResultMessage.deserialize,
+        "tool-result": ToolResultMessage.deserialize,
     }
 
     # Support both 'type' (new format) and 'role' (legacy format)

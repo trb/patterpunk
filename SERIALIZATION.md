@@ -9,7 +9,7 @@ Serialize a conversation and restore it later:
 ```python
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import (
-    SystemMessage, UserMessage, message_from_dict
+    SystemMessage, UserMessage, deserialize_message
 )
 
 # Build a conversation
@@ -29,7 +29,7 @@ serialized = [msg.serialize() for msg in chat.messages]
 # row = db.fetchone("SELECT data FROM conversations WHERE id = %s", [conv_id])
 # serialized = json.loads(row["data"])
 
-restored_messages = [message_from_dict(data) for data in serialized]
+restored_messages = [deserialize_message(data) for data in serialized]
 restored_chat = Chat().add_messages(restored_messages)
 
 # Continue the conversation
@@ -38,7 +38,16 @@ continued = restored_chat.add_message(
 ).complete()
 ```
 
-Each message's `serialize()` method returns a self-contained dictionary. The `message_from_dict()` function reconstructs the appropriate message type from that dictionary.
+Each message's `serialize()` method returns a self-contained dictionary. The `deserialize_message()` function reconstructs the appropriate message type from that dictionary.
+
+## Migration from Previous Versions
+
+If upgrading from an earlier version of patterpunk:
+
+- Replace `message_from_dict(data)` with `deserialize_message(data)`
+- Replace `MessageType.from_dict(data)` with `MessageType.deserialize(data)`
+
+The functionality is unchanged; only the method names were updated for clarity and consistency with the `serialize()` method.
 
 ## Database Storage
 
@@ -67,7 +76,7 @@ cursor.execute(
 # Retrieve conversation
 cursor.execute("SELECT messages FROM conversations WHERE id = %s", [conversation_id])
 row = cursor.fetchone()
-messages = [message_from_dict(data) for data in row[0]]
+messages = [deserialize_message(data) for data in row[0]]
 ```
 
 With psycopg3, dictionaries convert automatically without the `Json()` wrapper. SQLAlchemy with JSONB columns also accepts dictionaries directly.
@@ -83,31 +92,56 @@ import json
 data = json.dumps([msg.serialize() for msg in chat.messages])
 
 # Restore
-messages = [message_from_dict(d) for d in json.loads(data)]
+messages = [deserialize_message(d) for d in json.loads(data)]
 ```
+
+## Message IDs
+
+When syncing conversations with a database, you need to know which messages are new and which already exist. Patterpunk solves this by giving every message a unique `id` field (UUID v4) that it auto-generates on creation and preserves through serialization.
+
+UUIDs work well here because identical messages (like a user saying "Yes" twice) get distinct IDs, and no central coordination is needed to generate them.
+
+```python
+msg = UserMessage("Hello")
+print(msg.id)  # UUID v4 string, e.g., "550e8400-e29b-41d4-a716-446655440000"
+
+# ID is preserved through round-trip
+data = msg.serialize()
+restored = UserMessage.deserialize(data)
+assert restored.id == msg.id
+
+# Provide your own ID if needed
+custom_msg = UserMessage("Hello", id="my-custom-id")
+```
+
+The round-trip preservation means you can load messages from a database, add new ones, and easily identify which messages need saving by comparing IDs. Custom IDs are useful when migrating from another system or when you need deterministic identifiers.
+
+When deserializing old data without an `id` field, patterpunk generates a new UUID automatically. This maintains compatibility with data serialized before this feature was added.
 
 ## Supported Message Types
 
-All message types implement `serialize()` and `from_dict()`:
+All message types implement `serialize()` and `deserialize()`:
 
 | Message Type | Serialized Fields |
 |-------------|-------------------|
-| `SystemMessage` | content |
-| `UserMessage` | content, structured_output, allow_tool_calls |
-| `AssistantMessage` | content, thinking_blocks, structured_output |
-| `ToolCallMessage` | tool_calls, thinking_blocks |
-| `ToolResultMessage` | content, call_id, function_name, is_error |
+| `SystemMessage` | id, content |
+| `UserMessage` | id, content, structured_output, allow_tool_calls |
+| `AssistantMessage` | id, content, thinking_blocks, structured_output |
+| `ToolCallMessage` | id, tool_calls, thinking_blocks |
+| `ToolResultMessage` | id, content, call_id, function_name, is_error |
+
+The `id` field is present on all message types and uniquely identifies each message instance.
 
 ### Message with Simple Content
 
 ```python
-from patterpunk.llm.messages import SystemMessage, message_from_dict
+from patterpunk.llm.messages import SystemMessage, deserialize_message
 
 msg = SystemMessage("You are a helpful assistant")
 data = msg.serialize()
 # {'type': 'system', 'content': {'type': 'string', 'value': 'You are a helpful assistant'}}
 
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 assert restored.content == msg.content
 ```
 
@@ -116,7 +150,7 @@ assert restored.content == msg.content
 Messages containing images or other media serialize to base64 for self-contained storage:
 
 ```python
-from patterpunk.llm.messages import UserMessage, message_from_dict
+from patterpunk.llm.messages import UserMessage, deserialize_message
 from patterpunk.llm.chunks import TextChunk, MultimodalChunk
 
 msg = UserMessage([
@@ -127,7 +161,7 @@ msg = UserMessage([
 data = msg.serialize()
 # Image is converted to base64 in the serialized data
 
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 # Image data is preserved and can be sent to the LLM
 ```
 
@@ -138,7 +172,7 @@ URL-based images are downloaded during serialization to ensure the stored data i
 Extended thinking (reasoning) content serializes alongside the message:
 
 ```python
-from patterpunk.llm.messages import AssistantMessage, message_from_dict
+from patterpunk.llm.messages import AssistantMessage, deserialize_message
 
 # After a completion with thinking enabled
 thinking_msg = chat.latest_message  # AssistantMessage with thinking_blocks
@@ -146,7 +180,7 @@ thinking_msg = chat.latest_message  # AssistantMessage with thinking_blocks
 data = thinking_msg.serialize()
 # {'type': 'assistant', 'content': {...}, 'thinking_blocks': [...]}
 
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 assert restored.thinking_blocks == thinking_msg.thinking_blocks
 ```
 
@@ -158,7 +192,7 @@ When messages include structured output (Pydantic models), serialization stores 
 
 ```python
 from pydantic import BaseModel
-from patterpunk.llm.messages import UserMessage, message_from_dict
+from patterpunk.llm.messages import UserMessage, deserialize_message
 
 class WeatherReport(BaseModel):
     location: str
@@ -184,7 +218,7 @@ When the original Pydantic model class is importable, deserialization restores i
 
 ```python
 # If myapp.models.WeatherReport is importable
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 assert restored.structured_output is WeatherReport  # Original class
 ```
 
@@ -196,7 +230,7 @@ When the original class cannot be imported (different environment, refactored co
 from patterpunk.llm.messages import DynamicStructuredOutput
 
 # If original class is not importable
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 assert isinstance(restored.structured_output, DynamicStructuredOutput)
 
 # DynamicStructuredOutput satisfies patterpunk's interface
@@ -211,7 +245,7 @@ parsed = restored.structured_output.model_validate_json('{"location": "Tokyo"}')
 Tool calls serialize with their function names, arguments, and IDs:
 
 ```python
-from patterpunk.llm.messages import ToolCallMessage, message_from_dict
+from patterpunk.llm.messages import ToolCallMessage, deserialize_message
 
 # After a completion with tool calls
 tool_msg = chat.latest_message  # ToolCallMessage
@@ -223,7 +257,7 @@ data = tool_msg.serialize()
 #     }}
 # ]}
 
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 for tc in restored.tool_calls:
     print(f"{tc.function_name}: {tc.arguments}")
 ```
@@ -231,7 +265,7 @@ for tc in restored.tool_calls:
 Tool results also round-trip correctly:
 
 ```python
-from patterpunk.llm.messages import ToolResultMessage, message_from_dict
+from patterpunk.llm.messages import ToolResultMessage, deserialize_message
 
 result = ToolResultMessage(
     content="72°F, sunny",
@@ -240,7 +274,7 @@ result = ToolResultMessage(
 )
 
 data = result.serialize()
-restored = message_from_dict(data)
+restored = deserialize_message(data)
 assert restored.call_id == "call_123"
 ```
 
@@ -272,35 +306,35 @@ Content serializes with a discriminator field:
 
 ### Message Types
 
-Each message type includes a `type` discriminator:
+Each message type includes a `type` discriminator and a unique `id`:
 
 ```python
 # SystemMessage
-{"type": "system", "content": {...}}
+{"type": "system", "id": "uuid...", "content": {...}}
 
 # UserMessage
-{"type": "user", "content": {...}, "allow_tool_calls": True, "structured_output": {...}}
+{"type": "user", "id": "uuid...", "content": {...}, "allow_tool_calls": True, "structured_output": {...}}
 
 # AssistantMessage
-{"type": "assistant", "content": {...}, "thinking_blocks": [...], "structured_output": {...}}
+{"type": "assistant", "id": "uuid...", "content": {...}, "thinking_blocks": [...], "structured_output": {...}}
 
 # ToolCallMessage
-{"type": "tool_call", "tool_calls": [...], "thinking_blocks": [...]}
+{"type": "tool_call", "id": "uuid...", "tool_calls": [...], "thinking_blocks": [...]}
 
 # ToolResultMessage
-{"type": "tool_result", "content": "...", "call_id": "...", "function_name": "...", "is_error": False}
+{"type": "tool_result", "id": "uuid...", "content": "...", "call_id": "...", "function_name": "...", "is_error": False}
 ```
 
 ## API Reference
 
-### message_from_dict
+### deserialize_message
 
 Deserialize any message type from a dictionary.
 
 ```python
-from patterpunk.llm.messages import message_from_dict
+from patterpunk.llm.messages import deserialize_message
 
-message = message_from_dict(data)
+message = deserialize_message(data)
 ```
 
 | Parameter | Type | Required | Description |
@@ -347,7 +381,7 @@ import json
 from datetime import datetime, timezone
 from patterpunk.llm.chat import Chat
 from patterpunk.llm.messages import (
-    SystemMessage, UserMessage, message_from_dict
+    SystemMessage, UserMessage, deserialize_message
 )
 
 class ConversationStore:
@@ -378,7 +412,7 @@ class ConversationStore:
         if not row:
             return Chat()  # New conversation
 
-        messages = [message_from_dict(d) for d in json.loads(row[0])]
+        messages = [deserialize_message(d) for d in json.loads(row[0])]
         return Chat().add_messages(messages)
 
     def continue_conversation(self, conversation_id: str, user_input: str) -> Chat:

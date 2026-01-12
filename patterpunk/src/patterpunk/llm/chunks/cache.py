@@ -39,7 +39,7 @@ class CacheChunk:
         return result
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CacheChunk":
+    def deserialize(cls, data: dict) -> "CacheChunk":
         """Deserialize from dict."""
         ttl = (
             timedelta(seconds=data["ttl_seconds"]) if data.get("ttl_seconds") else None

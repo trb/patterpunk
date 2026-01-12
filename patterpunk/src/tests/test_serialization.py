@@ -12,7 +12,7 @@ from patterpunk.llm.messages import (
     AssistantMessage,
     ToolCallMessage,
     ToolResultMessage,
-    message_from_dict,
+    deserialize_message,
     serialize_message,
     DynamicStructuredOutput,
 )
@@ -36,13 +36,13 @@ class TestTextChunkSerialization:
         assert data["type"] == "text"
         assert data["content"] == "Hello, world!"
 
-        restored = TextChunk.from_dict(data)
+        restored = TextChunk.deserialize(data)
         assert restored.content == chunk.content
 
     def test_text_chunk_empty_content(self):
         chunk = TextChunk(content="")
         data = chunk.serialize()
-        restored = TextChunk.from_dict(data)
+        restored = TextChunk.deserialize(data)
         assert restored.content == ""
 
 
@@ -56,7 +56,7 @@ class TestCacheChunkSerialization:
         assert data["cacheable"] is True
         assert "ttl_seconds" not in data
 
-        restored = CacheChunk.from_dict(data)
+        restored = CacheChunk.deserialize(data)
         assert restored.content == chunk.content
         assert restored.cacheable == chunk.cacheable
         assert restored.ttl is None
@@ -69,7 +69,7 @@ class TestCacheChunkSerialization:
 
         assert data["ttl_seconds"] == 7200.0
 
-        restored = CacheChunk.from_dict(data)
+        restored = CacheChunk.deserialize(data)
         assert restored.content == chunk.content
         assert restored.cacheable == chunk.cacheable
         assert restored.ttl == timedelta(hours=2)
@@ -77,7 +77,7 @@ class TestCacheChunkSerialization:
     def test_cache_chunk_non_cacheable(self):
         chunk = CacheChunk(content="Not cached", cacheable=False)
         data = chunk.serialize()
-        restored = CacheChunk.from_dict(data)
+        restored = CacheChunk.deserialize(data)
         assert restored.cacheable is False
 
 
@@ -99,7 +99,7 @@ class TestMultimodalChunkSerialization:
         assert data["data"] == base64_data
         assert data["filename"] == "test.png"
 
-        restored = MultimodalChunk.from_dict(data)
+        restored = MultimodalChunk.deserialize(data)
         assert restored.to_base64() == base64_data
         assert restored.media_type == "image/png"
         assert restored.filename == "test.png"
@@ -111,7 +111,7 @@ class TestMultimodalChunkSerialization:
         )
 
         data = chunk.serialize()
-        restored = MultimodalChunk.from_dict(data)
+        restored = MultimodalChunk.deserialize(data)
 
         assert restored.to_bytes() == original_bytes
         assert restored.media_type == "application/octet-stream"
@@ -126,7 +126,7 @@ class TestSystemMessageSerialization:
         assert data["content"]["type"] == "string"
         assert data["content"]["value"] == "You are a helpful assistant."
 
-        restored = SystemMessage.from_dict(data)
+        restored = SystemMessage.deserialize(data)
         assert restored.content == msg.content
         assert restored.role == "system"
 
@@ -141,7 +141,7 @@ class TestSystemMessageSerialization:
         assert data["content"]["type"] == "chunks"
         assert len(data["content"]["chunks"]) == 2
 
-        restored = SystemMessage.from_dict(data)
+        restored = SystemMessage.deserialize(data)
         # Validate ALL chunks, not just the first
         assert len(restored.content) == 2
         assert restored.content[0].content == "System prompt part 1"
@@ -158,7 +158,7 @@ class TestUserMessageSerialization:
         assert data["type"] == "user"
         assert data["allow_tool_calls"] is True
 
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.content == msg.content
         assert restored.allow_tool_calls is True
 
@@ -168,7 +168,7 @@ class TestUserMessageSerialization:
 
         assert data["allow_tool_calls"] is False
 
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.allow_tool_calls is False
 
     def test_user_message_with_multimodal_content(self):
@@ -189,7 +189,7 @@ class TestUserMessageSerialization:
         assert data["content"]["chunks"][0]["type"] == "text"
         assert data["content"]["chunks"][1]["type"] == "multimodal"
 
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert len(restored.content) == 2
         assert isinstance(restored.content[0], TextChunk)
         assert isinstance(restored.content[1], MultimodalChunk)
@@ -206,7 +206,7 @@ class TestUserMessageSerialization:
         assert "TestResponseModel" in data["structured_output"]["class_ref"]
 
         # Round trip - should successfully import the class
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.structured_output is TestResponseModel
 
 
@@ -217,7 +217,7 @@ class TestAssistantMessageSerialization:
 
         assert data["type"] == "assistant"
 
-        restored = AssistantMessage.from_dict(data)
+        restored = AssistantMessage.deserialize(data)
         assert restored.content == msg.content
 
     def test_assistant_message_with_thinking_blocks(self):
@@ -232,7 +232,7 @@ class TestAssistantMessageSerialization:
 
         assert data["thinking_blocks"] == thinking_blocks
 
-        restored = AssistantMessage.from_dict(data)
+        restored = AssistantMessage.deserialize(data)
         assert restored.thinking_blocks == thinking_blocks
         assert restored.has_thinking is True
         assert "Let me consider this" in restored.thinking_text
@@ -246,7 +246,7 @@ class TestAssistantMessageSerialization:
 
         assert "structured_output" in data
 
-        restored = AssistantMessage.from_dict(data)
+        restored = AssistantMessage.deserialize(data)
         assert restored.structured_output is TestResponseModel
 
 
@@ -267,7 +267,7 @@ class TestToolCallMessageSerialization:
         assert data["tool_calls"][0]["id"] == "call_123"
         assert data["tool_calls"][0]["function"]["name"] == "get_weather"
 
-        restored = ToolCallMessage.from_dict(data)
+        restored = ToolCallMessage.deserialize(data)
         assert len(restored.tool_calls) == 1
         assert restored.tool_calls[0].id == "call_123"
         assert restored.tool_calls[0].name == "get_weather"
@@ -283,7 +283,7 @@ class TestToolCallMessageSerialization:
 
         assert len(data["tool_calls"]) == 2
 
-        restored = ToolCallMessage.from_dict(data)
+        restored = ToolCallMessage.deserialize(data)
         # Validate ALL tool calls completely
         assert len(restored.tool_calls) == 2
         assert restored.tool_calls[0].id == "call_1"
@@ -301,7 +301,7 @@ class TestToolCallMessageSerialization:
 
         assert data["thinking_blocks"] == thinking_blocks
 
-        restored = ToolCallMessage.from_dict(data)
+        restored = ToolCallMessage.deserialize(data)
         assert restored.thinking_blocks == thinking_blocks
 
 
@@ -317,7 +317,7 @@ class TestToolResultMessageSerialization:
         assert data.get("function_name") is None
         assert data.get("is_error") in (None, False)
 
-        restored = ToolResultMessage.from_dict(data)
+        restored = ToolResultMessage.deserialize(data)
         assert restored.content == "The weather is sunny."
         assert restored.call_id is None
         assert restored.function_name is None
@@ -329,7 +329,7 @@ class TestToolResultMessageSerialization:
 
         assert data["call_id"] == "call_123"
 
-        restored = ToolResultMessage.from_dict(data)
+        restored = ToolResultMessage.deserialize(data)
         assert restored.call_id == "call_123"
 
     def test_tool_result_message_with_function_name(self):
@@ -338,7 +338,7 @@ class TestToolResultMessageSerialization:
 
         assert data["function_name"] == "get_weather"
 
-        restored = ToolResultMessage.from_dict(data)
+        restored = ToolResultMessage.deserialize(data)
         assert restored.function_name == "get_weather"
 
     def test_tool_result_message_error(self):
@@ -351,7 +351,7 @@ class TestToolResultMessageSerialization:
 
         assert data["is_error"] is True
 
-        restored = ToolResultMessage.from_dict(data)
+        restored = ToolResultMessage.deserialize(data)
         assert restored.is_error is True
 
     def test_tool_result_message_all_fields(self):
@@ -363,39 +363,39 @@ class TestToolResultMessageSerialization:
         )
         data = msg.serialize()
 
-        restored = ToolResultMessage.from_dict(data)
+        restored = ToolResultMessage.deserialize(data)
         assert restored.content == "Success"
         assert restored.call_id == "call_789"
         assert restored.function_name == "process_data"
         assert restored.is_error is False
 
 
-class TestMessageFromDict:
-    def test_message_from_dict_system(self):
+class TestDeserializeMessage:
+    def test_deserialize_message_system(self):
         data = {"type": "system", "content": {"type": "string", "value": "Hello"}}
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, SystemMessage)
         assert msg.content == "Hello"
 
-    def test_message_from_dict_user(self):
+    def test_deserialize_message_user(self):
         data = {
             "type": "user",
             "content": {"type": "string", "value": "Hi"},
             "allow_tool_calls": False,
         }
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, UserMessage)
         assert msg.allow_tool_calls is False
 
-    def test_message_from_dict_assistant(self):
+    def test_deserialize_message_assistant(self):
         data = {
             "type": "assistant",
             "content": {"type": "string", "value": "Response"},
         }
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, AssistantMessage)
 
-    def test_message_from_dict_tool_call(self):
+    def test_deserialize_message_tool_call(self):
         data = {
             "type": "tool_call",
             "tool_calls": [
@@ -406,18 +406,18 @@ class TestMessageFromDict:
                 }
             ],
         }
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, ToolCallMessage)
 
-    def test_message_from_dict_tool_result(self):
+    def test_deserialize_message_tool_result(self):
         data = {"type": "tool_result", "content": "Result"}
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, ToolResultMessage)
 
-    def test_message_from_dict_unknown_type(self):
+    def test_deserialize_message_unknown_type(self):
         data = {"type": "unknown", "content": "test"}
         with pytest.raises(ValueError, match="Unknown message type"):
-            message_from_dict(data)
+            deserialize_message(data)
 
 
 class TestDynamicStructuredOutput:
@@ -455,7 +455,7 @@ class TestStructuredOutputDynamicImport:
         )
 
         # Deserialize and verify import worked
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.structured_output is TestResponseModel
 
     def test_structured_output_fallback_to_dynamic(self):
@@ -470,7 +470,7 @@ class TestStructuredOutputDynamicImport:
             "allow_tool_calls": True,
         }
 
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
 
         # Should fall back to DynamicStructuredOutput
         assert isinstance(restored.structured_output, DynamicStructuredOutput)
@@ -516,7 +516,7 @@ class TestFullConversationRoundTrip:
         parsed = json.loads(json_str)
 
         # Deserialize all messages
-        restored = [message_from_dict(data) for data in parsed]
+        restored = [deserialize_message(data) for data in parsed]
 
         # Verify types
         assert len(restored) == 7
@@ -594,10 +594,10 @@ class TestSerializationErrorHandling:
                 {"type": "chunks", "chunks": [{"type": "unknown", "content": "test"}]}
             )
 
-    def test_message_from_dict_missing_type(self):
+    def test_deserialize_message_missing_type(self):
         """Message without type or role should raise ValueError."""
         with pytest.raises(ValueError, match="Unknown message type"):
-            message_from_dict({"content": "test"})
+            deserialize_message({"content": "test"})
 
 
 class TestSerializationEdgeCases:
@@ -607,7 +607,7 @@ class TestSerializationEdgeCases:
         """Empty string should serialize and deserialize correctly."""
         msg = UserMessage(content="")
         data = msg.serialize()
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.content == ""
 
     def test_unicode_content(self):
@@ -615,7 +615,7 @@ class TestSerializationEdgeCases:
         content = "Hello 世界! 🎉 Ñoño"
         msg = UserMessage(content=content)
         data = msg.serialize()
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.content == content
 
     def test_empty_tool_calls_list(self):
@@ -623,7 +623,7 @@ class TestSerializationEdgeCases:
         msg = ToolCallMessage(tool_calls=[])
         data = msg.serialize()
         assert data["tool_calls"] == []
-        restored = ToolCallMessage.from_dict(data)
+        restored = ToolCallMessage.deserialize(data)
         assert len(restored.tool_calls) == 0
 
     def test_mixed_chunk_types(self):
@@ -639,7 +639,7 @@ class TestSerializationEdgeCases:
         ]
         msg = UserMessage(content=chunks)
         data = msg.serialize()
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
 
         assert len(restored.content) == 3
         assert isinstance(restored.content[0], TextChunk)
@@ -652,7 +652,7 @@ class TestSerializationEdgeCases:
     def test_legacy_role_field_fallback(self):
         """Legacy 'role' field should work for deserialization."""
         data = {"role": "system", "content": {"type": "string", "value": "test"}}
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, SystemMessage)
         assert msg.content == "test"
 
@@ -668,13 +668,13 @@ class TestSerializationEdgeCases:
                 }
             ],
         }
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, ToolCallMessage)
 
     def test_hyphenated_type_names_tool_result(self):
         """Hyphenated type name 'tool-result' should work."""
         data = {"type": "tool-result", "content": "result"}
-        msg = message_from_dict(data)
+        msg = deserialize_message(data)
         assert isinstance(msg, ToolResultMessage)
 
     def test_cache_chunk_zero_ttl(self):
@@ -683,7 +683,7 @@ class TestSerializationEdgeCases:
         data = chunk.serialize()
         # Note: Zero TTL is not serialized because timedelta(0) is falsy
         assert "ttl_seconds" not in data or data["ttl_seconds"] == 0
-        restored = CacheChunk.from_dict(data)
+        restored = CacheChunk.deserialize(data)
         # Zero TTL deserializes as None due to falsy check
         assert restored.ttl is None
 
@@ -692,7 +692,7 @@ class TestSerializationEdgeCases:
         chunk = CacheChunk(content="test", cacheable=True, ttl=timedelta(seconds=1))
         data = chunk.serialize()
         assert data["ttl_seconds"] == 1.0
-        restored = CacheChunk.from_dict(data)
+        restored = CacheChunk.deserialize(data)
         assert restored.ttl == timedelta(seconds=1)
 
     def test_multimodal_preserves_bytes(self):
@@ -702,14 +702,14 @@ class TestSerializationEdgeCases:
             original_bytes, media_type="application/octet-stream"
         )
         data = chunk.serialize()
-        restored = MultimodalChunk.from_dict(data)
+        restored = MultimodalChunk.deserialize(data)
         assert restored.to_bytes() == original_bytes
 
     def test_whitespace_only_content(self):
         """Whitespace-only content should be preserved."""
         msg = UserMessage(content="   \n\t  ")
         data = msg.serialize()
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.content == "   \n\t  "
 
     def test_very_long_content(self):
@@ -717,7 +717,7 @@ class TestSerializationEdgeCases:
         long_content = "x" * 100000
         msg = UserMessage(content=long_content)
         data = msg.serialize()
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.content == long_content
         assert len(restored.content) == 100000
 
@@ -736,7 +736,7 @@ class TestStructuredOutputEdgeCases:
             },
             "allow_tool_calls": True,
         }
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert isinstance(restored.structured_output, DynamicStructuredOutput)
 
     def test_structured_output_empty_class_ref(self):
@@ -747,7 +747,7 @@ class TestStructuredOutputEdgeCases:
             "structured_output": {"schema": {"type": "object"}, "class_ref": ""},
             "allow_tool_calls": True,
         }
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert isinstance(restored.structured_output, DynamicStructuredOutput)
 
     def test_structured_output_no_schema_no_class_ref(self):
@@ -758,7 +758,7 @@ class TestStructuredOutputEdgeCases:
             "structured_output": {},
             "allow_tool_calls": True,
         }
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert restored.structured_output is None
 
     def test_structured_output_only_schema(self):
@@ -771,9 +771,103 @@ class TestStructuredOutputEdgeCases:
             },
             "allow_tool_calls": True,
         }
-        restored = UserMessage.from_dict(data)
+        restored = UserMessage.deserialize(data)
         assert isinstance(restored.structured_output, DynamicStructuredOutput)
         assert restored.structured_output.model_json_schema() == {
             "type": "object",
             "properties": {"name": {"type": "string"}},
         }
+
+
+class TestMessageUUID:
+    """Tests for message UUID auto-generation and persistence."""
+
+    def test_message_gets_auto_generated_id(self):
+        """Messages should auto-generate a UUID when none is provided."""
+        msg = UserMessage(content="Hello")
+        assert msg.id is not None
+        assert len(msg.id) == 36  # UUID format: 8-4-4-4-12
+
+    def test_different_messages_get_different_ids(self):
+        """Each message should get a unique ID."""
+        msg1 = UserMessage(content="Hello")
+        msg2 = UserMessage(content="Hello")  # Same content
+        msg3 = UserMessage(content="World")
+        assert msg1.id != msg2.id
+        assert msg2.id != msg3.id
+
+    def test_provided_id_is_used(self):
+        """When an ID is provided, it should be used instead of auto-generating."""
+        custom_id = "custom-id-12345"
+        msg = UserMessage(content="Hello", id=custom_id)
+        assert msg.id == custom_id
+
+    def test_id_preserved_through_serialize_deserialize(self):
+        """Message ID should be preserved through serialization round-trip."""
+        msg = UserMessage(content="Hello")
+        original_id = msg.id
+
+        data = msg.serialize()
+        assert data["id"] == original_id
+
+        restored = UserMessage.deserialize(data)
+        assert restored.id == original_id
+
+    def test_all_message_types_have_id(self):
+        """All message types should have auto-generated IDs."""
+        from patterpunk.llm.tool_types import ToolCall
+
+        messages = [
+            SystemMessage(content="System"),
+            UserMessage(content="User"),
+            AssistantMessage(content="Assistant"),
+            ToolCallMessage(
+                tool_calls=[ToolCall(id="call_1", name="fn", arguments="{}")]
+            ),
+            ToolResultMessage(content="Result", call_id="call_1"),
+        ]
+
+        ids = [msg.id for msg in messages]
+
+        # All should have IDs
+        assert all(id is not None for id in ids)
+        # All IDs should be unique
+        assert len(set(ids)) == len(ids)
+
+    def test_id_in_serialized_output(self):
+        """All message types should include ID in serialized output."""
+        from patterpunk.llm.tool_types import ToolCall
+
+        messages = [
+            SystemMessage(content="System"),
+            UserMessage(content="User"),
+            AssistantMessage(content="Assistant"),
+            ToolCallMessage(
+                tool_calls=[ToolCall(id="call_1", name="fn", arguments="{}")]
+            ),
+            ToolResultMessage(content="Result", call_id="call_1"),
+        ]
+
+        for msg in messages:
+            data = msg.serialize()
+            assert "id" in data, f"{type(msg).__name__} should include 'id' in serialize()"
+            assert data["id"] == msg.id
+
+    def test_deserialize_without_id_generates_new_one(self):
+        """Deserializing data without an ID should generate a new one."""
+        data = {
+            "type": "user",
+            "content": {"type": "string", "value": "test"},
+            "allow_tool_calls": True,
+        }
+        # No "id" field in data
+
+        restored = UserMessage.deserialize(data)
+        assert restored.id is not None
+        assert len(restored.id) == 36
+
+    def test_copy_preserves_id(self):
+        """Copying a message should preserve the ID."""
+        msg = UserMessage(content="Hello")
+        copied = msg.copy()
+        assert copied.id == msg.id

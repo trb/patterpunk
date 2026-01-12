@@ -267,7 +267,7 @@ class MultimodalChunk:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "MultimodalChunk":
+    def deserialize(cls, data: dict) -> "MultimodalChunk":
         """Deserialize from dict."""
         chunk = cls.from_base64(data["data"], media_type=data.get("media_type"))
         chunk.filename = data.get("filename")
