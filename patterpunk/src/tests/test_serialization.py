@@ -850,7 +850,9 @@ class TestMessageUUID:
 
         for msg in messages:
             data = msg.serialize()
-            assert "id" in data, f"{type(msg).__name__} should include 'id' in serialize()"
+            assert (
+                "id" in data
+            ), f"{type(msg).__name__} should include 'id' in serialize()"
             assert data["id"] == msg.id
 
     def test_deserialize_without_id_generates_new_one(self):
