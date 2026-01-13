@@ -136,6 +136,31 @@ response = Chat(model=model).add_message(
 weather_data = response.parsed_output  # Typed WeatherReport instance
 ```
 
+### Token Counting
+
+Estimate token usage for cost tracking and context window management:
+
+```python
+from patterpunk.llm.chat import Chat
+from patterpunk.llm.messages import UserMessage, SystemMessage, AssistantMessage
+
+chat = Chat().add_message(SystemMessage("You are helpful")).add_message(
+    UserMessage("What is the capital of France?")
+)
+
+# Count tokens for entire conversation
+token_count = chat.count_tokens()  # includes tool definitions by default
+token_count = chat.count_tokens(include_tools=False)  # messages only
+
+# Count tokens at model level for individual items
+model = chat.model
+model.count_tokens("Hello, world!")  # plain string
+model.count_tokens(UserMessage("Hello"))  # single message
+model.count_tokens([UserMessage("Hello"), AssistantMessage("Hi!")])  # batch
+```
+
+Token counting is provider-aware: OpenAI uses local tiktoken for fast, offline counting; Anthropic and Google use their counting APIs; Bedrock uses native counting for Claude 4.5+ and local estimation for older models. Async versions (`count_tokens_async`) are available on both Chat and model classes.
+
 ### Message Persistence
 
 Store conversations in databases and resume them later:
