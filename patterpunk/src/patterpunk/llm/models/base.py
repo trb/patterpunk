@@ -13,6 +13,19 @@ class ModelNotImplemented(Exception):
     pass
 
 
+class TokenCountingError(Exception):
+    """
+    Raised when token counting cannot be performed accurately.
+
+    Common causes:
+    - Unsupported content type (e.g., PDFs for OpenAI local counting)
+    - Missing optional dependencies (e.g., transformers for Llama on Bedrock)
+    - Unsupported model (e.g., Amazon Titan has proprietary tokenizer)
+    """
+
+    pass
+
+
 # Shared executor for sync-to-async wrapping
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -79,4 +92,38 @@ class Model(ABC):
     def get_available_models() -> List[str]:
         raise ModelNotImplemented(
             "Models need to implement the get_available_models() method"
+        )
+
+    @abstractmethod
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens for a string, message, or list of messages.
+
+        For API-based providers (Anthropic, Google, Bedrock), passing a List[Message]
+        makes a single API call rather than one per message - much more efficient.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting cannot be performed accurately
+        """
+        raise ModelNotImplemented("Models need to implement count_tokens()")
+
+    async def count_tokens_async(
+        self, content: Union[str, Message, List[Message]]
+    ) -> int:
+        """
+        Async version of count_tokens.
+
+        Default implementation wraps the sync method in an executor.
+        Providers with native async support should override this.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _executor,
+            lambda: self.count_tokens(content),
         )

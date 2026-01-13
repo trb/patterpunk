@@ -5,6 +5,12 @@ from ..types import ContentType
 from .base import Message
 from .roles import ROLE_ASSISTANT
 from .cache import get_content_as_string
+from .serialization import (
+    serialize_content,
+    deserialize_content,
+    serialize_structured_output,
+    deserialize_structured_output,
+)
 
 
 class AssistantMessage(Message):
@@ -15,8 +21,9 @@ class AssistantMessage(Message):
         structured_output: Optional[Any] = None,
         parsed_output: Optional[Any] = None,
         thinking_blocks: Optional[List[dict]] = None,
+        id: Optional[str] = None,
     ):
-        super().__init__(content, ROLE_ASSISTANT)
+        super().__init__(content, ROLE_ASSISTANT, id=id)
         self.structured_output = structured_output
         self._parsed_output = parsed_output
         self._raw_content = content
@@ -114,13 +121,58 @@ class AssistantMessage(Message):
 
         return "\n".join(thinking_parts) if thinking_parts else None
 
-    def to_dict(self, prompt_for_structured_output: bool = False):
+    def to_dict(self, prompt_for_structured_output: bool = False) -> dict:
         """
-        Convert to dictionary format for serialization.
+        Convert to dictionary format for API calls.
 
         Includes thinking_blocks when present (for extended thinking models).
+        For persistence, use serialize() instead.
         """
         result = super().to_dict(prompt_for_structured_output)
         if self.thinking_blocks:
             result["thinking_blocks"] = self.thinking_blocks
         return result
+
+    def serialize(self) -> dict:
+        """
+        Serialize to dict for persistence.
+
+        Use this method for storing messages in databases. For API calls
+        to LLM providers, use to_dict() instead.
+
+        Note: _parsed_output is derived from content, so it's not stored.
+        """
+        result = {
+            "type": "assistant",
+            "id": self.id,
+            "content": serialize_content(self._raw_content),
+        }
+        if self.thinking_blocks:
+            result["thinking_blocks"] = self.thinking_blocks
+        if self.structured_output:
+            result["structured_output"] = serialize_structured_output(
+                self.structured_output
+            )
+        return result
+
+    @classmethod
+    def deserialize(cls, data: dict) -> "AssistantMessage":
+        """
+        Deserialize from dict.
+
+        Handles both persistence format (content as dict) and API format
+        (content as string) for flexibility.
+        """
+        raw_content = data["content"]
+        if isinstance(raw_content, dict):
+            content = deserialize_content(raw_content)
+        else:
+            content = raw_content
+        return cls(
+            content=content,
+            structured_output=deserialize_structured_output(
+                data.get("structured_output")
+            ),
+            thinking_blocks=data.get("thinking_blocks"),
+            id=data.get("id"),
+        )

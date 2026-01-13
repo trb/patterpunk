@@ -1,4 +1,5 @@
 import copy
+import uuid
 from typing import Union, List, Optional, Any
 
 from patterpunk.config.defaults import GENERATE_STRUCTURED_OUTPUT_PROMPT
@@ -15,7 +16,10 @@ from .structured_output import parse_structured_output
 
 class Message:
 
-    def __init__(self, content: ContentType, role: str = ROLE_USER):
+    def __init__(
+        self, content: ContentType, role: str = ROLE_USER, id: Optional[str] = None
+    ):
+        self.id = id if id is not None else str(uuid.uuid4())
         self.content = content
         self.role = role
         self._model = None

@@ -22,6 +22,15 @@ class TextChunk:
         """
         self.content = content
 
+    def serialize(self) -> dict:
+        """Serialize to dict for persistence."""
+        return {"type": "text", "content": self.content}
+
+    @classmethod
+    def deserialize(cls, data: dict) -> "TextChunk":
+        """Deserialize from dict."""
+        return cls(content=data["content"])
+
     def __repr__(self):
         content_preview = (
             self.content[:50] + "..." if len(self.content) > 50 else self.content

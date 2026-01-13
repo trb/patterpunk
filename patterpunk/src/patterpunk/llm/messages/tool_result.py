@@ -19,6 +19,7 @@ class ToolResultMessage(Message):
         call_id: Optional ID linking to original ToolCallMessage (OpenAI/Anthropic/Bedrock)
         function_name: Optional name of executed function (Google/general use)
         is_error: Whether the tool execution failed (Anthropic error handling)
+        id: Optional unique identifier for the message
     """
 
     def __init__(
@@ -27,32 +28,62 @@ class ToolResultMessage(Message):
         call_id: Optional[str] = None,
         function_name: Optional[str] = None,
         is_error: bool = False,
+        id: Optional[str] = None,
     ):
-        super().__init__(content, ROLE_TOOL_RESULT)
+        super().__init__(content, ROLE_TOOL_RESULT, id=id)
         self.call_id = call_id
         self.function_name = function_name
         self.is_error = is_error
 
-    def to_dict(self, prompt_for_structured_output: bool = False):
+    def to_dict(self, prompt_for_structured_output: bool = False) -> dict:
         """
-        Basic dictionary representation (not provider-specific).
-        Provider models handle their own serialization format.
+        Convert to dictionary format for API calls.
+
+        Includes all linkage metadata (call_id, function_name, is_error).
+        For persistence, use serialize() instead.
         """
         result = {
             "role": self.role,
             "content": self.content,
         }
-
         if self.call_id is not None:
             result["call_id"] = self.call_id
-
         if self.function_name is not None:
             result["function_name"] = self.function_name
-
         if self.is_error:
             result["is_error"] = self.is_error
-
         return result
+
+    def serialize(self) -> dict:
+        """
+        Serialize to dict for persistence.
+
+        Use this method for storing messages in databases. For API calls
+        to LLM providers, use to_dict() instead.
+        """
+        result = {
+            "type": "tool_result",
+            "id": self.id,
+            "content": self.content,
+        }
+        if self.call_id is not None:
+            result["call_id"] = self.call_id
+        if self.function_name is not None:
+            result["function_name"] = self.function_name
+        if self.is_error:
+            result["is_error"] = True
+        return result
+
+    @classmethod
+    def deserialize(cls, data: dict) -> "ToolResultMessage":
+        """Deserialize from dict."""
+        return cls(
+            content=data["content"],
+            call_id=data.get("call_id"),
+            function_name=data.get("function_name"),
+            is_error=data.get("is_error", False),
+            id=data.get("id"),
+        )
 
     def __repr__(self, truncate=True):
         """

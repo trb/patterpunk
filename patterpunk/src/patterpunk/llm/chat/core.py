@@ -196,3 +196,52 @@ class Chat:
 
     def copy(self):
         return copy.deepcopy(self)
+
+    def count_tokens(self, include_tools: bool = True) -> int:
+        """
+        Count total tokens for all messages in this chat.
+
+        For API-based providers (Anthropic, Google, Bedrock), this makes a single
+        API call for all messages, which is much more efficient than counting
+        messages individually.
+
+        Args:
+            include_tools: If True, includes tool definitions in count
+
+        Returns:
+            Total token count for the conversation
+        """
+        import json
+
+        # Pass all messages at once - providers handle batch efficiently
+        total = self.model.count_tokens(self.messages)
+
+        # Count tool definitions if present and requested
+        if include_tools and self.tools:
+            tools_json = json.dumps(self.tools)
+            total += self.model.count_tokens(tools_json)
+
+        return total
+
+    async def count_tokens_async(self, include_tools: bool = True) -> int:
+        """
+        Async version of count_tokens.
+
+        For providers with native async support (Anthropic, Google), this uses
+        their async APIs for better concurrency.
+
+        Args:
+            include_tools: If True, includes tool definitions in count
+
+        Returns:
+            Total token count for the conversation
+        """
+        import json
+
+        total = await self.model.count_tokens_async(self.messages)
+
+        if include_tools and self.tools:
+            tools_json = json.dumps(self.tools)
+            total += await self.model.count_tokens_async(tools_json)
+
+        return total

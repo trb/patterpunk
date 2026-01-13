@@ -36,7 +36,7 @@ from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
-from patterpunk.llm.models.base import Model
+from patterpunk.llm.models.base import Model, TokenCountingError
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
@@ -62,6 +62,11 @@ def get_bedrock_conversation_content(message: Message):
 
 
 class BedrockModel(Model, ABC):
+    # Class-level tokenizer cache to avoid expensive reloads on each count_tokens() call
+    # Loading HuggingFace tokenizers involves network calls and file parsing
+    _llama_tokenizer_cache: Dict[str, "AutoTokenizer"] = {}
+    _mistral_tokenizer: Optional["AutoTokenizer"] = None
+
     def __init__(
         self,
         model_id: str,
@@ -594,6 +599,275 @@ class BedrockModel(Model, ABC):
                 "modelSummaries"
             ]
         ]
+
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens for Bedrock models.
+
+        Different model families use different counting methods:
+        - Anthropic Claude: Uses Bedrock's CountTokens API (batch support)
+        - Meta Llama: Uses HuggingFace transformers (optional dependency)
+        - Mistral: Uses HuggingFace transformers (optional dependency)
+        - Amazon Titan: Not supported (proprietary tokenizer)
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting cannot be performed
+        """
+        model_lower = self.model_id.lower()
+
+        if "anthropic" in model_lower or "claude" in model_lower:
+            return self._count_tokens_bedrock_claude(content)
+        elif "llama" in model_lower or "meta" in model_lower:
+            return self._count_tokens_llama(content)
+        elif "mistral" in model_lower:
+            return self._count_tokens_mistral(content)
+        else:
+            raise TokenCountingError(
+                f"Token counting for {self.model_id} is not supported. "
+                f"Supported model families: Anthropic Claude (API), Meta Llama (transformers), "
+                f"Mistral (transformers). Amazon Titan uses a proprietary tokenizer."
+            )
+
+    def _count_tokens_bedrock_claude(
+        self, content: Union[str, Message, List[Message]]
+    ) -> int:
+        """
+        Count tokens using Bedrock's CountTokens API for Claude models.
+
+        Supports batch counting of multiple messages in a single API call.
+        Falls back to local estimation for older Claude models (e.g., Claude 3)
+        that don't support Bedrock's CountTokens.
+        """
+        if isinstance(content, str):
+            messages = [{"role": "user", "content": [{"text": content}]}]
+        elif isinstance(content, list):
+            messages = self._convert_messages_for_token_counting(content)
+        else:
+            messages = self._convert_messages_for_token_counting([content])
+
+        converse_input = {"messages": messages}
+
+        try:
+            response = self.client.count_tokens(
+                modelId=self.model_id,
+                input={"converse": converse_input},
+            )
+            return response["inputTokens"]
+        except ClientError as e:
+            # Fall back to local estimation for older Claude models (e.g., Claude 3)
+            # that don't support Bedrock's CountTokens API
+            error_message = str(e)
+            if "doesn't support counting tokens" in error_message:
+                return self._estimate_tokens_locally(content)
+            raise TokenCountingError(f"Bedrock API error: {e}")
+        except Exception as e:
+            raise TokenCountingError(f"Failed to count tokens: {e}")
+
+    def _estimate_tokens_locally(
+        self, content: Union[str, Message, List[Message]]
+    ) -> int:
+        """
+        Estimate tokens locally using character count heuristic with length scaling.
+
+        Used as fallback for Claude models that don't support Bedrock's CountTokens
+        API (e.g., Claude 3 models in regions like ca-central-1).
+
+        Uses a scaled approach based on observed tokenization patterns:
+        - Short text (<500 chars): ~3.5 chars/token, 20% margin
+        - Medium text (500-2000 chars): ~4.0 chars/token, 15% margin
+        - Long text (>2000 chars): ~4.5 chars/token, 10% margin
+
+        This keeps estimates conservative (always overestimates) while avoiding
+        excessive waste on longer documents where the context window is precious.
+        """
+        if isinstance(content, str):
+            char_count = len(content)
+        elif isinstance(content, list):
+            char_count = sum(self._count_message_chars(m) for m in content)
+        else:
+            char_count = self._count_message_chars(content)
+
+        # Scale chars_per_token and margin based on text length
+        # Based on testing with LICENSE file (~4.0-4.3 chars/tok) and formal prose (~6+ chars/tok)
+        if char_count < 500:
+            chars_per_token = 3.5
+            margin = 1.20  # 20% for short text where overhead dominates
+        elif char_count < 2000:
+            chars_per_token = 3.8
+            margin = 1.15  # 15% for medium text
+        else:
+            chars_per_token = 4.0
+            margin = 1.15  # 15% for long text (legal/formal docs ~4.0-4.3 chars/tok)
+
+        base_estimate = char_count / chars_per_token
+        return int(base_estimate * margin + 0.5)
+
+    def _count_message_chars(self, message: Message) -> int:
+        """Count characters in a message for token estimation."""
+        text = message.get_content_as_string()
+        char_count = len(text)
+
+        # Add overhead for message structure (~20 chars for role, delimiters)
+        char_count += 20
+
+        # For tool calls, include the JSON arguments
+        if isinstance(message, ToolCallMessage):
+            for tc in message.tool_calls:
+                char_count += len(tc.name) + len(tc.arguments) + len(tc.id)
+
+        # For tool results, include metadata
+        if isinstance(message, ToolResultMessage):
+            if message.call_id:
+                char_count += len(message.call_id)
+            if message.function_name:
+                char_count += len(message.function_name)
+
+        return char_count
+
+    def _get_llama_tokenizer(self, tokenizer_name: str):
+        """
+        Get cached Llama tokenizer, loading it if needed.
+
+        Uses class-level cache to avoid expensive HuggingFace tokenizer loading
+        on every count_tokens() call.
+        """
+        if tokenizer_name not in BedrockModel._llama_tokenizer_cache:
+            try:
+                from transformers import AutoTokenizer
+            except ImportError:
+                raise TokenCountingError(
+                    "Token counting for Llama requires 'transformers'. "
+                    "Install with: pip install transformers sentencepiece"
+                )
+
+            try:
+                BedrockModel._llama_tokenizer_cache[tokenizer_name] = (
+                    AutoTokenizer.from_pretrained(tokenizer_name)
+                )
+            except Exception as e:
+                raise TokenCountingError(
+                    f"Failed to load Llama tokenizer '{tokenizer_name}': {e}. "
+                    f"You may need to authenticate with HuggingFace: huggingface-cli login"
+                )
+
+        return BedrockModel._llama_tokenizer_cache[tokenizer_name]
+
+    def _count_tokens_llama(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens using HuggingFace tokenizer for Llama models.
+
+        Requires optional transformers dependency. Tokenizers are cached at
+        class level for performance.
+        """
+        # Determine tokenizer based on model version
+        tokenizer_name = "meta-llama/Meta-Llama-3-8B"
+        if "llama-2" in self.model_id.lower():
+            tokenizer_name = "meta-llama/Llama-2-7b-hf"
+
+        tokenizer = self._get_llama_tokenizer(tokenizer_name)
+
+        if isinstance(content, str):
+            return len(tokenizer.encode(content))
+        elif isinstance(content, list):
+            total = 0
+            for message in content:
+                total += self._count_single_message_llama(message, tokenizer)
+            return total
+        else:
+            return self._count_single_message_llama(content, tokenizer)
+
+    def _count_single_message_llama(self, message: Message, tokenizer) -> int:
+        """Count tokens for a single message using Llama tokenizer."""
+        text = message.get_content_as_string()
+
+        # Warn about multimodal content
+        if isinstance(message.content, list):
+            for chunk in message.content:
+                if isinstance(chunk, MultimodalChunk):
+                    import warnings
+
+                    warnings.warn(
+                        "Llama token counting does not include multimodal content. "
+                        "Only text tokens are counted.",
+                        stacklevel=3,
+                    )
+                    break
+
+        # Add message overhead (~4 tokens)
+        return len(tokenizer.encode(text)) + 4
+
+    def _get_mistral_tokenizer(self):
+        """
+        Get cached Mistral tokenizer, loading it if needed.
+
+        Uses class-level cache to avoid expensive HuggingFace tokenizer loading
+        on every count_tokens() call.
+        """
+        if BedrockModel._mistral_tokenizer is None:
+            try:
+                from transformers import AutoTokenizer
+            except ImportError:
+                raise TokenCountingError(
+                    "Token counting for Mistral requires 'transformers'. "
+                    "Install with: pip install transformers sentencepiece"
+                )
+
+            tokenizer_name = "mistralai/Mistral-7B-v0.1"
+            try:
+                BedrockModel._mistral_tokenizer = AutoTokenizer.from_pretrained(
+                    tokenizer_name
+                )
+            except Exception as e:
+                raise TokenCountingError(
+                    f"Failed to load Mistral tokenizer '{tokenizer_name}': {e}."
+                )
+
+        return BedrockModel._mistral_tokenizer
+
+    def _count_tokens_mistral(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens using HuggingFace tokenizer for Mistral models.
+
+        Requires optional transformers dependency. Tokenizer is cached at
+        class level for performance.
+        """
+        tokenizer = self._get_mistral_tokenizer()
+
+        if isinstance(content, str):
+            return len(tokenizer.encode(content))
+        elif isinstance(content, list):
+            total = 0
+            for message in content:
+                total += self._count_single_message_mistral(message, tokenizer)
+            return total
+        else:
+            return self._count_single_message_mistral(content, tokenizer)
+
+    def _count_single_message_mistral(self, message: Message, tokenizer) -> int:
+        """Count tokens for a single message using Mistral tokenizer."""
+        text = message.get_content_as_string()
+        return len(tokenizer.encode(text)) + 4  # Add message overhead
+
+    def _convert_messages_for_token_counting(
+        self, messages: List[Message]
+    ) -> List[dict]:
+        """
+        Convert messages to Bedrock format for token counting.
+
+        Filters out system messages and converts the rest.
+        """
+        non_system_messages = [
+            m
+            for m in messages
+            if m.role in [ROLE_USER, ROLE_ASSISTANT, "tool_call", "tool_result"]
+        ]
+        return self._convert_messages_for_bedrock(non_system_messages)
 
     async def stream_assistant_message(
         self,

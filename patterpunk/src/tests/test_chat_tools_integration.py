@@ -11,6 +11,9 @@ class MockModel(Model):
     def generate_assistant_message(self, messages, **kwargs):
         return AssistantMessage("Mock response")
 
+    def count_tokens(self, content) -> int:
+        return 0  # Mock implementation
+
     @staticmethod
     def get_name() -> str:
         return "mock-model"

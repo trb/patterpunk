@@ -19,6 +19,9 @@ class MockModel(Model):
     ):
         return AssistantMessage(self.mock_response)
 
+    def count_tokens(self, content) -> int:
+        return 0  # Mock implementation
+
     @staticmethod
     def get_name() -> str:
         return "mock-model"
