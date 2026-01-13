@@ -1,5 +1,6 @@
 import base64
 import enum
+import math
 from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Union
 
@@ -18,7 +19,8 @@ from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
-from patterpunk.llm.models.base import Model
+from patterpunk.llm.models.base import Model, TokenCountingError
+from patterpunk.llm.utils import get_image_dimensions
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall, ToolCallList
@@ -687,6 +689,165 @@ class OpenAiModel(Model, ABC):
     @staticmethod
     def get_available_models() -> List[str]:
         return [model.id for model in openai.models.list().data]
+
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens using tiktoken (local, accurate for text/images).
+
+        For OpenAI models, this uses local tokenization with tiktoken, so it's
+        fast and doesn't require API calls. Images are calculated using
+        OpenAI's tile-based formula.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If content type cannot be counted locally (e.g., PDFs)
+        """
+        import tiktoken
+
+        try:
+            encoding = tiktoken.encoding_for_model(self.model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("o200k_base")
+
+        if isinstance(content, str):
+            return len(encoding.encode(content))
+
+        if isinstance(content, list):
+            total = 0
+            for message in content:
+                total += self._count_single_message_tokens(message, encoding)
+            return total
+
+        return self._count_single_message_tokens(content, encoding)
+
+    def _count_single_message_tokens(self, message: Message, encoding) -> int:
+        """Count tokens for a single message."""
+        total = 0
+
+        # Message structure overhead (~4 tokens for role, delimiters)
+        total += 4
+
+        if isinstance(message, ToolCallMessage):
+            total += self._count_tool_call_message_tokens(message, encoding)
+        elif isinstance(message, ToolResultMessage):
+            total += self._count_tool_result_message_tokens(message, encoding)
+        else:
+            total += self._count_message_content_tokens(message.content, encoding)
+
+        # Count thinking blocks if present
+        if hasattr(message, "thinking_blocks") and message.thinking_blocks:
+            for block in message.thinking_blocks:
+                if isinstance(block, dict) and block.get("thinking"):
+                    total += len(encoding.encode(block["thinking"]))
+
+        return total
+
+    def _count_message_content_tokens(self, content, encoding) -> int:
+        """Count tokens for message content (str or list of chunks)."""
+        if isinstance(content, str):
+            return len(encoding.encode(content))
+
+        total = 0
+        for chunk in content:
+            if isinstance(chunk, (TextChunk, CacheChunk)):
+                total += len(encoding.encode(chunk.content))
+            elif isinstance(chunk, MultimodalChunk):
+                total += self._count_multimodal_chunk_tokens(chunk)
+
+        return total
+
+    def _count_multimodal_chunk_tokens(self, chunk: MultimodalChunk) -> int:
+        """Count tokens for a multimodal chunk (image, PDF, etc.)."""
+        media_type = chunk.media_type or ""
+
+        if media_type.startswith("image/"):
+            return self._count_image_tokens(chunk)
+        elif media_type == "application/pdf":
+            raise TokenCountingError(
+                "PDF token counting for OpenAI requires an actual API call. "
+                "OpenAI processes PDFs as text + page images, which cannot be "
+                "accurately calculated locally."
+            )
+        else:
+            raise TokenCountingError(
+                f"Unsupported media type for local token counting: {media_type}"
+            )
+
+    def _count_image_tokens(self, chunk: MultimodalChunk, detail: str = "auto") -> int:
+        """
+        Calculate image tokens using OpenAI's vision token formula.
+
+        See: https://platform.openai.com/docs/guides/vision
+
+        OpenAI's token calculation constants:
+        - BASE_TOKENS (85): Fixed cost for any image
+        - TOKENS_PER_TILE (170): Additional cost per 512x512 tile
+        - MAX_DIMENSION (2048): Images scaled to fit this first
+        - SHORT_SIDE_TARGET (768): Shortest side scaled to this
+        - TILE_SIZE (512): Tile dimensions for high detail
+
+        Formula: BASE_TOKENS + (TOKENS_PER_TILE * num_tiles)
+        """
+        # OpenAI vision token constants (from official documentation)
+        BASE_TOKENS = 85
+        TOKENS_PER_TILE = 170
+        MAX_DIMENSION = 2048
+        SHORT_SIDE_TARGET = 768
+        TILE_SIZE = 512
+
+        image_bytes = chunk.to_bytes()
+        width, height = get_image_dimensions(image_bytes)
+
+        if detail == "low":
+            return BASE_TOKENS
+
+        # Step 1: Scale to fit within MAX_DIMENSION x MAX_DIMENSION
+        if max(width, height) > MAX_DIMENSION:
+            scale = MAX_DIMENSION / max(width, height)
+            width = int(width * scale)
+            height = int(height * scale)
+
+        # Step 2: Scale shortest side to SHORT_SIDE_TARGET
+        short_side = min(width, height)
+        if short_side > SHORT_SIDE_TARGET:
+            scale = SHORT_SIDE_TARGET / short_side
+            width = int(width * scale)
+            height = int(height * scale)
+
+        # Step 3: Count TILE_SIZE x TILE_SIZE tiles needed
+        tiles_x = math.ceil(width / TILE_SIZE)
+        tiles_y = math.ceil(height / TILE_SIZE)
+        num_tiles = tiles_x * tiles_y
+
+        return BASE_TOKENS + (TOKENS_PER_TILE * num_tiles)
+
+    def _count_tool_call_message_tokens(
+        self, message: ToolCallMessage, encoding
+    ) -> int:
+        """Count tokens for a tool call message."""
+        total = 0
+        for tool_call in message.tool_calls:
+            total += len(encoding.encode(tool_call.name))
+            total += len(encoding.encode(tool_call.arguments))
+            # Overhead for structure (id, type, etc.)
+            total += 10
+        return total
+
+    def _count_tool_result_message_tokens(
+        self, message: ToolResultMessage, encoding
+    ) -> int:
+        """Count tokens for a tool result message."""
+        total = len(encoding.encode(message.content))
+        if message.call_id:
+            total += len(encoding.encode(message.call_id))
+        if message.function_name:
+            total += len(encoding.encode(message.function_name))
+        return total
 
     async def stream_assistant_message(
         self,

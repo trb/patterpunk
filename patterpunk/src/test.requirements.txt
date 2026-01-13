@@ -1,5 +1,5 @@
 anthropic==0.58.2
-boto3==1.39.11
+boto3==1.42.25
 black==25.1.0
 google-genai==1.26.0
 ollama==0.5.1

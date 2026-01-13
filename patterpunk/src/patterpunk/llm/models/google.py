@@ -36,7 +36,7 @@ from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
-from patterpunk.llm.models.base import Model
+from patterpunk.llm.models.base import Model, TokenCountingError
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
@@ -719,6 +719,93 @@ class GoogleModel(Model, ABC):
     @staticmethod
     def get_name():
         return "Vertex AI"
+
+    def _prepare_count_tokens_contents(
+        self, content: Union[str, Message, List[Message]]
+    ) -> List[types.Content]:
+        """
+        Prepare contents list for count_tokens API call.
+
+        Converts strings, single messages, or message lists to Google Content format.
+        """
+        if isinstance(content, str):
+            return [
+                types.Content(role="user", parts=[types.Part.from_text(text=content)])
+            ]
+        elif isinstance(content, list):
+            return self._convert_messages_for_token_counting(content)
+        else:
+            return self._convert_messages_for_token_counting([content])
+
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens using Google's API.
+
+        This makes an API call to Google's count_tokens endpoint, which accurately
+        counts all content types including images, audio, and video. For batch
+        counting of multiple messages, a single API call is made.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting fails
+        """
+        try:
+            contents = self._prepare_count_tokens_contents(content)
+            response = self.client.models.count_tokens(
+                model=self.model,
+                contents=contents,
+            )
+            return response.total_tokens
+        except genai_errors.APIError as e:
+            raise TokenCountingError(f"Google API error: {e}")
+        except Exception as e:
+            raise TokenCountingError(f"Failed to count tokens: {e}")
+
+    async def count_tokens_async(
+        self, content: Union[str, Message, List[Message]]
+    ) -> int:
+        """
+        Count tokens using Google's async API.
+
+        Native async version for better concurrency.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting fails
+        """
+        try:
+            contents = self._prepare_count_tokens_contents(content)
+            response = await self.client.aio.models.count_tokens(
+                model=self.model,
+                contents=contents,
+            )
+            return response.total_tokens
+        except genai_errors.APIError as e:
+            raise TokenCountingError(f"Google API error: {e}")
+        except Exception as e:
+            raise TokenCountingError(f"Failed to count tokens: {e}")
+
+    def _convert_messages_for_token_counting(
+        self, messages: List[Message]
+    ) -> List[types.Content]:
+        """
+        Convert messages to Google format for token counting.
+
+        Filters out system messages and uses existing conversion methods.
+        """
+        non_system = [m for m in messages if m.role != ROLE_SYSTEM]
+        contents, _ = self._convert_messages_for_google_with_cache(non_system)
+        return contents
 
     def __deepcopy__(self, memo_dict):
         return GoogleModel(

@@ -28,7 +28,7 @@ from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
-from patterpunk.llm.models.base import Model
+from patterpunk.llm.models.base import Model, TokenCountingError
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
@@ -944,6 +944,121 @@ Please extract the relevant information from this reasoning and format it exactl
     @staticmethod
     def get_name():
         return "Anthropic"
+
+    def _extract_system_prompt(
+        self, content: Union[str, Message, List[Message]]
+    ) -> Optional[Union[str, List]]:
+        """
+        Extract system prompt from content for API call.
+
+        Returns None if no system messages, a string for simple text system prompts,
+        or a list for complex system prompts with multiple parts.
+        """
+        if not isinstance(content, list):
+            return None
+
+        system_content = self._convert_system_messages_for_anthropic(content)
+        if not system_content:
+            return None
+
+        # Simple text system prompt - return as string
+        is_single_text = (
+            len(system_content) == 1 and system_content[0].get("type") == "text"
+        )
+        if is_single_text:
+            return system_content[0]["text"]
+
+        return system_content
+
+    def _prepare_count_tokens_params(
+        self, content: Union[str, Message, List[Message]]
+    ) -> dict:
+        """
+        Prepare parameters for count_tokens API call.
+
+        Converts content to messages format and extracts system prompt.
+        """
+        if isinstance(content, str):
+            messages = [{"role": "user", "content": content}]
+        elif isinstance(content, list):
+            messages = self._convert_messages_for_token_counting(content)
+        else:
+            messages = self._convert_messages_for_token_counting([content])
+
+        params = {"model": self.model, "messages": messages}
+
+        system_prompt = self._extract_system_prompt(content)
+        if system_prompt:
+            params["system"] = system_prompt
+
+        return params
+
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """
+        Count tokens using Anthropic's API.
+
+        This makes an API call to Anthropic's count_tokens endpoint, which accurately
+        counts all content types including images and PDFs. For batch counting of
+        multiple messages, a single API call is made.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting fails
+        """
+        try:
+            params = self._prepare_count_tokens_params(content)
+            response = anthropic.messages.count_tokens(**params)
+            return response.input_tokens
+        except APIError as e:
+            raise TokenCountingError(f"Anthropic API error: {e}")
+        except Exception as e:
+            raise TokenCountingError(f"Failed to count tokens: {e}")
+
+    async def count_tokens_async(
+        self, content: Union[str, Message, List[Message]]
+    ) -> int:
+        """
+        Count tokens using Anthropic's async API.
+
+        Native async version using Anthropic's async client for better concurrency.
+
+        Args:
+            content: A string, single Message, or list of Messages
+
+        Returns:
+            Number of tokens
+
+        Raises:
+            TokenCountingError: If counting fails
+        """
+        try:
+            params = self._prepare_count_tokens_params(content)
+            response = await anthropic_async.messages.count_tokens(**params)
+            return response.input_tokens
+        except APIError as e:
+            raise TokenCountingError(f"Anthropic API error: {e}")
+        except Exception as e:
+            raise TokenCountingError(f"Failed to count tokens: {e}")
+
+    def _convert_messages_for_token_counting(
+        self, messages: List[Message]
+    ) -> List[dict]:
+        """
+        Convert messages to Anthropic format for token counting.
+
+        Filters out system messages (handled separately) and converts the rest.
+        """
+        non_system_messages = [
+            m
+            for m in messages
+            if m.role in [ROLE_USER, ROLE_ASSISTANT, "tool_call", "tool_result"]
+        ]
+        return self._convert_messages_for_anthropic(non_system_messages)
 
     async def stream_assistant_message(
         self,
