@@ -845,7 +845,9 @@ class GoogleModel(Model, ABC):
             GoogleAPIError: For other API errors
         """
         retry_count = 0
-        wait_time = 60  # Match sync implementation - 60s gives rate limit window time to reset
+        wait_time = (
+            60  # Match sync implementation - 60s gives rate limit window time to reset
+        )
 
         while retry_count < max_retries:
             try:
@@ -879,7 +881,9 @@ class GoogleModel(Model, ABC):
                     wait_time = int(wait_time * 1.5)  # Match sync: 60s → 90s → 135s
                 else:
                     # Non-retryable error
-                    logger.error(f"VertexAI: Unexpected API error during streaming: {error}")
+                    logger.error(
+                        f"VertexAI: Unexpected API error during streaming: {error}"
+                    )
                     raise GoogleAPIError(
                         f"Streaming API error: {str(error)}"
                     ) from error

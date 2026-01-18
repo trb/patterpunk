@@ -38,9 +38,9 @@ def test_azure_model_requires_credentials():
         importlib.reload(azure_model)
 
         # Verify client was NOT created
-        assert azure_config.azure_openai is None, (
-            "Azure OpenAI client should be None without credentials"
-        )
+        assert (
+            azure_config.azure_openai is None
+        ), "Azure OpenAI client should be None without credentials"
 
         # Verify model raises error
         AzureOpenAiModelFresh = azure_model.AzureOpenAiModel
@@ -238,14 +238,14 @@ def test_azure_openai_works_without_openai_api_key():
         AzureOpenAiModelFresh = azure_model.AzureOpenAiModel
 
         # Verify Azure client was created
-        assert azure_config.azure_openai is not None, (
-            "Azure OpenAI client should be created with Azure credentials"
-        )
+        assert (
+            azure_config.azure_openai is not None
+        ), "Azure OpenAI client should be created with Azure credentials"
 
         # Verify OpenAI client was NOT created (no PP_OPENAI_API_KEY)
-        assert openai_config.openai is None, (
-            "OpenAI client should be None without PP_OPENAI_API_KEY"
-        )
+        assert (
+            openai_config.openai is None
+        ), "OpenAI client should be None without PP_OPENAI_API_KEY"
 
         # This is the key assertion: Azure model should work without OpenAI API key
         try:
@@ -256,7 +256,9 @@ def test_azure_openai_works_without_openai_api_key():
             model = TestAzureModel(deployment_name="gpt-4")
 
             # If we get here, the model was created successfully
-            assert model.model == "gpt-4", "Model should have the correct deployment name"
+            assert (
+                model.model == "gpt-4"
+            ), "Model should have the correct deployment name"
 
         except openai_model.OpenAiMissingConfigurationError as e:
             pytest.fail(
