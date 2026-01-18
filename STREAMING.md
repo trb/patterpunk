@@ -216,6 +216,8 @@ Tools work seamlessly with streaming. When the model calls a tool, the stream au
 
 ### Automatic Tool Execution
 
+Like `chat.complete()`, streaming automatically executes tool calls by default (both function tools and MCP tools):
+
 ```python
 def get_weather(location: str) -> str:
     """Get weather for a location."""

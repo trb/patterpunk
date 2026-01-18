@@ -3,6 +3,11 @@ from typing import Optional
 
 OLLAMA_API_ENDPOINT = os.getenv("PP_OLLAMA_API_ENDPOINT", None)
 
+# Retry configuration for transient errors (503 server overloaded, 429 rate limit)
+OLLAMA_MAX_RETRIES = int(os.getenv("PP_OLLAMA_MAX_RETRIES", "3"))
+OLLAMA_RETRY_BASE_DELAY = float(os.getenv("PP_OLLAMA_RETRY_BASE_DELAY", "2.0"))
+OLLAMA_RETRY_MAX_DELAY = float(os.getenv("PP_OLLAMA_RETRY_MAX_DELAY", "30.0"))
+
 _ollama_client = None
 
 

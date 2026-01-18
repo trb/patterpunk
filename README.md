@@ -57,10 +57,11 @@ response = chat.add_message(
     UserMessage("What's the weather in Paris?")
 ).complete()
 
-# Handle tool calls manually (MCP tools execute automatically)
-if response.is_latest_message_tool_call:
-    # Tool call message contains function calls to execute
-    print(response.latest_message.tool_calls)
+# Tools execute automatically by default
+print(response.latest_message.content)  # Contains the weather result
+
+# For manual control, use execute_tools=False:
+# response = chat.complete(execute_tools=False)
 ```
 
 ### Multimodal Content

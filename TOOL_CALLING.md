@@ -1,6 +1,14 @@
 # Tool Calling
 
-Patterpunk provides automatic function-to-tool conversion and MCP (Model Context Protocol) integration. Regular function tools require manual execution handling, while MCP tools execute automatically.
+Patterpunk provides automatic function-to-tool conversion and MCP (Model Context Protocol) integration. By default, all tools (both function tools and MCP tools) execute automatically when the model calls them.
+
+To handle tool calls manually, pass `execute_tools=False` to `complete()`:
+
+```python
+response = chat.complete(execute_tools=False)
+if response.is_latest_message_tool_call:
+    # Manual handling here
+```
 
 ## Function Tools
 
@@ -26,28 +34,8 @@ def search_web(query: str, max_results: int = 5) -> list[str]:
 chat = Chat(model=OpenAiModel()).with_tools([get_weather, search_web])
 response = chat.add_message("What's the weather in Paris?").complete()
 
-# Handle tool calls manually (required for function tools)
-if response.is_latest_message_tool_call:
-    from patterpunk.llm.messages import ToolResultMessage
-
-    for tool_call in response.latest_message.tool_calls:
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-        arguments = json.loads(tool_call["function"]["arguments"])
-
-        if function_name == "get_weather":
-            result = get_weather(**arguments)
-
-            # Add result with proper linkage to original tool call
-            chat = chat.add_message(ToolResultMessage(
-                content=str(result),
-                call_id=call_id,
-                function_name=function_name
-            ))
-
-    # Continue conversation with tool results
-    response = chat.complete()
-    print(response.latest_message.content)
+# Tool calls are auto-executed! Response contains the final answer.
+print(response.latest_message.content)  # "The weather in Paris is 72°F"
 ```
 
 ### Advanced Function Features
@@ -137,9 +125,9 @@ print(response.latest_message.content)  # Contains results from filesystem tool
 ### Mixed Tool Usage
 
 ```python
-# Combine function tools and MCP servers
+# Combine function tools and MCP servers - all execute automatically
 def local_function(data: str) -> str:
-    """Local function tool requiring manual execution."""
+    """Local function tool."""
     return data.upper()
 
 chat = (Chat(model=OpenAiModel())
@@ -148,30 +136,8 @@ chat = (Chat(model=OpenAiModel())
 
 response = chat.add_message("Process 'hello' and list files").complete()
 
-# Handle mixed tool calls
-if response.is_latest_message_tool_call:
-    from patterpunk.llm.messages import ToolResultMessage
-
-    for tool_call in response.latest_message.tool_calls:
-        call_id = tool_call["id"]
-        function_name = tool_call["function"]["name"]
-
-        # MCP tools already executed automatically
-        # Only handle local function tools manually
-        if function_name == "local_function":
-            arguments = json.loads(tool_call["function"]["arguments"])
-            result = local_function(**arguments)
-
-            # Add result back to conversation with proper linkage
-            chat = chat.add_message(ToolResultMessage(
-                content=str(result),
-                call_id=call_id,
-                function_name=function_name
-            ))
-
-    # Continue conversation
-    response = chat.complete()
-    print(response.latest_message.content)
+# Both function tools and MCP tools are auto-executed
+print(response.latest_message.content)  # Contains results from both tools
 ```
 
 ## ToolCallMessage Structure
@@ -222,55 +188,83 @@ result = agent.execute("What's the weather in Tokyo?")
 
 ### Error Handling
 
+With auto-execution (default), tool errors are automatically sent to the model as error results. The model can then respond appropriately (apologize, ask for clarification, try again).
+
+For manual execution with custom error handling:
+
 ```python
 from patterpunk.llm.messages import ToolResultMessage
 
-try:
+response = chat.complete(execute_tools=False)
+
+if response.is_latest_message_tool_call:
+    for tool_call in response.latest_message.tool_calls:
+        call_id = tool_call["id"]
+        function_name = tool_call["function"]["name"]
+        arguments = json.loads(tool_call["function"]["arguments"])
+
+        try:
+            result = execute_function(**arguments)
+            chat = chat.add_message(ToolResultMessage(
+                content=str(result),
+                call_id=call_id,
+                function_name=function_name
+            ))
+        except Exception as e:
+            # Report error to the model with is_error flag
+            chat = chat.add_message(ToolResultMessage(
+                content=f"Tool {function_name} failed: {e}",
+                call_id=call_id,
+                function_name=function_name,
+                is_error=True
+            ))
+
     response = chat.complete()
-
-    if response.is_latest_message_tool_call:
-        for tool_call in response.latest_message.tool_calls:
-            call_id = tool_call["id"]
-            function_name = tool_call["function"]["name"]
-            arguments = json.loads(tool_call["function"]["arguments"])
-
-            try:
-                # Execute tool call
-                result = execute_function(**arguments)
-
-                # Add successful result
-                chat = chat.add_message(ToolResultMessage(
-                    content=str(result),
-                    call_id=call_id,
-                    function_name=function_name
-                ))
-            except Exception as e:
-                # Handle tool execution errors with is_error flag
-                chat = chat.add_message(ToolResultMessage(
-                    content=f"Tool {function_name} failed: {e}",
-                    call_id=call_id,
-                    function_name=function_name,
-                    is_error=True
-                ))
-
-        # Continue conversation with results
-        response = chat.complete()
-
-except ImportError:
-    # MCP functionality requires optional dependencies (requests)
-    print("Install requests for MCP HTTP transport support")
 ```
+
+## Controlling Tool Execution
+
+By default, `complete()` executes all tool calls automatically. To handle them manually:
+
+```python
+# Disable auto-execution
+response = chat.complete(execute_tools=False)
+
+if response.is_latest_message_tool_call:
+    for tool_call in response.latest_message.tool_calls:
+        call_id = tool_call["id"]
+        function_name = tool_call["function"]["name"]
+        arguments = json.loads(tool_call["function"]["arguments"])
+
+        # Custom execution logic here
+        result = my_custom_executor(function_name, arguments)
+
+        chat = chat.add_message(ToolResultMessage(
+            content=str(result),
+            call_id=call_id,
+            function_name=function_name
+        ))
+
+    # Continue conversation with results
+    response = chat.complete()
+```
+
+Use manual execution when you need:
+- Custom execution environments or sandboxing
+- Pre-execution validation or approval flows
+- Logging or monitoring of tool calls
+- Conditional execution based on tool type
 
 ## Key Differences
 
 **Function Tools:**
 - Automatic schema generation from Python functions
-- Manual execution required
+- Automatic execution by default (pass `execute_tools=False` for manual control)
 - Immediate availability (no external dependencies)
 - Best for simple, fast operations
 
 **MCP Tools:**
 - External server communication via HTTP/stdio
-- Automatic execution and result integration
+- Automatic execution by default (same as function tools)
 - Requires optional dependencies (requests for HTTP)
 - Best for complex operations, external services, or sandboxed execution

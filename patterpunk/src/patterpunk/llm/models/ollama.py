@@ -1,9 +1,16 @@
 import json
 import random
+import time
 from abc import ABC
 from typing import List, Optional, Callable, Set, Union
 
-from patterpunk.config.providers.ollama import ollama
+from patterpunk.config.providers.ollama import (
+    ollama,
+    OLLAMA_MAX_RETRIES,
+    OLLAMA_RETRY_BASE_DELAY,
+    OLLAMA_RETRY_MAX_DELAY,
+)
+from patterpunk.logger import logger
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
@@ -14,6 +21,18 @@ from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
+
+
+class OllamaAPIError(Exception):
+    """Raised when Ollama API requests fail after all retry attempts."""
+
+    pass
+
+
+# Status codes that indicate transient errors and should trigger retry
+RETRYABLE_STATUS_CODES = {429, 500, 503}
+# Status codes that indicate client errors and should NOT be retried
+NON_RETRYABLE_STATUS_CODES = {400, 404}
 
 
 class OllamaModel(Model, ABC):
@@ -218,6 +237,87 @@ class OllamaModel(Model, ABC):
 
         return ollama.chat(**chat_params)
 
+    def _execute_with_retry(self, chat_params: dict) -> dict:
+        """
+        Execute chat request with retry logic for transient errors.
+
+        Handles:
+        - 503 Server Overloaded (queue full, resource exhaustion)
+        - 429 Too Many Requests (proxy rate limits)
+        - 500 Internal Server Error (transient model failures)
+        - Connection errors (network failures, server restart)
+
+        Non-retryable:
+        - 400 Bad Request (invalid parameters)
+        - 404 Not Found (model doesn't exist)
+        """
+        try:
+            from ollama import ResponseError
+        except ImportError:
+            ResponseError = None
+
+        last_error = None
+
+        for attempt in range(OLLAMA_MAX_RETRIES):
+            try:
+                return self._execute_chat_request(chat_params)
+
+            except Exception as error:
+                last_error = error
+
+                # Check for Ollama-specific ResponseError with status codes
+                if ResponseError is not None and isinstance(error, ResponseError):
+                    status_code = getattr(error, "status_code", None)
+
+                    if status_code in NON_RETRYABLE_STATUS_CODES:
+                        raise
+
+                    if status_code in RETRYABLE_STATUS_CODES:
+                        if attempt < OLLAMA_MAX_RETRIES - 1:
+                            wait_time = min(
+                                OLLAMA_RETRY_BASE_DELAY * (2**attempt),
+                                OLLAMA_RETRY_MAX_DELAY,
+                            )
+                            jitter = wait_time * (0.5 + random.random() * 0.5)
+
+                            logger.warning(
+                                f"Ollama request failed (attempt {attempt + 1}/{OLLAMA_MAX_RETRIES}): "
+                                f"Status {status_code}. Retrying in {jitter:.1f}s..."
+                            )
+                            time.sleep(jitter)
+                            continue
+                        raise
+
+                    # Unknown status code - don't retry
+                    raise
+
+                # Connection errors - always retry
+                if "connection" in str(error).lower() or isinstance(
+                    error, (ConnectionError, OSError)
+                ):
+                    if attempt < OLLAMA_MAX_RETRIES - 1:
+                        wait_time = min(
+                            OLLAMA_RETRY_BASE_DELAY * (2**attempt),
+                            OLLAMA_RETRY_MAX_DELAY,
+                        )
+                        jitter = wait_time * (0.5 + random.random() * 0.5)
+
+                        logger.warning(
+                            f"Ollama connection failed (attempt {attempt + 1}/{OLLAMA_MAX_RETRIES}): "
+                            f"{error}. Retrying in {jitter:.1f}s..."
+                        )
+                        time.sleep(jitter)
+                        continue
+                    raise
+
+                # Other exceptions - don't retry
+                raise
+
+        # All retries exhausted
+        raise OllamaAPIError(
+            f"Ollama API failed after {OLLAMA_MAX_RETRIES} retries"
+        ) from last_error
+
     def _process_tool_calls(self, response: dict) -> Optional[ToolCallMessage]:
         if not response.get("message", {}).get("tool_calls"):
             return None
@@ -294,7 +394,7 @@ class OllamaModel(Model, ABC):
         )
 
         try:
-            response = self._execute_chat_request(chat_params)
+            response = self._execute_with_retry(chat_params)
         except Exception as e:
             self._handle_response_errors(e)
 

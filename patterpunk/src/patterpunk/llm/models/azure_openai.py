@@ -4,6 +4,7 @@ from typing import AsyncIterator, List, Optional, Set, Union
 from patterpunk.config.providers.azure_openai import (
     azure_openai,
     azure_openai_async,
+    azure_openai_reasoning,
     azure_openai_reasoning_async,
     AZURE_OPENAI_MAX_RETRIES,
 )
@@ -48,16 +49,33 @@ class AzureOpenAiModel(OpenAiModel, ABC):
             presence_penalty=presence_penalty,
             logit_bias=logit_bias,
             thinking_config=thinking_config,
+            _INTERNAL__skip_client_validation=True,
         )
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:
+        # Use reasoning client for reasoning models, regular client otherwise
+        if self._is_reasoning_model(self.model):
+            if not azure_openai_reasoning:
+                raise AzureOpenAiMissingConfigurationError(
+                    "Azure OpenAI reasoning client was not initialized. "
+                    "Check that PP_AZURE_OPENAI_REASONING_ENDPOINT and PP_AZURE_OPENAI_REASONING_API_KEY are set."
+                )
+            client = azure_openai_reasoning
+        else:
+            if not azure_openai:
+                raise AzureOpenAiMissingConfigurationError(
+                    "Azure OpenAI client was not initialized. "
+                    "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
+                )
+            client = azure_openai
+
         retry_count = 0
         done = False
         response = False
 
         while not done and retry_count < AZURE_OPENAI_MAX_RETRIES:
             try:
-                response = azure_openai.responses.create(**responses_parameters)
+                response = client.responses.create(**responses_parameters)
                 logger.info("Azure OpenAI Responses API response received")
                 done = True
             except APIError as error:
@@ -199,9 +217,11 @@ class AzureOpenAiModel(OpenAiModel, ABC):
 
         self._log_request_parameters(responses_parameters)
 
-        stream = await client.responses.create(**responses_parameters)
-
-        async for event in stream:
+        async for event in self._stream_with_retry(
+            client,
+            responses_parameters,
+            AZURE_OPENAI_MAX_RETRIES,
+        ):
             chunk = self._convert_openai_event_to_chunk(event)
             if chunk is not None:
                 yield chunk

@@ -546,6 +546,89 @@ class BedrockModel(Model, ABC):
                     )
                     raise
 
+    async def _stream_with_retry(
+        self,
+        streaming_client,
+        converse_params: dict,
+        max_retries: int,
+    ) -> AsyncIterator["StreamChunk"]:
+        """
+        Execute streaming request with retry logic for pre-stream API errors.
+
+        Retries on ThrottlingException and ServiceUnavailableException that
+        occur BEFORE streaming begins. Once the EventStream starts yielding
+        events, errors cannot be retried without data loss.
+
+        Note: Mid-stream throttling errors (wrapped in EventStreamError) will
+        propagate to caller as they cannot be safely retried.
+
+        Args:
+            streaming_client: The boto3 bedrock-runtime client for streaming
+            converse_params: Parameters for converse_stream API call
+            max_retries: Maximum number of retry attempts
+
+        Yields:
+            StreamChunk objects from the stream
+
+        Raises:
+            ClientError: If non-retryable error or max retries exceeded
+        """
+        retry = 0
+        retry_sleep = random.randint(30, 60)
+
+        while retry <= max_retries:
+            try:
+                # Attempt to initiate stream
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: streaming_client.converse_stream(**converse_params),
+                )
+
+                stream = response.get("stream")
+                if not stream:
+                    raise ValueError("No stream returned from converse_stream")
+
+                # Stream initiated successfully - yield all events
+                async for chunk in self._iterate_stream_events(stream):
+                    yield chunk
+
+                return  # Success - exit retry loop
+
+            except ClientError as error:
+                error_code = error.response["Error"]["Code"]
+
+                # Only retry on specific transient errors
+                if error_code not in self.RETRYABLE_ERROR_CODES:
+                    logger.error(
+                        f"Non-retryable Bedrock streaming error: {error_code}",
+                        exc_info=error,
+                    )
+                    raise
+
+                if retry >= max_retries:
+                    logger.error(
+                        f"Bedrock streaming failed with {error_code} after "
+                        f"{max_retries} retries"
+                    )
+                    raise
+
+                # Log and backoff
+                logger.warning(
+                    f"Bedrock streaming received {error_code}, "
+                    f"backing off ({retry_sleep}s) and retrying "
+                    f"(attempt {retry + 1}/{max_retries})"
+                )
+
+                await asyncio.sleep(retry_sleep)
+                retry += 1
+                retry_sleep += random.randint(30, 60)  # Additive backoff
+
+            except Exception as e:
+                # Unexpected error (not ClientError) - propagate immediately
+                logger.error(f"Unexpected Bedrock streaming error: {e}", exc_info=e)
+                raise
+
     def generate_assistant_message(
         self,
         messages: List[Message],
@@ -881,6 +964,10 @@ class BedrockModel(Model, ABC):
 
         Yields StreamChunk objects for each streaming event.
 
+        Implements retry logic for pre-stream errors (ThrottlingException,
+        ServiceUnavailableException). Mid-stream errors cannot be retried
+        and will propagate to caller.
+
         Since boto3 doesn't have native async support, this method runs the
         synchronous converse_stream call in a thread pool executor and yields
         chunks asynchronously.
@@ -901,18 +988,12 @@ class BedrockModel(Model, ABC):
         # This avoids thread-safety issues with sharing clients
         streaming_client = create_bedrock_client_for_streaming(region=region_name)
 
-        # Run the synchronous API call in a thread pool
-        response = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: streaming_client.converse_stream(**converse_params)
-        )
-
-        stream = response.get("stream")
-        if not stream:
-            raise ValueError("No stream returned from converse_stream")
-
-        # Yield chunks from the EventStream
-        # Use a queue to pass events from sync iteration to async context
-        async for chunk in self._iterate_stream_events(stream):
+        # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
+        async for chunk in self._stream_with_retry(
+            streaming_client,
+            converse_params,
+            MAX_RETRIES,
+        ):
             yield chunk
 
     def _extract_usage_from_event(self, event: dict) -> Optional[dict]:
@@ -973,6 +1054,9 @@ class BedrockModel(Model, ABC):
 
         Since EventStream iteration is synchronous, we wrap each iteration
         in run_in_executor to avoid blocking the event loop.
+
+        Detects mid-stream throttling errors and logs them with actionable
+        guidance, as they cannot be automatically retried.
         """
         loop = asyncio.get_running_loop()
         iterator = iter(stream)
@@ -1002,6 +1086,19 @@ class BedrockModel(Model, ABC):
                     f"Bedrock stream timed out waiting for next event "
                     f"(timeout: {BEDROCK_STREAM_TIMEOUT_SECONDS}s)"
                 )
+            except Exception as e:
+                # Detect mid-stream throttling errors (EventStreamError with throttling)
+                # AWS returns these in camelCase format which boto3 can't properly unmarshal
+                error_str = str(e).lower()
+                if "throttling" in error_str or "too many requests" in error_str:
+                    logger.error(
+                        f"Mid-stream throttling detected in Bedrock EventStream. "
+                        f"This error cannot be automatically retried. "
+                        f"Consider: (1) Increasing boto3 Config retries, "
+                        f"(2) Implementing application-level rate limiting, "
+                        f"(3) Using Provisioned Throughput. Error: {e}"
+                    )
+                raise
 
             if event is _STREAM_END:
                 break

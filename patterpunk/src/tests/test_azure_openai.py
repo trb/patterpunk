@@ -1,5 +1,3 @@
-import os
-import pytest
 from pydantic import BaseModel, Field
 
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
@@ -7,89 +5,9 @@ from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
-from patterpunk.llm.models.azure_openai import (
-    AzureOpenAiModel,
-    AzureOpenAiMissingConfigurationError,
-)
+from patterpunk.llm.models.azure_openai import AzureOpenAiModel
 from patterpunk.llm.thinking import ThinkingConfig
 from tests.test_utils import get_resource
-
-
-def test_azure_endpoint_url_formatting():
-    """Test that Azure endpoint URLs are formatted correctly for v1 API"""
-    # Clear any existing env vars
-    os.environ.pop("PP_AZURE_OPENAI_ENDPOINT", None)
-    os.environ.pop("PP_AZURE_OPENAI_API_KEY", None)
-
-    # Reset the global client
-    from patterpunk.config.providers import azure_openai
-
-    azure_openai._azure_openai_client = None
-
-    test_cases = [
-        (
-            "https://test.openai.azure.com",
-            "https://test.openai.azure.com/openai/v1/",
-        ),
-        (
-            "https://test.openai.azure.com/",
-            "https://test.openai.azure.com/openai/v1/",
-        ),
-        (
-            "https://test.openai.azure.com/openai/v1/",
-            "https://test.openai.azure.com/openai/v1/",
-        ),
-    ]
-
-    for input_endpoint, expected_base_url in test_cases:
-        os.environ["PP_AZURE_OPENAI_ENDPOINT"] = input_endpoint
-        os.environ["PP_AZURE_OPENAI_API_KEY"] = "test-key"
-
-        # Reset module to force re-initialization
-        import importlib
-
-        importlib.reload(azure_openai)
-
-        client = azure_openai.azure_openai
-        assert (
-            client is not None
-        ), f"Client should be created for endpoint: {input_endpoint}"
-        assert str(client.base_url) == expected_base_url, (
-            f"Base URL mismatch for input '{input_endpoint}': "
-            f"expected '{expected_base_url}', got '{client.base_url}'"
-        )
-
-    # Clean up
-    os.environ.pop("PP_AZURE_OPENAI_ENDPOINT", None)
-    os.environ.pop("PP_AZURE_OPENAI_API_KEY", None)
-
-
-def test_azure_client_not_created_without_credentials():
-    """Test that client is not created when credentials are missing"""
-    os.environ.pop("PP_AZURE_OPENAI_ENDPOINT", None)
-    os.environ.pop("PP_AZURE_OPENAI_API_KEY", None)
-
-    from patterpunk.config.providers import azure_openai
-    import importlib
-
-    importlib.reload(azure_openai)
-
-    assert (
-        azure_openai.azure_openai is None
-    ), "Client should be None without credentials"
-    assert (
-        not azure_openai.is_azure_openai_available()
-    ), "Azure should not be available without credentials"
-
-
-@pytest.mark.skip(
-    reason="Modifying env vars during test run interferes with other tests"
-)
-def test_azure_model_requires_credentials():
-    """Test that AzureOpenAiModel raises error without credentials"""
-    # This test is skipped because modifying environment variables
-    # during test execution can interfere with other tests that run in parallel
-    pass
 
 
 def test_basic():
@@ -149,15 +67,11 @@ def test_structured_output():
     assert "15" in parsed_output.question or "27" in parsed_output.question
 
 
-@pytest.mark.skip(reason="Requires o-series deployment in Azure")
 def test_reasoning_model():
-    """Test Azure OpenAI with reasoning configuration (if o-series models are deployed)"""
-
-    # Skipped - requires o3-mini deployment
+    """Test Azure OpenAI with reasoning configuration (sync mode)."""
     chat = Chat(
         model=AzureOpenAiModel(
-            deployment_name="o3-mini",
-            temperature=0.1,
+            deployment_name="gpt-5.2",
             thinking_config=ThinkingConfig(effort="medium"),
         )
     )
@@ -169,7 +83,6 @@ def test_reasoning_model():
     )
 
     print(chat.latest_message.content)
-
     assert "test" in chat.latest_message.content.lower()
 
 

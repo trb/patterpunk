@@ -392,6 +392,31 @@ Please extract the relevant information from this reasoning and format it exactl
         else:
             raise error
 
+    def _handle_stream_error_event(self, event) -> None:
+        """
+        Handle SSE error events that occur mid-stream (after HTTP 200 OK).
+
+        Anthropic can send errors as SSE events after the stream has started.
+        This is different from pre-stream HTTP errors and requires explicit handling.
+        """
+        error_data = getattr(event, "error", None)
+        if error_data:
+            error_type = getattr(error_data, "type", None)
+            error_message = getattr(error_data, "message", "Unknown error")
+
+            logger.error(
+                f"Mid-stream error received: type={error_type}, message={error_message}"
+            )
+
+            if error_type in ["rate_limit_error", "overloaded_error"]:
+                raise AnthropicRateLimitError(
+                    f"Mid-stream {error_type}: {error_message}"
+                )
+            else:
+                raise AnthropicAPIError(
+                    f"Mid-stream error: {error_type} - {error_message}"
+                )
+
     def _configure_regular_tools(
         self, api_params: dict, tools: Optional[ToolDefinition]
     ) -> dict:
@@ -1071,6 +1096,12 @@ Please extract the relevant information from this reasoning and format it exactl
         Stream the assistant message response from Anthropic.
 
         Yields StreamChunk objects for each streaming event.
+
+        Retry behavior:
+        - Pre-stream errors (429/5xx at connection time): Handled by SDK with
+          max_retries=MAX_RETRIES, using exponential backoff
+        - Mid-stream SSE error events: Detected and raised as exceptions
+          (cannot be retried as stream is already consumed)
         """
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
@@ -1085,8 +1116,18 @@ Please extract the relevant information from this reasoning and format it exactl
         # Remove timeout from params (context manager handles it)
         api_params.pop("timeout", None)
 
-        async with anthropic_async.messages.stream(**api_params) as stream:
+        # Configure SDK retry to match sync path's MAX_RETRIES
+        # The SDK uses exponential backoff and handles 429, 5xx, connection errors
+        client_with_retry = anthropic_async.with_options(max_retries=MAX_RETRIES)
+
+        async with client_with_retry.messages.stream(**api_params) as stream:
             async for event in stream:
+                # Check for mid-stream error events (unique to Anthropic)
+                # These arrive as SSE events after HTTP 200 OK
+                event_type = getattr(event, "type", None)
+                if event_type == "error":
+                    self._handle_stream_error_event(event)
+
                 chunk = self._convert_stream_event_to_chunk(event)
                 if chunk is not None:
                     yield chunk

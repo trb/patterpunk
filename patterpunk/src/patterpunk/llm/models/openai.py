@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import enum
 import math
@@ -62,8 +63,9 @@ class OpenAiModel(Model, ABC):
         presence_penalty=None,
         logit_bias=None,
         thinking_config: Optional[ThinkingConfig] = None,
+        _INTERNAL__skip_client_validation: bool = False,
     ):
-        if not openai:
+        if not _INTERNAL__skip_client_validation and not openai:
             raise OpenAiMissingConfigurationError(
                 "OpenAi was not initialized correctly, did you set the api key?"
             )
@@ -849,6 +851,66 @@ class OpenAiModel(Model, ABC):
             total += len(encoding.encode(message.function_name))
         return total
 
+    async def _stream_with_retry(
+        self,
+        client,
+        responses_parameters: dict,
+        max_retries: int,
+    ) -> AsyncIterator:
+        """
+        Execute streaming request with retry logic for API errors.
+
+        429 errors occur at request initiation (before streaming begins),
+        so we can safely retry the entire request without data loss.
+        """
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                stream = await client.responses.create(**responses_parameters)
+
+                # Yield events from stream - error surfaces on first iteration if 429
+                async for event in stream:
+                    yield event
+
+                return  # Success - exit retry loop
+
+            except APIError as error:
+                last_error = error
+
+                # Handle reasoning.summary error specially (retry with modified params)
+                if (
+                    "reasoning.summary" in str(error)
+                    and "reasoning" in responses_parameters
+                ):
+                    logger.info(
+                        "Organization not verified for reasoning summaries, "
+                        "removing reasoning parameter and treating as regular model"
+                    )
+                    responses_parameters.pop("reasoning", None)
+                    responses_parameters["temperature"] = self.temperature
+                    responses_parameters["top_p"] = self.top_p
+                    # Continue to next attempt without incrementing backoff
+                    continue
+
+                if attempt < max_retries - 1:
+                    # Calculate backoff: 2s, 4s, 6s...
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(
+                        f"Streaming request failed (attempt {attempt + 1}/{max_retries}): {error}. "
+                        f"Retrying in {wait_time}s..."
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Streaming request failed after {max_retries} attempts: {error}"
+                    )
+
+        # All retries exhausted
+        raise OpenAiApiError(
+            f"OpenAI streaming API failed after {max_retries} retries"
+        ) from last_error
+
     async def stream_assistant_message(
         self,
         messages: List[Message],
@@ -873,13 +935,15 @@ class OpenAiModel(Model, ABC):
 
         self._log_request_parameters(responses_parameters)
 
-        stream = await openai_async.responses.create(**responses_parameters)
-
         # Track current tool call state
         current_tool_id = None
         current_tool_name = None
 
-        async for event in stream:
+        async for event in self._stream_with_retry(
+            openai_async,
+            responses_parameters,
+            OPENAI_MAX_RETRIES,
+        ):
             chunk = self._convert_stream_event_to_chunk(
                 event, current_tool_id, current_tool_name
             )

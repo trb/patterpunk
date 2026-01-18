@@ -109,6 +109,31 @@ pipeline = AgentChain([ExtractAgent(), ClassifyAgent()])
 classification = pipeline.execute(raw_document)
 ```
 
+## Tool Integration
+
+Override `prepare_chat()` to add tools to agent workflows:
+
+```python
+class ToolAgent(Agent[str, str]):
+    @property
+    def model(self):
+        return OpenAiModel()
+
+    @property
+    def system_prompt(self):
+        return "Use tools to help users."
+
+    @property
+    def _user_prompt_template(self):
+        return "{{ text }}"
+
+    def prepare_chat(self):
+        return super().prepare_chat().with_tools([my_tool])
+
+# Tools are auto-executed during agent.execute()
+result = ToolAgent().execute("What's the weather in Tokyo?")
+```
+
 ## Integration Notes
 
 Agents work seamlessly with tools and MCP servers via the underlying Chat API. Override `execute()` method for custom logic when the default template→LLM→parse flow isn't sufficient.

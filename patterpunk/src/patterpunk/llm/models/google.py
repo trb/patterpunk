@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import uuid
@@ -819,6 +820,70 @@ class GoogleModel(Model, ABC):
             thinking_config=self.thinking_config,
         )
 
+    async def _stream_with_retry(
+        self,
+        contents: List[types.Content],
+        config: types.GenerateContentConfig,
+        max_retries: int,
+    ) -> AsyncIterator:
+        """
+        Execute streaming request with retry logic for API errors.
+
+        429 errors occur at request initiation (before streaming begins),
+        so we can safely retry the entire request without data loss.
+
+        Args:
+            contents: The message contents in Google format
+            config: The generation config
+            max_retries: Maximum number of retry attempts
+
+        Yields:
+            Stream chunks from the API
+
+        Raises:
+            GoogleRateLimitError: After exhausting all retries on 429 errors
+            GoogleAPIError: For other API errors
+        """
+        retry_count = 0
+        wait_time = 60  # Match sync implementation - 60s gives rate limit window time to reset
+
+        while retry_count < max_retries:
+            try:
+                # Create stream and iterate - error surfaces on first iteration if 429
+                stream = await self.client.aio.models.generate_content_stream(
+                    model=self.model, contents=contents, config=config
+                )
+
+                # Yield all events from stream
+                async for chunk in stream:
+                    yield chunk
+
+                return  # Success - exit retry loop
+
+            except genai_errors.APIError as error:
+                if error.code == 429:
+                    if retry_count >= max_retries - 1:
+                        # Exhausted retries
+                        raise GoogleRateLimitError(
+                            f"Rate limit exceeded after {retry_count + 1} retries"
+                        ) from error
+
+                    logger.warning(
+                        f"VertexAI: Rate limit hit during streaming, "
+                        f"attempt {retry_count + 1}/{max_retries}. "
+                        f"Waiting {wait_time} seconds before retry."
+                    )
+
+                    await asyncio.sleep(wait_time)
+                    retry_count += 1
+                    wait_time = int(wait_time * 1.5)  # Match sync: 60s → 90s → 135s
+                else:
+                    # Non-retryable error
+                    logger.error(f"VertexAI: Unexpected API error during streaming: {error}")
+                    raise GoogleAPIError(
+                        f"Streaming API error: {str(error)}"
+                    ) from error
+
     async def stream_assistant_message(
         self,
         messages: List[Message],
@@ -831,6 +896,7 @@ class GoogleModel(Model, ABC):
 
         Yields StreamChunk objects for each streaming event.
         Uses the client.aio.models.generate_content_stream() async API.
+        Includes retry logic for 429 rate limit errors.
         """
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
@@ -840,9 +906,11 @@ class GoogleModel(Model, ABC):
 
         usage_info = None
 
-        # Use the async streaming API via client.aio
-        async for chunk in await self.client.aio.models.generate_content_stream(
-            model=self.model, contents=contents, config=config
+        # Use retry wrapper instead of direct call
+        async for chunk in self._stream_with_retry(
+            contents=contents,
+            config=config,
+            max_retries=MAX_RETRIES,
         ):
             # Yield all events from this chunk
             for stream_chunk in self._convert_stream_chunk_to_events(chunk):
