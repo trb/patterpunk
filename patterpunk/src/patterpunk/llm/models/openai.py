@@ -2,13 +2,19 @@ import asyncio
 import base64
 import enum
 import math
+import time
 from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Union
 
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
 )
+from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.config.providers.openai import (
     openai,
     openai_async,
@@ -29,8 +35,10 @@ from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
 from patterpunk.logger import logger, logger_llm
 
-if openai:
-    from openai import APIError
+try:
+    from openai import APIError, BadRequestError
+except ImportError:
+    pass  # openai package not installed, will fail at runtime if OpenAI methods are called
 
 
 class OpenAiWrongParameterError(Exception):
@@ -624,11 +632,33 @@ class OpenAiModel(Model, ABC):
                     responses_parameters.pop("reasoning", None)
                     responses_parameters["temperature"] = self.temperature
                     responses_parameters["top_p"] = self.top_p
-                else:
-                    logger.info(
-                        "Retrying OpenAi Responses API request due to APIError",
-                        exc_info=error,
+                    # Retry immediately for this specific error (no rate limit)
+                    retry_count += 1
+                    continue
+
+                # Don't retry 400 errors - these are parameter errors, not transient failures
+                if isinstance(error, BadRequestError):
+                    logger.error(
+                        f"Request failed with BadRequestError (not retrying): {error}"
                     )
+                    raise
+
+                # Calculate backoff delay for rate limit and transient errors
+                retry_after = extract_retry_after(error)
+                wait_time = calculate_backoff_delay(
+                    attempt=retry_count,
+                    base_delay=RETRY_BASE_DELAY,
+                    max_delay=RETRY_MAX_DELAY,
+                    min_delay=RETRY_MIN_DELAY,
+                    jitter_factor=RETRY_JITTER_FACTOR,
+                    retry_after=retry_after,
+                )
+                logger.warning(
+                    f"Retrying request to /responses in {wait_time:.1f} seconds "
+                    f"(attempt {retry_count + 1}/{OPENAI_MAX_RETRIES})",
+                    exc_info=error,
+                )
+                time.sleep(wait_time)
                 retry_count += 1
 
         if not done or not response:
@@ -893,12 +923,27 @@ class OpenAiModel(Model, ABC):
                     # Continue to next attempt without incrementing backoff
                     continue
 
+                # Don't retry 400 errors - these are parameter errors, not transient failures
+                if isinstance(error, BadRequestError):
+                    logger.error(
+                        f"Streaming request failed with BadRequestError (not retrying): {error}"
+                    )
+                    raise
+
                 if attempt < max_retries - 1:
-                    # Calculate backoff: 2s, 4s, 6s...
-                    wait_time = (attempt + 1) * 2
+                    # Calculate exponential backoff with jitter for rate limits
+                    retry_after = extract_retry_after(error)
+                    wait_time = calculate_backoff_delay(
+                        attempt=attempt,
+                        base_delay=RETRY_BASE_DELAY,
+                        max_delay=RETRY_MAX_DELAY,
+                        min_delay=RETRY_MIN_DELAY,
+                        jitter_factor=RETRY_JITTER_FACTOR,
+                        retry_after=retry_after,
+                    )
                     logger.warning(
                         f"Streaming request failed (attempt {attempt + 1}/{max_retries}): {error}. "
-                        f"Retrying in {wait_time}s..."
+                        f"Retrying in {wait_time:.1f}s..."
                     )
                     await asyncio.sleep(wait_time)
                 else:

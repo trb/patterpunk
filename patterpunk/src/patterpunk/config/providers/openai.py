@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from ..defaults import MAX_RETRIES
+from ..defaults import MAX_RETRIES, SDK_MAX_RETRIES
 
 OPENAI_API_KEY = os.getenv("PP_OPENAI_API_KEY", None)
 OPENAI_MAX_RETRIES = os.getenv("PP_OPENAI_MAX_RETRIES") or MAX_RETRIES
@@ -15,7 +15,8 @@ def get_openai_client():
     if _openai_client is None and OPENAI_API_KEY:
         from openai import OpenAI
 
-        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY, max_retries=SDK_MAX_RETRIES)
     return _openai_client
 
 
@@ -24,7 +25,10 @@ def get_openai_async_client():
     if _openai_async_client is None and OPENAI_API_KEY:
         from openai import AsyncOpenAI
 
-        _openai_async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
+        _openai_async_client = AsyncOpenAI(
+            api_key=OPENAI_API_KEY, max_retries=SDK_MAX_RETRIES
+        )
     return _openai_async_client
 
 

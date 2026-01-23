@@ -22,7 +22,14 @@ from patterpunk.config.providers.anthropic import (
     ANTHROPIC_DEFAULT_MAX_TOKENS,
     ANTHROPIC_DEFAULT_TIMEOUT,
 )
-from patterpunk.config.defaults import MAX_RETRIES
+from patterpunk.config.defaults import (
+    MAX_RETRIES,
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
+)
+from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
@@ -363,14 +370,32 @@ Please extract the relevant information from this reasoning and format it exactl
         api_params = self._get_compatible_params(api_params)
         return api_params
 
-    def _initialize_retry_state(self) -> tuple[int, int]:
-        retry_count = 0
-        wait_time = 60
-        return retry_count, wait_time
+    def _initialize_retry_state(self) -> int:
+        """Initialize retry counter for the retry loop."""
+        return 0
 
     def _handle_api_error(
-        self, error: "APIError", retry_count: int, wait_time: int
-    ) -> tuple[bool, int, int]:
+        self, error: "APIError", retry_count: int
+    ) -> tuple[bool, int]:
+        """
+        Handle API errors with exponential backoff retry logic.
+
+        Uses the shared retry utilities for consistent behavior across providers:
+        - Exponential backoff with jitter (±50%)
+        - Minimum delay of 45s to respect rate limit windows
+        - Honors Retry-After headers when available
+
+        Args:
+            error: The Anthropic APIError that occurred
+            retry_count: Current retry attempt (0-indexed)
+
+        Returns:
+            Tuple of (should_retry, new_retry_count)
+
+        Raises:
+            AnthropicRateLimitError: If max retries exceeded
+            APIError: If error is not retryable
+        """
         if (
             getattr(error, "status_code", None) == 429
             or "rate_limit_error" in str(error).lower()
@@ -380,15 +405,26 @@ Please extract the relevant information from this reasoning and format it exactl
                     f"Rate limit exceeded after {retry_count} retries"
                 ) from error
 
+            # Extract Retry-After header if available
+            retry_after = extract_retry_after(error)
+
+            # Calculate delay with exponential backoff and jitter
+            wait_time = calculate_backoff_delay(
+                attempt=retry_count,
+                base_delay=RETRY_BASE_DELAY,
+                max_delay=RETRY_MAX_DELAY,
+                min_delay=RETRY_MIN_DELAY,
+                jitter_factor=RETRY_JITTER_FACTOR,
+                retry_after=retry_after,
+            )
+
             logger.warning(
                 f"Rate limit hit, attempt {retry_count + 1}/{MAX_RETRIES}. "
-                f"Waiting {wait_time} seconds before retry."
+                f"Waiting {wait_time:.1f} seconds before retry."
             )
 
             time.sleep(wait_time)
-            new_retry_count = retry_count + 1
-            new_wait_time = int(wait_time * 1.5)
-            return True, new_retry_count, new_wait_time
+            return True, retry_count + 1
         else:
             raise error
 
@@ -595,7 +631,7 @@ Please extract the relevant information from this reasoning and format it exactl
         structured_output: Optional[object],
     ) -> Union[Message, "ToolCallMessage"]:
         system_prompt = self._prepare_system_prompt(messages)
-        retry_count, wait_time = self._initialize_retry_state()
+        retry_count = self._initialize_retry_state()
 
         while True:
             try:
@@ -735,9 +771,7 @@ Please extract the relevant information from this reasoning and format it exactl
                     )
 
             except APIError as e:
-                should_retry, retry_count, wait_time = self._handle_api_error(
-                    e, retry_count, wait_time
-                )
+                should_retry, retry_count = self._handle_api_error(e, retry_count)
                 if should_retry:
                     continue
         raise AnthropicAPIError(

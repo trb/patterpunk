@@ -7,9 +7,14 @@ from typing import List, Optional, Callable, Set, Union
 from patterpunk.config.providers.ollama import (
     ollama,
     OLLAMA_MAX_RETRIES,
-    OLLAMA_RETRY_BASE_DELAY,
-    OLLAMA_RETRY_MAX_DELAY,
 )
+from patterpunk.config.defaults import (
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
+)
+from patterpunk.lib.retry import calculate_backoff_delay
 from patterpunk.logger import logger
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.messages.assistant import AssistantMessage
@@ -247,6 +252,9 @@ class OllamaModel(Model, ABC):
         - 500 Internal Server Error (transient model failures)
         - Connection errors (network failures, server restart)
 
+        Uses exponential backoff with jitter (±50%) for consistent behavior
+        across all providers. Minimum delay of 45s respects rate limit windows.
+
         Non-retryable:
         - 400 Bad Request (invalid parameters)
         - 404 Not Found (model doesn't exist)
@@ -274,17 +282,20 @@ class OllamaModel(Model, ABC):
 
                     if status_code in RETRYABLE_STATUS_CODES:
                         if attempt < OLLAMA_MAX_RETRIES - 1:
-                            wait_time = min(
-                                OLLAMA_RETRY_BASE_DELAY * (2**attempt),
-                                OLLAMA_RETRY_MAX_DELAY,
+                            # Calculate delay with exponential backoff and jitter
+                            wait_time = calculate_backoff_delay(
+                                attempt=attempt,
+                                base_delay=RETRY_BASE_DELAY,
+                                max_delay=RETRY_MAX_DELAY,
+                                min_delay=RETRY_MIN_DELAY,
+                                jitter_factor=RETRY_JITTER_FACTOR,
                             )
-                            jitter = wait_time * (0.5 + random.random() * 0.5)
 
                             logger.warning(
                                 f"Ollama request failed (attempt {attempt + 1}/{OLLAMA_MAX_RETRIES}): "
-                                f"Status {status_code}. Retrying in {jitter:.1f}s..."
+                                f"Status {status_code}. Retrying in {wait_time:.1f}s..."
                             )
-                            time.sleep(jitter)
+                            time.sleep(wait_time)
                             continue
                         raise
 
@@ -296,17 +307,20 @@ class OllamaModel(Model, ABC):
                     error, (ConnectionError, OSError)
                 ):
                     if attempt < OLLAMA_MAX_RETRIES - 1:
-                        wait_time = min(
-                            OLLAMA_RETRY_BASE_DELAY * (2**attempt),
-                            OLLAMA_RETRY_MAX_DELAY,
+                        # Calculate delay with exponential backoff and jitter
+                        wait_time = calculate_backoff_delay(
+                            attempt=attempt,
+                            base_delay=RETRY_BASE_DELAY,
+                            max_delay=RETRY_MAX_DELAY,
+                            min_delay=RETRY_MIN_DELAY,
+                            jitter_factor=RETRY_JITTER_FACTOR,
                         )
-                        jitter = wait_time * (0.5 + random.random() * 0.5)
 
                         logger.warning(
                             f"Ollama connection failed (attempt {attempt + 1}/{OLLAMA_MAX_RETRIES}): "
-                            f"{error}. Retrying in {jitter:.1f}s..."
+                            f"{error}. Retrying in {wait_time:.1f}s..."
                         )
-                        time.sleep(jitter)
+                        time.sleep(wait_time)
                         continue
                     raise
 

@@ -17,7 +17,14 @@ from patterpunk.config.providers.google import (
     GOOGLE_DEFAULT_TOP_P,
     GEMINI_REGION,
 )
-from patterpunk.config.defaults import MAX_RETRIES
+from patterpunk.config.defaults import (
+    MAX_RETRIES,
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
+)
+from patterpunk.lib.retry import calculate_backoff_delay
 
 try:
     from google import genai
@@ -646,7 +653,6 @@ class GoogleModel(Model, ABC):
         )
 
         retry_count = 0
-        wait_time = 60
 
         while retry_count < MAX_RETRIES:
             try:
@@ -663,14 +669,22 @@ class GoogleModel(Model, ABC):
                             f"Rate limit exceeded after {retry_count + 1} retries"
                         ) from error
 
+                    # Calculate delay with exponential backoff and jitter
+                    wait_time = calculate_backoff_delay(
+                        attempt=retry_count,
+                        base_delay=RETRY_BASE_DELAY,
+                        max_delay=RETRY_MAX_DELAY,
+                        min_delay=RETRY_MIN_DELAY,
+                        jitter_factor=RETRY_JITTER_FACTOR,
+                    )
+
                     logger.warning(
                         f"VertexAI: Rate limit hit, attempt {retry_count + 1}/{MAX_RETRIES}. "
-                        f"Waiting {wait_time} seconds before retry."
+                        f"Waiting {wait_time:.1f} seconds before retry."
                     )
 
                     time.sleep(wait_time)
                     retry_count += 1
-                    wait_time = int(wait_time * 1.5)
                     continue
                 else:
                     logger.error(f"VertexAI: Unexpected Api error {error}")
@@ -832,6 +846,9 @@ class GoogleModel(Model, ABC):
         429 errors occur at request initiation (before streaming begins),
         so we can safely retry the entire request without data loss.
 
+        Uses exponential backoff with jitter (±50%) for consistent behavior
+        across all providers. Minimum delay of 45s respects rate limit windows.
+
         Args:
             contents: The message contents in Google format
             config: The generation config
@@ -845,9 +862,6 @@ class GoogleModel(Model, ABC):
             GoogleAPIError: For other API errors
         """
         retry_count = 0
-        wait_time = (
-            60  # Match sync implementation - 60s gives rate limit window time to reset
-        )
 
         while retry_count < max_retries:
             try:
@@ -870,15 +884,23 @@ class GoogleModel(Model, ABC):
                             f"Rate limit exceeded after {retry_count + 1} retries"
                         ) from error
 
+                    # Calculate delay with exponential backoff and jitter
+                    wait_time = calculate_backoff_delay(
+                        attempt=retry_count,
+                        base_delay=RETRY_BASE_DELAY,
+                        max_delay=RETRY_MAX_DELAY,
+                        min_delay=RETRY_MIN_DELAY,
+                        jitter_factor=RETRY_JITTER_FACTOR,
+                    )
+
                     logger.warning(
                         f"VertexAI: Rate limit hit during streaming, "
                         f"attempt {retry_count + 1}/{max_retries}. "
-                        f"Waiting {wait_time} seconds before retry."
+                        f"Waiting {wait_time:.1f} seconds before retry."
                     )
 
                     await asyncio.sleep(wait_time)
                     retry_count += 1
-                    wait_time = int(wait_time * 1.5)  # Match sync: 60s → 90s → 135s
                 else:
                     # Non-retryable error
                     logger.error(

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import random
 import re
 import time
 from abc import ABC
@@ -21,7 +20,12 @@ from patterpunk.config.defaults import (
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
     MAX_RETRIES,
     MIN_THINKING_BUDGET_TOKENS,
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
 )
+from patterpunk.lib.retry import calculate_backoff_delay
 from patterpunk.config.providers.bedrock import (
     boto3,
     get_bedrock_client_by_region,
@@ -507,6 +511,9 @@ class BedrockModel(Model, ABC):
         - ThrottlingException (429): Account quotas exceeded
         - ServiceUnavailableException (503): Service temporarily unavailable
 
+        Uses exponential backoff with jitter (±50%) for consistent behavior
+        across all providers. Minimum delay of 45s respects rate limit windows.
+
         Args:
             operation: Callable that performs the API operation
             operation_name: Name for logging purposes
@@ -518,7 +525,6 @@ class BedrockModel(Model, ABC):
             ClientError: If non-retryable error or max retries exceeded
         """
         retry = 0
-        retry_sleep = random.randint(30, 60)
 
         while True:
             try:
@@ -532,13 +538,22 @@ class BedrockModel(Model, ABC):
                             f"max retries ({MAX_RETRIES}) reached"
                         )
                         raise
+
+                    # Calculate delay with exponential backoff and jitter
+                    wait_time = calculate_backoff_delay(
+                        attempt=retry,
+                        base_delay=RETRY_BASE_DELAY,
+                        max_delay=RETRY_MAX_DELAY,
+                        min_delay=RETRY_MIN_DELAY,
+                        jitter_factor=RETRY_JITTER_FACTOR,
+                    )
+
                     logger.warning(
                         f"{operation_name} received {error_code}, "
-                        f"backing off ({retry_sleep}s) and retrying"
+                        f"backing off ({wait_time:.1f}s) and retrying"
                     )
                     retry += 1
-                    time.sleep(retry_sleep)
-                    retry_sleep += random.randint(30, 60)
+                    time.sleep(wait_time)
                 else:
                     logger.error(
                         f"{operation_name} client exception: {error_code}",
@@ -559,6 +574,9 @@ class BedrockModel(Model, ABC):
         occur BEFORE streaming begins. Once the EventStream starts yielding
         events, errors cannot be retried without data loss.
 
+        Uses exponential backoff with jitter (±50%) for consistent behavior
+        across all providers. Minimum delay of 45s respects rate limit windows.
+
         Note: Mid-stream throttling errors (wrapped in EventStreamError) will
         propagate to caller as they cannot be safely retried.
 
@@ -574,7 +592,6 @@ class BedrockModel(Model, ABC):
             ClientError: If non-retryable error or max retries exceeded
         """
         retry = 0
-        retry_sleep = random.randint(30, 60)
 
         while retry <= max_retries:
             try:
@@ -613,16 +630,24 @@ class BedrockModel(Model, ABC):
                     )
                     raise
 
+                # Calculate delay with exponential backoff and jitter
+                wait_time = calculate_backoff_delay(
+                    attempt=retry,
+                    base_delay=RETRY_BASE_DELAY,
+                    max_delay=RETRY_MAX_DELAY,
+                    min_delay=RETRY_MIN_DELAY,
+                    jitter_factor=RETRY_JITTER_FACTOR,
+                )
+
                 # Log and backoff
                 logger.warning(
                     f"Bedrock streaming received {error_code}, "
-                    f"backing off ({retry_sleep}s) and retrying "
+                    f"backing off ({wait_time:.1f}s) and retrying "
                     f"(attempt {retry + 1}/{max_retries})"
                 )
 
-                await asyncio.sleep(retry_sleep)
+                await asyncio.sleep(wait_time)
                 retry += 1
-                retry_sleep += random.randint(30, 60)  # Additive backoff
 
             except Exception as e:
                 # Unexpected error (not ClientError) - propagate immediately

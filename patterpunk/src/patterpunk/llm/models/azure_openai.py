@@ -1,6 +1,13 @@
+import time
 from abc import ABC
 from typing import AsyncIterator, List, Optional, Set, Union
 
+from patterpunk.config.defaults import (
+    RETRY_BASE_DELAY,
+    RETRY_MAX_DELAY,
+    RETRY_MIN_DELAY,
+    RETRY_JITTER_FACTOR,
+)
 from patterpunk.config.providers.azure_openai import (
     azure_openai,
     azure_openai_async,
@@ -8,6 +15,7 @@ from patterpunk.config.providers.azure_openai import (
     azure_openai_reasoning_async,
     AZURE_OPENAI_MAX_RETRIES,
 )
+from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
@@ -16,8 +24,10 @@ from patterpunk.llm.messages.base import Message
 from patterpunk.llm.streaming import StreamChunk, StreamEventType
 from patterpunk.logger import logger, logger_llm
 
-if azure_openai:
-    from openai import APIError
+try:
+    from openai import APIError, BadRequestError
+except ImportError:
+    pass  # openai package not installed, will fail at runtime if Azure OpenAI methods are called
 
 
 class AzureOpenAiMissingConfigurationError(Exception):
@@ -89,11 +99,33 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                     responses_parameters.pop("reasoning", None)
                     responses_parameters["temperature"] = self.temperature
                     responses_parameters["top_p"] = self.top_p
-                else:
-                    logger.info(
-                        "Retrying Azure OpenAI Responses API request due to APIError",
-                        exc_info=error,
+                    # Retry immediately for this specific error (no rate limit)
+                    retry_count += 1
+                    continue
+
+                # Don't retry 400 errors - these are parameter errors, not transient failures
+                if isinstance(error, BadRequestError):
+                    logger.error(
+                        f"Request failed with BadRequestError (not retrying): {error}"
                     )
+                    raise
+
+                # Calculate backoff delay for rate limit and transient errors
+                retry_after = extract_retry_after(error)
+                wait_time = calculate_backoff_delay(
+                    attempt=retry_count,
+                    base_delay=RETRY_BASE_DELAY,
+                    max_delay=RETRY_MAX_DELAY,
+                    min_delay=RETRY_MIN_DELAY,
+                    jitter_factor=RETRY_JITTER_FACTOR,
+                    retry_after=retry_after,
+                )
+                logger.warning(
+                    f"Retrying request to /responses in {wait_time:.1f} seconds "
+                    f"(attempt {retry_count + 1}/{AZURE_OPENAI_MAX_RETRIES})",
+                    exc_info=error,
+                )
+                time.sleep(wait_time)
                 retry_count += 1
 
         if not done or not response:

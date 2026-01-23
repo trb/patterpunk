@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from ..defaults import MAX_RETRIES
+from ..defaults import MAX_RETRIES, SDK_MAX_RETRIES
 
 # Azure OpenAI Responses API uses v1 endpoint with standard OpenAI client
 # Format: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/
@@ -36,9 +36,11 @@ def get_azure_openai_client():
     if _azure_openai_client is None and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY:
         from openai import OpenAI
 
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
         _azure_openai_client = OpenAI(
             base_url=_get_azure_base_url(),
             api_key=AZURE_OPENAI_API_KEY,
+            max_retries=SDK_MAX_RETRIES,
         )
     return _azure_openai_client
 
@@ -52,9 +54,11 @@ def get_azure_openai_async_client():
     ):
         from openai import AsyncOpenAI
 
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
         _azure_openai_async_client = AsyncOpenAI(
             base_url=_get_azure_base_url(),
             api_key=AZURE_OPENAI_API_KEY,
+            max_retries=SDK_MAX_RETRIES,
         )
     return _azure_openai_async_client
 
@@ -69,10 +73,12 @@ def get_azure_openai_reasoning_client():
     ):
         from openai import AzureOpenAI
 
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
         _azure_openai_reasoning_client = AzureOpenAI(
             azure_endpoint=AZURE_OPENAI_REASONING_ENDPOINT,
             api_key=AZURE_OPENAI_REASONING_API_KEY,
             api_version=AZURE_OPENAI_REASONING_API_VERSION,
+            max_retries=SDK_MAX_RETRIES,
         )
     return _azure_openai_reasoning_client
 
@@ -87,10 +93,12 @@ def get_azure_openai_reasoning_async_client():
     ):
         from openai import AsyncAzureOpenAI
 
+        # Disable SDK internal retries - patterpunk handles retries with proper backoff
         _azure_openai_reasoning_async_client = AsyncAzureOpenAI(
             azure_endpoint=AZURE_OPENAI_REASONING_ENDPOINT,
             api_key=AZURE_OPENAI_REASONING_API_KEY,
             api_version=AZURE_OPENAI_REASONING_API_VERSION,
+            max_retries=SDK_MAX_RETRIES,
         )
     return _azure_openai_reasoning_async_client
 
