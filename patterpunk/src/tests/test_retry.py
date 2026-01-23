@@ -300,25 +300,41 @@ class TestBackoffIntegration:
 
         # All delays should be different (with very high probability)
         unique_delays = set(delays)
-        assert len(unique_delays) > 5, "Jitter should produce varied delays across clients"
+        assert (
+            len(unique_delays) > 5
+        ), "Jitter should produce varied delays across clients"
 
         # Delays should be spread across the expected range
         min_delay = min(delays)
         max_delay = max(delays)
         spread = max_delay - min_delay
-        assert spread > 10.0, f"Delays should be spread out, but spread was only {spread}s"
+        assert (
+            spread > 10.0
+        ), f"Delays should be spread out, but spread was only {spread}s"
 
     def test_progressive_backoff_increases_delay(self):
         """Verify that subsequent attempts use longer delays."""
         # With jitter disabled, we can verify exact exponential growth
         delay_0 = calculate_backoff_delay(
-            attempt=0, base_delay=60.0, max_delay=300.0, min_delay=0.0, jitter_factor=0.0
+            attempt=0,
+            base_delay=60.0,
+            max_delay=300.0,
+            min_delay=0.0,
+            jitter_factor=0.0,
         )
         delay_1 = calculate_backoff_delay(
-            attempt=1, base_delay=60.0, max_delay=300.0, min_delay=0.0, jitter_factor=0.0
+            attempt=1,
+            base_delay=60.0,
+            max_delay=300.0,
+            min_delay=0.0,
+            jitter_factor=0.0,
         )
         delay_2 = calculate_backoff_delay(
-            attempt=2, base_delay=60.0, max_delay=300.0, min_delay=0.0, jitter_factor=0.0
+            attempt=2,
+            base_delay=60.0,
+            max_delay=300.0,
+            min_delay=0.0,
+            jitter_factor=0.0,
         )
 
         assert delay_1 > delay_0, "Attempt 1 should have longer delay than attempt 0"
