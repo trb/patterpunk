@@ -1,3 +1,4 @@
+import warnings
 from typing import List, Optional
 
 from ..tool_types import ToolCall, ToolCallList
@@ -17,11 +18,27 @@ class ToolCallMessage(Message):
         self,
         tool_calls: ToolCallList,
         thinking_blocks: Optional[List[dict]] = None,
+        thinking_token_count: Optional[int] = None,
         id: Optional[str] = None,
     ):
         super().__init__("", ROLE_TOOL_CALL, id=id)
         self.tool_calls = tool_calls
         self.thinking_blocks = thinking_blocks or []
+        self._thinking_token_count = thinking_token_count
+
+    @property
+    def thinking_token_count(self) -> Optional[int]:
+        if self._thinking_token_count is None and self.thinking_blocks:
+            warnings.warn(
+                "thinking_token_count is not available — the provider does not "
+                "report separate thinking token counts.",
+                stacklevel=2,
+            )
+        return self._thinking_token_count
+
+    @thinking_token_count.setter
+    def thinking_token_count(self, value: Optional[int]):
+        self._thinking_token_count = value
 
     def to_dict(self, prompt_for_structured_output: bool = False) -> dict:
         """
@@ -53,6 +70,8 @@ class ToolCallMessage(Message):
         }
         if self.thinking_blocks:
             result["thinking_blocks"] = self.thinking_blocks
+        if self._thinking_token_count is not None:
+            result["thinking_token_count"] = self._thinking_token_count
         return result
 
     @classmethod
@@ -62,6 +81,7 @@ class ToolCallMessage(Message):
         return cls(
             tool_calls=tool_calls,
             thinking_blocks=data.get("thinking_blocks"),
+            thinking_token_count=data.get("thinking_token_count"),
             id=data.get("id"),
         )
 

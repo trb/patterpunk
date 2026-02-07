@@ -380,7 +380,16 @@ class ChatStream:
                 # Handle MESSAGE_END - either continue with tools or complete
                 if chunk.event_type == StreamEventType.MESSAGE_END:
                     if chunk.usage:
+                        previous_thinking = (
+                            self._accumulator.usage.get("thinking_tokens", 0)
+                            if self._accumulator.usage
+                            else 0
+                        )
                         self._accumulator.usage = chunk.usage
+                        new_thinking = chunk.usage.get("thinking_tokens", 0)
+                        total_thinking = previous_thinking + new_thinking
+                        if total_thinking > 0:
+                            self._accumulator.usage["thinking_tokens"] = total_thinking
                     if chunk.thinking_blocks:
                         self._accumulator.thinking_blocks = chunk.thinking_blocks
 
@@ -529,11 +538,16 @@ class ChatStreamFactory:
         """
         from patterpunk.llm.messages.assistant import AssistantMessage
 
+        thinking_token_count = (
+            accumulator.usage.get("thinking_tokens") if accumulator.usage else None
+        )
+
         message = AssistantMessage(
             content=accumulator.content_text,
             thinking_blocks=(
                 accumulator.thinking_blocks if accumulator.thinking_blocks else None
             ),
+            thinking_token_count=thinking_token_count,
         )
 
         # If we accumulated thinking text but no blocks, create one
@@ -543,6 +557,7 @@ class ChatStreamFactory:
                 thinking_blocks=[
                     {"type": "thinking", "thinking": accumulator.thinking_text}
                 ],
+                thinking_token_count=thinking_token_count,
             )
 
         return self._current_chat.add_message(message)

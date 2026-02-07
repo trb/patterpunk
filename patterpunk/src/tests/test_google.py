@@ -190,6 +190,9 @@ def test_thinking_mode_fixed_budget():
     assert len(response.content) > 0
     content = response.content.lower()
     assert "1081" in content or "23" in content or "47" in content
+    assert (
+        response.thinking_token_count is not None and response.thinking_token_count > 0
+    )
 
 
 def test_thinking_mode_dynamic_budget():
@@ -218,6 +221,9 @@ def test_thinking_mode_dynamic_budget():
     assert len(response.content) > 100
     content = response.content.lower()
     assert "recursion" in content
+    assert (
+        response.thinking_token_count is not None and response.thinking_token_count > 0
+    )
 
 
 def test_thinking_mode_disabled():
@@ -242,6 +248,7 @@ def test_thinking_mode_disabled():
     assert len(response.content) > 0
     content = response.content.lower()
     assert "paris" in content
+    assert response.thinking_token_count is None or response.thinking_token_count == 0
 
 
 def test_thinking_mode_include_thoughts():
@@ -266,6 +273,11 @@ def test_thinking_mode_include_thoughts():
     assert len(response.content) > 0
     content = response.content.lower()
     assert "circle" in content or "area" in content or "5" in content
+    assert (
+        response.thinking_token_count is not None and response.thinking_token_count > 0
+    )
+    assert response.has_thinking
+    assert len(response.thinking_blocks) > 0
 
 
 def test_thinking_mode_exclude_thoughts():
@@ -290,6 +302,10 @@ def test_thinking_mode_exclude_thoughts():
     assert len(response.content) > 0
     content = response.content.lower()
     assert "4" in content or "four" in content
+    assert (
+        response.thinking_token_count is not None and response.thinking_token_count > 0
+    )
+    assert len(response.thinking_blocks) == 0
 
 
 def test_thinking_mode_deepcopy():

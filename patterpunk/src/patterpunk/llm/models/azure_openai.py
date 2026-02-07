@@ -340,6 +340,13 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                         "input_tokens": getattr(usage_obj, "input_tokens", 0),
                         "output_tokens": getattr(usage_obj, "output_tokens", 0),
                     }
+                    reasoning_tokens = getattr(
+                        getattr(usage_obj, "output_tokens_details", None),
+                        "reasoning_tokens",
+                        None,
+                    )
+                    if reasoning_tokens is not None and reasoning_tokens > 0:
+                        usage["thinking_tokens"] = reasoning_tokens
 
                 # Extract reasoning/thinking blocks from completed response
                 thinking_blocks = self._extract_thinking_blocks_from_response(response)

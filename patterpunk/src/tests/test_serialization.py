@@ -1,6 +1,7 @@
 """Tests for message serialization and deserialization."""
 
 import json
+import warnings
 import pytest
 from datetime import timedelta
 from pydantic import BaseModel, Field
@@ -226,14 +227,18 @@ class TestAssistantMessageSerialization:
             {"type": "thinking", "thinking": "The answer should be..."},
         ]
         msg = AssistantMessage(
-            content="The answer is 42.", thinking_blocks=thinking_blocks
+            content="The answer is 42.",
+            thinking_blocks=thinking_blocks,
+            thinking_token_count=150,
         )
         data = msg.serialize()
 
         assert data["thinking_blocks"] == thinking_blocks
+        assert data["thinking_token_count"] == 150
 
         restored = AssistantMessage.deserialize(data)
         assert restored.thinking_blocks == thinking_blocks
+        assert restored.thinking_token_count == 150
         assert restored.has_thinking is True
         assert "Let me consider this" in restored.thinking_text
 
@@ -296,13 +301,19 @@ class TestToolCallMessageSerialization:
     def test_tool_call_message_with_thinking_blocks(self):
         tool_calls = [ToolCall(id="call_1", name="search", arguments="{}")]
         thinking_blocks = [{"type": "thinking", "thinking": "I should search..."}]
-        msg = ToolCallMessage(tool_calls=tool_calls, thinking_blocks=thinking_blocks)
+        msg = ToolCallMessage(
+            tool_calls=tool_calls,
+            thinking_blocks=thinking_blocks,
+            thinking_token_count=75,
+        )
         data = msg.serialize()
 
         assert data["thinking_blocks"] == thinking_blocks
+        assert data["thinking_token_count"] == 75
 
         restored = ToolCallMessage.deserialize(data)
         assert restored.thinking_blocks == thinking_blocks
+        assert restored.thinking_token_count == 75
 
 
 class TestToolResultMessageSerialization:
@@ -873,3 +884,55 @@ class TestMessageUUID:
         msg = UserMessage(content="Hello")
         copied = msg.copy()
         assert copied.id == msg.id
+
+
+class TestThinkingTokenCountWarning:
+    """Tests for the thinking_token_count property warning behavior."""
+
+    def test_warning_when_thinking_blocks_present_but_count_unavailable(self):
+        """Accessing thinking_token_count warns when thinking happened but count is None."""
+        msg = AssistantMessage(
+            content="answer",
+            thinking_blocks=[{"type": "thinking", "thinking": "reasoning..."}],
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = msg.thinking_token_count
+            assert result is None
+            assert len(w) == 1
+            assert "not available" in str(w[0].message)
+
+    def test_no_warning_when_count_is_provided(self):
+        """No warning when thinking_token_count is explicitly set."""
+        msg = AssistantMessage(
+            content="answer",
+            thinking_blocks=[{"type": "thinking", "thinking": "reasoning..."}],
+            thinking_token_count=150,
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = msg.thinking_token_count
+            assert result == 150
+            assert len(w) == 0
+
+    def test_no_warning_when_no_thinking_blocks(self):
+        """No warning when there are no thinking blocks (normal non-thinking response)."""
+        msg = AssistantMessage(content="answer")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = msg.thinking_token_count
+            assert result is None
+            assert len(w) == 0
+
+    def test_tool_call_message_warning(self):
+        """ToolCallMessage has the same warning behavior."""
+        msg = ToolCallMessage(
+            tool_calls=[ToolCall(id="call_1", name="fn", arguments="{}")],
+            thinking_blocks=[{"type": "thinking", "thinking": "reasoning..."}],
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = msg.thinking_token_count
+            assert result is None
+            assert len(w) == 1
+            assert "not available" in str(w[0].message)

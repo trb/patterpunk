@@ -451,6 +451,11 @@ async def test_stream_thinking_and_content():
     # Content should contain the answer (391)
     assert "391" in accumulated_content
 
+    # Reasoning tokens should always be reported for Azure reasoning models,
+    # regardless of whether thinking summaries were streamed
+    assert final_chat.latest_message.thinking_token_count is not None
+    assert final_chat.latest_message.thinking_token_count > 0
+
     # Note: Azure reasoning models may or may not produce thinking summaries
     # We verify the iterator works but don't require thinking to be present
     # Use pytest.skip to make "no thinking" path visible in test output
@@ -604,6 +609,11 @@ async def test_stream_with_reasoning_and_tool_call():
     # Verify final response
     assert final_chat.latest_message is not None
     assert final_chat.latest_message.content == accumulated_content
+
+    # Reasoning tokens may not always be reported during tool call rounds
+    # (Azure API inconsistency). When present, verify they're positive.
+    if final_chat.latest_message.thinking_token_count is not None:
+        assert final_chat.latest_message.thinking_token_count > 0
 
 
 @pytest.mark.asyncio

@@ -475,6 +475,8 @@ async def test_stream_thinking_and_content():
     assert accumulated_thinking, "Expected thinking content to be generated"
     assert final_chat.latest_message.has_thinking
     assert len(final_chat.latest_message.thinking_blocks) > 0
+    assert final_chat.latest_message.thinking_token_count is not None
+    assert final_chat.latest_message.thinking_token_count > 0
 
 
 @pytest.mark.asyncio
@@ -515,6 +517,8 @@ async def test_stream_content_only_auto_drains_thinking():
     final_chat = await stream.chat
     assert final_chat is not None
     assert "12" in accumulated_content
+    assert final_chat.latest_message.thinking_token_count is not None
+    assert final_chat.latest_message.thinking_token_count > 0
 
 
 @pytest.mark.asyncio
@@ -601,6 +605,10 @@ async def test_stream_with_thinking_and_tool_call():
     assert any(
         isinstance(m, ToolResultMessage) for m in final_chat.messages
     ), f"No ToolResultMessage found in message history. Types: {message_types}"
+
+    # Thinking token count should be positive (thinking always happens when configured)
+    assert final_chat.latest_message.thinking_token_count is not None
+    assert final_chat.latest_message.thinking_token_count > 0
 
     # Verify sequence: ToolCallMessage → ToolResultMessage → final AssistantMessage
     call_idx = next(

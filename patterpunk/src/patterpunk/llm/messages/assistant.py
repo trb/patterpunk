@@ -1,3 +1,4 @@
+import warnings
 from typing import Optional, Any, Union, List
 
 from ..chunks import CacheChunk, MultimodalChunk, TextChunk
@@ -21,6 +22,7 @@ class AssistantMessage(Message):
         structured_output: Optional[Any] = None,
         parsed_output: Optional[Any] = None,
         thinking_blocks: Optional[List[dict]] = None,
+        thinking_token_count: Optional[int] = None,
         id: Optional[str] = None,
     ):
         super().__init__(content, ROLE_ASSISTANT, id=id)
@@ -28,6 +30,7 @@ class AssistantMessage(Message):
         self._parsed_output = parsed_output
         self._raw_content = content
         self.thinking_blocks = thinking_blocks or []
+        self._thinking_token_count = thinking_token_count
 
     @property
     def content(self) -> str:
@@ -121,6 +124,20 @@ class AssistantMessage(Message):
 
         return "\n".join(thinking_parts) if thinking_parts else None
 
+    @property
+    def thinking_token_count(self) -> Optional[int]:
+        if self._thinking_token_count is None and self.thinking_blocks:
+            warnings.warn(
+                "thinking_token_count is not available — the provider does not "
+                "report separate thinking token counts.",
+                stacklevel=2,
+            )
+        return self._thinking_token_count
+
+    @thinking_token_count.setter
+    def thinking_token_count(self, value: Optional[int]):
+        self._thinking_token_count = value
+
     def to_dict(self, prompt_for_structured_output: bool = False) -> dict:
         """
         Convert to dictionary format for API calls.
@@ -149,6 +166,8 @@ class AssistantMessage(Message):
         }
         if self.thinking_blocks:
             result["thinking_blocks"] = self.thinking_blocks
+        if self._thinking_token_count is not None:
+            result["thinking_token_count"] = self._thinking_token_count
         if self.structured_output:
             result["structured_output"] = serialize_structured_output(
                 self.structured_output
@@ -174,5 +193,6 @@ class AssistantMessage(Message):
                 data.get("structured_output")
             ),
             thinking_blocks=data.get("thinking_blocks"),
+            thinking_token_count=data.get("thinking_token_count"),
             id=data.get("id"),
         )

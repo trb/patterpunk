@@ -85,6 +85,9 @@ def test_reasoning_model():
     print(chat.latest_message.content)
     assert "test" in chat.latest_message.content.lower()
 
+    assert chat.latest_message.thinking_token_count is not None
+    assert chat.latest_message.thinking_token_count > 0
+
 
 def test_multimodal_image():
     """Test multimodal image input with Azure OpenAI"""

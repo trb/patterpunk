@@ -535,7 +535,10 @@ class OpenAiModel(Model, ABC):
         return parsed_output
 
     def _process_response_output(
-        self, response, structured_output: Optional[object]
+        self,
+        response,
+        structured_output: Optional[object],
+        thinking_token_count: Optional[int] = None,
     ) -> Union[AssistantMessage, ToolCallMessage, None]:
         if hasattr(response, "output") and response.output:
             chunks = []
@@ -550,13 +553,19 @@ class OpenAiModel(Model, ABC):
                     tool_calls.extend(output_tool_calls)
 
             if tool_calls:
-                return ToolCallMessage(tool_calls)
+                return ToolCallMessage(
+                    tool_calls, thinking_token_count=thinking_token_count
+                )
 
             if chunks:
                 text_content = response.output_text if response.output_text else ""
                 if text_content:
                     chunks.insert(0, TextChunk(text_content))
-                return AssistantMessage(chunks, structured_output=structured_output)
+                return AssistantMessage(
+                    chunks,
+                    structured_output=structured_output,
+                    thinking_token_count=thinking_token_count,
+                )
 
         return None
 
@@ -622,6 +631,13 @@ class OpenAiModel(Model, ABC):
                 logger.info("OpenAi Responses API response received")
                 done = True
             except APIError as error:
+                # TODO: Revisit this fallback. As of Feb 2026, OpenAI reasoning models
+                # (o3-mini, o4-mini, gpt-5, etc.) are accessible even without org
+                # verification. This fallback strips `reasoning` and adds `temperature`,
+                # but reasoning models reject `temperature` — causing a second failure.
+                # The fix: remove only `summary` from the reasoning dict instead of
+                # stripping the entire param. Also add thinking_token_count assertions
+                # to OpenAI tests once the non-streaming path works with reasoning models.
                 if (
                     "reasoning.summary" in str(error)
                     and "reasoning" in responses_parameters
@@ -673,7 +689,15 @@ class OpenAiModel(Model, ABC):
     ) -> Union[AssistantMessage, ToolCallMessage]:
         logger_llm.info(f"[Assistant]\n{response.output_text}")
 
-        response_message = self._process_response_output(response, structured_output)
+        thinking_token_count = getattr(
+            getattr(getattr(response, "usage", None), "output_tokens_details", None),
+            "reasoning_tokens",
+            None,
+        )
+
+        response_message = self._process_response_output(
+            response, structured_output, thinking_token_count
+        )
         if response_message:
             return response_message
 
@@ -685,6 +709,7 @@ class OpenAiModel(Model, ABC):
             response.output_text,
             structured_output=structured_output,
             parsed_output=parsed_output,
+            thinking_token_count=thinking_token_count,
         )
 
     def _log_request_start(self, messages: List[Message]) -> None:
@@ -909,6 +934,7 @@ class OpenAiModel(Model, ABC):
                 last_error = error
 
                 # Handle reasoning.summary error specially (retry with modified params)
+                # TODO: Same fallback bug as _execute_with_retry — see TODO there.
                 if (
                     "reasoning.summary" in str(error)
                     and "reasoning" in responses_parameters
@@ -1126,6 +1152,13 @@ class OpenAiModel(Model, ABC):
                         "input_tokens": getattr(usage_obj, "input_tokens", 0),
                         "output_tokens": getattr(usage_obj, "output_tokens", 0),
                     }
+                    reasoning_tokens = getattr(
+                        getattr(usage_obj, "output_tokens_details", None),
+                        "reasoning_tokens",
+                        None,
+                    )
+                    if reasoning_tokens is not None and reasoning_tokens > 0:
+                        usage["thinking_tokens"] = reasoning_tokens
 
                 # Extract reasoning/thinking blocks from completed response
                 thinking_blocks = self._extract_thinking_blocks_from_response(response)

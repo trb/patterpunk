@@ -587,6 +587,7 @@ class GoogleModel(Model, ABC):
             if hasattr(candidate, "content") and candidate.content.parts:
                 tool_calls = []
                 chunks = []
+                thinking_blocks = []
 
                 for part in candidate.content.parts:
                     if (
@@ -602,7 +603,12 @@ class GoogleModel(Model, ABC):
                         )
 
                     elif hasattr(part, "text") and part.text and part.text != "None":
-                        chunks.append(TextChunk(part.text))
+                        if getattr(part, "thought", False):
+                            thinking_blocks.append(
+                                {"type": "thinking", "thinking": part.text}
+                            )
+                        else:
+                            chunks.append(TextChunk(part.text))
 
                     elif hasattr(part, "inline_data") and part.inline_data:
                         mime_type = getattr(part.inline_data, "mime_type", None)
@@ -618,18 +624,32 @@ class GoogleModel(Model, ABC):
                                 )
                             chunks.append(image_chunk)
 
+                thoughts_token_count = getattr(
+                    getattr(response, "usage_metadata", None),
+                    "thoughts_token_count",
+                    None,
+                )
+                thinking_kwargs = {}
+                if thinking_blocks:
+                    thinking_kwargs["thinking_blocks"] = thinking_blocks
+                if thoughts_token_count is not None:
+                    thinking_kwargs["thinking_token_count"] = thoughts_token_count
+
                 if tool_calls:
-                    return ToolCallMessage(tool_calls)
+                    return ToolCallMessage(tool_calls, **thinking_kwargs)
 
                 if chunks:
                     if len(chunks) == 1 and isinstance(chunks[0], TextChunk):
                         return AssistantMessage(
                             chunks[0].content,
                             structured_output=structured_output,
+                            **thinking_kwargs,
                         )
                     else:
                         return AssistantMessage(
-                            chunks, structured_output=structured_output
+                            chunks,
+                            structured_output=structured_output,
+                            **thinking_kwargs,
                         )
 
         try:
@@ -952,6 +972,9 @@ class GoogleModel(Model, ABC):
                         chunk.usage_metadata, "candidates_token_count", 0
                     ),
                 }
+                thoughts = getattr(chunk.usage_metadata, "thoughts_token_count", None)
+                if thoughts is not None and thoughts > 0:
+                    usage_info["thinking_tokens"] = thoughts
 
         # Yield final MESSAGE_END event with usage statistics
         yield StreamChunk(
