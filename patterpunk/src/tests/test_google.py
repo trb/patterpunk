@@ -308,6 +308,38 @@ def test_thinking_mode_exclude_thoughts():
     assert len(response.thinking_blocks) == 0
 
 
+def test_thinking_token_count_reported():
+    from patterpunk.llm.thinking import ThinkingConfig
+
+    model = GoogleModel(
+        model="gemini-2.5-flash",
+        location="us-central1",
+        temperature=0.1,
+        thinking_config=ThinkingConfig(effort="medium", include_thoughts=True),
+    )
+
+    response = (
+        Chat(model=model)
+        .add_message(SystemMessage("You are a helpful assistant."))
+        .add_message(UserMessage("Explain why the sky is blue in one sentence."))
+        .complete()
+        .latest_message
+    )
+
+    assert response.thinking_token_count is not None, (
+        "thinking_token_count should be reported when thinking is enabled"
+    )
+    assert response.thinking_token_count > 0, (
+        "thinking_token_count should be positive when thinking is enabled"
+    )
+    assert response.has_thinking, (
+        "has_thinking should be True when include_thoughts is enabled"
+    )
+    assert len(response.thinking_blocks) > 0, (
+        "thinking_blocks should contain entries when include_thoughts is enabled"
+    )
+
+
 def test_thinking_mode_deepcopy():
     import copy
     from patterpunk.llm.thinking import ThinkingConfig

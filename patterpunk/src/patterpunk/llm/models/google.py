@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 import uuid
 from abc import ABC
@@ -37,8 +38,6 @@ try:
 except ImportError:
     google_genai_available = False
 
-print("has it?", google_genai_available)
-
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
@@ -50,7 +49,7 @@ from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_content
-from patterpunk.logger import logger
+from patterpunk.logger import logger, logger_llm
 
 
 class GoogleAuthenticationError(Exception):
@@ -177,6 +176,129 @@ class GoogleModel(Model, ABC):
         self.thinking_budget = thinking_budget
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
+        self._logged_message_ids: Set[str] = set()
+
+    def _get_log_mode(self) -> str:
+        """Get logging mode from environment. Checked each time to allow runtime changes."""
+        return os.environ.get("PP_LLM_LOG_MODE", "full").lower()
+
+    def _log_request_start(self, messages: List[Message]) -> None:
+        """Log request start with message history at DEBUG level.
+
+        Respects PP_LLM_LOG_MODE environment variable:
+        - 'full': Log all messages on every request (default)
+        - 'incremental': Log only new messages since last request
+        """
+        header = "─" * 60
+        logger_llm.debug(f"\n{header}\n Google Vertex AI Request\n{header}")
+
+        log_mode = self._get_log_mode()
+
+        if log_mode == "incremental":
+            # Find messages we haven't logged yet
+            new_messages = []
+            skipped_count = 0
+            for message in messages:
+                if message.id in self._logged_message_ids:
+                    skipped_count += 1
+                else:
+                    new_messages.append(message)
+                    self._logged_message_ids.add(message.id)
+
+            if skipped_count > 0:
+                logger_llm.debug(f"  ... {skipped_count} earlier messages ...")
+
+            messages_to_log = new_messages
+        else:
+            # Full mode: log everything
+            messages_to_log = messages
+
+        for message in messages_to_log:
+            self._log_single_message(message)
+
+    def _log_single_message(self, message: Message) -> None:
+        """Log a single message with role and content."""
+        role = message.role
+
+        # Handle special message types
+        if isinstance(message, ToolCallMessage):
+            tool_info = [f"{tc.name}({tc.arguments})" for tc in message.tool_calls]
+            content = ", ".join(tool_info)
+        elif isinstance(message, ToolResultMessage):
+            func = message.function_name or "unknown"
+            content = f"{func} → {message.content}"
+        else:
+            content = message.get_content_as_string()
+
+        # Format: role on own line, content indented below
+        logger_llm.debug(f"[{role}]")
+        for line in content.split("\n"):
+            logger_llm.debug(f"    {line}")
+
+    def _log_request_parameters(self, tools: Optional[ToolDefinition]) -> None:
+        """Log model parameters at DEBUG level."""
+        parts = [f"model={self.model}", f"temp={self.temperature}"]
+
+        if tools:
+            tool_names = [
+                t["function"]["name"]
+                for t in tools
+                if t.get("type") == "function" and "function" in t
+            ]
+            parts.append(f"tools=[{', '.join(tool_names)}]")
+
+        if self.thinking_budget is not None:
+            parts.append(f"thinking={self.thinking_budget}")
+
+        logger_llm.debug(f"[params] {', '.join(parts)}")
+
+    def _log_response(
+        self,
+        message: Union["AssistantMessage", "ToolCallMessage"],
+    ) -> None:
+        """Log assistant response at DEBUG level."""
+        # Mark this message as logged so it won't appear again in incremental mode
+        self._logged_message_ids.add(message.id)
+
+        if isinstance(message, ToolCallMessage):
+            tool_info = [f"{tc.name}({tc.arguments})" for tc in message.tool_calls]
+            logger_llm.debug(f"[response] Tool calls: {', '.join(tool_info)}")
+        else:
+            content = message.get_content_as_string()
+            logger_llm.debug("[response]")
+            for line in content.split("\n"):
+                logger_llm.debug(f"    {line}")
+
+        if hasattr(message, "thinking_blocks") and message.thinking_blocks:
+            logger_llm.debug(f"[thinking] {len(message.thinking_blocks)} block(s)")
+
+    def _log_streaming_complete(
+        self,
+        text_content: str,
+        tool_calls: Optional[List[ToolCall]] = None,
+        thinking_present: bool = False,
+        usage: Optional[dict] = None,
+    ) -> None:
+        """Log streaming response after completion."""
+        if tool_calls:
+            tool_info = [f"{tc.name}({tc.arguments})" for tc in tool_calls]
+            logger_llm.debug(f"[response] Tool calls: {', '.join(tool_info)}")
+        elif text_content:
+            logger_llm.debug("[response]")
+            for line in text_content.split("\n"):
+                logger_llm.debug(f"    {line}")
+
+        if thinking_present:
+            logger_llm.debug("[thinking] Thinking content included")
+
+        if usage:
+            usage_parts = []
+            for key in ["input_tokens", "output_tokens", "thinking_tokens"]:
+                if usage.get(key):
+                    label = key.replace("_tokens", "")
+                    usage_parts.append(f"{label}={usage[key]}")
+            if usage_parts:
+                logger_llm.debug(f"[usage] {', '.join(usage_parts)}")
 
     def _translate_output_types_to_google_modalities(
         self, output_types: Optional[Union[List[OutputType], Set[OutputType]]]
@@ -533,9 +655,9 @@ class GoogleModel(Model, ABC):
         if self.thinking_budget is not None or self.include_thoughts:
             thinking_config_kwargs = {}
             if self.thinking_budget is not None:
-                thinking_config_kwargs["thinkingBudget"] = self.thinking_budget
+                thinking_config_kwargs["thinking_budget"] = self.thinking_budget
             if self.include_thoughts:
-                thinking_config_kwargs["includeThoughts"] = self.include_thoughts
+                thinking_config_kwargs["include_thoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
 
         if system_instruction:
@@ -668,9 +790,13 @@ class GoogleModel(Model, ABC):
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
     ) -> Union[Message, "ToolCallMessage"]:
+        self._log_request_start(messages)
+
         contents, config, cache_mappings = self._prepare_generation_request(
             messages, tools, structured_output, output_types
         )
+
+        self._log_request_parameters(tools)
 
         retry_count = 0
 
@@ -680,7 +806,9 @@ class GoogleModel(Model, ABC):
                     model=self.model, contents=contents, config=config
                 )
 
-                return self._process_generation_response(response, structured_output)
+                result = self._process_generation_response(response, structured_output)
+                self._log_response(result)
+                return result
 
             except genai_errors.APIError as error:
                 if error.code == 429:
@@ -843,7 +971,7 @@ class GoogleModel(Model, ABC):
         return contents
 
     def __deepcopy__(self, memo_dict):
-        return GoogleModel(
+        new_model = GoogleModel(
             model=self.model,
             location=self.location,
             temperature=self.temperature,
@@ -853,6 +981,8 @@ class GoogleModel(Model, ABC):
             client=self.client,
             thinking_config=self.thinking_config,
         )
+        new_model._logged_message_ids = self._logged_message_ids.copy()
+        return new_model
 
     async def _stream_with_retry(
         self,
@@ -946,11 +1076,20 @@ class GoogleModel(Model, ABC):
         """
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
+        self._log_request_start(messages)
+
         contents, config, _ = self._prepare_generation_request(
             messages, tools, structured_output, output_types
         )
 
+        self._log_request_parameters(tools)
+
         usage_info = None
+
+        # Track accumulated response for logging
+        accumulated_text: List[str] = []
+        accumulated_tool_calls: List[ToolCall] = []
+        thinking_present = False
 
         # Use retry wrapper instead of direct call
         async for chunk in self._stream_with_retry(
@@ -960,6 +1099,30 @@ class GoogleModel(Model, ABC):
         ):
             # Yield all events from this chunk
             for stream_chunk in self._convert_stream_chunk_to_events(chunk):
+                # Accumulate for final logging
+                if stream_chunk.event_type == StreamEventType.TEXT_DELTA:
+                    if stream_chunk.text:
+                        accumulated_text.append(stream_chunk.text)
+                elif stream_chunk.event_type == StreamEventType.THINKING_DELTA:
+                    thinking_present = True
+                elif stream_chunk.event_type == StreamEventType.TOOL_USE_START:
+                    accumulated_tool_calls.append(
+                        ToolCall(
+                            id=stream_chunk.tool_call_id or "",
+                            name=stream_chunk.tool_name or "",
+                            arguments="",
+                        )
+                    )
+                elif stream_chunk.event_type == StreamEventType.TOOL_USE_DELTA:
+                    if accumulated_tool_calls and stream_chunk.tool_arguments_delta:
+                        last = accumulated_tool_calls[-1]
+                        accumulated_tool_calls[-1] = ToolCall(
+                            id=last.id,
+                            name=last.name,
+                            arguments=last.arguments
+                            + stream_chunk.tool_arguments_delta,
+                        )
+
                 yield stream_chunk
 
             # Check for usage metadata in the chunk
@@ -975,6 +1138,14 @@ class GoogleModel(Model, ABC):
                 thoughts = getattr(chunk.usage_metadata, "thoughts_token_count", None)
                 if thoughts is not None and thoughts > 0:
                     usage_info["thinking_tokens"] = thoughts
+
+        # Log complete response after stream ends
+        self._log_streaming_complete(
+            text_content="".join(accumulated_text),
+            tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+            thinking_present=thinking_present,
+            usage=usage_info,
+        )
 
         # Yield final MESSAGE_END event with usage statistics
         yield StreamChunk(

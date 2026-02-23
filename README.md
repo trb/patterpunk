@@ -223,6 +223,7 @@ For detailed information on specific features:
 - **[Multimodal Content](MULTIMODAL.md)** - Images, files, content chunking, provider support
 - **[Agent Workflows](AGENTS.md)** - Sequential chains, parallel execution, type-safe agents
 - **[Serialization](SERIALIZATION.md)** - Message persistence, database storage, conversation resumption
+- **[Logging](LOGGING.md)** - Debug LLM interactions, configure log levels, silence noisy libraries
 
 ## AWS Bedrock Setup
 
