@@ -326,18 +326,18 @@ def test_thinking_token_count_reported():
         .latest_message
     )
 
-    assert response.thinking_token_count is not None, (
-        "thinking_token_count should be reported when thinking is enabled"
-    )
-    assert response.thinking_token_count > 0, (
-        "thinking_token_count should be positive when thinking is enabled"
-    )
-    assert response.has_thinking, (
-        "has_thinking should be True when include_thoughts is enabled"
-    )
-    assert len(response.thinking_blocks) > 0, (
-        "thinking_blocks should contain entries when include_thoughts is enabled"
-    )
+    assert (
+        response.thinking_token_count is not None
+    ), "thinking_token_count should be reported when thinking is enabled"
+    assert (
+        response.thinking_token_count > 0
+    ), "thinking_token_count should be positive when thinking is enabled"
+    assert (
+        response.has_thinking
+    ), "has_thinking should be True when include_thoughts is enabled"
+    assert (
+        len(response.thinking_blocks) > 0
+    ), "thinking_blocks should contain entries when include_thoughts is enabled"
 
 
 def test_thinking_mode_deepcopy():
