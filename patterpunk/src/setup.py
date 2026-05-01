@@ -1,7 +1,6 @@
 from setuptools import find_packages, setup
 from pathlib import Path
 
-
 VERSION = "1.2.3"
 
 current_dir = Path(__file__).parent
