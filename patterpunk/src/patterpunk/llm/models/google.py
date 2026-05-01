@@ -151,7 +151,14 @@ class GoogleModel(Model, ABC):
                 thinking_budget = min(thinking_config.token_budget, 24576)
             else:
                 effort_to_tokens = {"low": 1500, "medium": 4000, "high": 12000}
-                thinking_budget = effort_to_tokens[thinking_config.effort]
+                effort = thinking_config.effort
+                if effort not in effort_to_tokens:
+                    logger.warning(
+                        f"[GOOGLE] effort='{effort}' is Anthropic-only (Opus 4.7+). "
+                        f"Gemini supports only low/medium/high. Clamping to 'high'."
+                    )
+                    effort = "high"
+                thinking_budget = effort_to_tokens[effort]
             include_thoughts = thinking_config.include_thoughts
 
         if client:

@@ -13,6 +13,12 @@ import json
 import pytest
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.chunks import TextChunk, MultimodalChunk, CacheChunk
+from tests.test_utils import openai_quota_available
+
+pytestmark = pytest.mark.skipif(
+    not openai_quota_available(),
+    reason="OpenAI account is out of quota (429) — skipping live API tests.",
+)
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.messages.assistant import AssistantMessage

@@ -1,5 +1,7 @@
 import logging
 from typing import List, Optional
+
+import pytest
 from pydantic import BaseModel
 
 import patterpunk.lib.extract_json
@@ -10,15 +12,28 @@ from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from tests.test_utils import get_resource
 from patterpunk.logger import logger, logger_llm
+from patterpunk.config.providers.ollama import ollama
+
+
+def _ollama_reachable() -> bool:
+    try:
+        ollama.list()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _ollama_reachable(),
+    reason="Ollama service is not reachable — these tests require a running Ollama server.",
+)
 
 
 def run_basic_test(model: str):
     chat = Chat(model=OllamaModel(model=model, temperature=0.01))
 
     chat = (
-        chat.add_message(
-            SystemMessage(
-                """
+        chat.add_message(SystemMessage("""
 Extract the most applicable date from the document based on the type of document you're dealing
 with. Then write a title for the document, target about 6 words. Be extremely concise and information
 dense.
@@ -31,12 +46,8 @@ Response with the following JSON structure:
 ```json
 {"date": "date you picked", "title": "title you wrote"}
 ```
-    """
-            )
-        )
-        .add_message(
-            UserMessage(
-                """
+    """))
+        .add_message(UserMessage("""
 Here's the beginning of the document:
 
 ===START_OF_BEGINNING===
@@ -212,9 +223,7 @@ nager, WAMITAB
 
  00146135
 ===END_OF_END===
-    """
-            )
-        )
+    """))
         .complete()
     )
 
@@ -342,9 +351,7 @@ def test_structured_output():
 
         chat = Chat(model=OllamaModel(model=model_name, temperature=0.1))
 
-        chat = chat.add_message(
-            SystemMessage(
-                """
+        chat = chat.add_message(SystemMessage("""
                 You are an expert news analyst. Your task is to analyze news articles and extract 
                 key information in a structured format. Analyze the article thoroughly and identify:
                 
@@ -356,9 +363,7 @@ def test_structured_output():
                 
                 Be thorough in your analysis but stick to information that's actually in the article.
                 If information is not provided in the article, indicate that it's missing.
-                """
-            )
-        )
+                """))
 
         chat = chat.add_message(
             UserMessage(

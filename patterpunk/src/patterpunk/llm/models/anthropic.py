@@ -44,7 +44,6 @@ from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.logger import logger
 
-
 if anthropic:
     from anthropic import APIError
 
@@ -88,7 +87,14 @@ class AnthropicModel(Model, ABC):
                 budget_tokens = min(thinking_config.token_budget, 128000)
             else:
                 effort_to_tokens = {"low": 2000, "medium": 8000, "high": 24000}
-                budget_tokens = effort_to_tokens[thinking_config.effort]
+                effort = thinking_config.effort
+                if effort not in effort_to_tokens:
+                    logger.warning(
+                        f"[ANTHROPIC] effort='{effort}' is only supported on Claude Opus 4.7+. "
+                        f"For the legacy thinking API on model '{model}', clamping to 'high'."
+                    )
+                    effort = "high"
+                budget_tokens = effort_to_tokens[effort]
             thinking = ThinkingConfig(type="enabled", budget_tokens=budget_tokens)
 
         self.model = model
@@ -236,15 +242,24 @@ Please extract the relevant information from this reasoning and format it exactl
         if claude3_base_match:
             return (3, 0)
 
-        # Claude 4+ format: claude-opus-4-20250514, claude-sonnet-4-5-20250614
-        # Need to distinguish between minor version and date
-        claude4plus_match = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})", self.model
+        # Claude 4+ with date suffix: claude-opus-4-20250514, claude-sonnet-4-5-20250614
+        # The 8-digit date anchor disambiguates the minor version from the date.
+        claude4plus_dated = re.search(
+            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$", self.model
         )
-        if claude4plus_match:
-            major = int(claude4plus_match.group(1))
-            # Group 2 is minor version, Group 3 is date (8 digits)
-            minor_str = claude4plus_match.group(2)
+        if claude4plus_dated:
+            major = int(claude4plus_dated.group(1))
+            minor_str = claude4plus_dated.group(2)
+            minor = int(minor_str) if minor_str else 0
+            return (major, minor)
+
+        # Claude 4+ without date suffix: claude-opus-4-7 (Opus 4.7+ canonical form)
+        claude4plus_bare = re.search(
+            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", self.model
+        )
+        if claude4plus_bare:
+            major = int(claude4plus_bare.group(1))
+            minor_str = claude4plus_bare.group(2)
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
 
@@ -260,8 +275,21 @@ Please extract the relevant information from this reasoning and format it exactl
 
         return False
 
+    def _uses_adaptive_thinking_api(self) -> bool:
+        """Opus 4.7+ uses the adaptive-thinking API:
+        - thinking={"type": "adaptive"} (no budget_tokens)
+        - output_config={"effort": ...} sibling field
+        - temperature/top_p/top_k removed
+        """
+        major, minor = self._parse_model_version()
+        return (major, minor) >= (4, 7)
+
     def _get_compatible_params(self, api_params: dict) -> dict:
         major, minor = self._parse_model_version()
+
+        # Opus 4.7+: sampling params were already stripped at build time, nothing to reconcile
+        if self._uses_adaptive_thinking_api():
+            return api_params
 
         # Claude 4+ models with thinking mode: remove top_p/top_k, force temperature=1.0
         if major >= 4 and self.thinking:
@@ -279,26 +307,21 @@ Please extract the relevant information from this reasoning and format it exactl
             has_top_p = "top_p" in api_params
 
             if has_temp and has_top_p:
-                # If top_p is at default (1.0), omit it (effectively a no-op anyway)
-                # This handles the common case where defaults are used
-                if api_params.get("top_p") == 1.0:
-                    compatible_params = api_params.copy()
-                    del compatible_params["top_p"]
-                    if "top_k" in compatible_params:
-                        del compatible_params["top_k"]
-                    return compatible_params
-
-                # If both are non-default, user explicitly wants both - raise error
-                if (
-                    api_params.get("temperature") != 0.7
-                    or api_params.get("top_p") != 1.0
-                ):
-                    raise ValueError(
-                        f"Claude 4+ models do not support both 'temperature' and 'top_p' simultaneously. "
-                        f"Please use only one. Current values: temperature={api_params.get('temperature')}, "
-                        f"top_p={api_params.get('top_p')}. "
+                top_p_value = api_params.get("top_p")
+                temp_value = api_params.get("temperature")
+                compatible_params = api_params.copy()
+                # Drop top_p (Anthropic recommends keeping temperature). If the user
+                # explicitly set a non-default top_p, surface that we're discarding it.
+                if top_p_value != 1.0:
+                    logger.warning(
+                        f"[ANTHROPIC] Claude 4+ rejects both 'temperature' and 'top_p' simultaneously. "
+                        f"Dropping top_p={top_p_value} (keeping temperature={temp_value}). "
                         f"Anthropic recommends using 'temperature' for most use cases."
                     )
+                del compatible_params["top_p"]
+                if "top_k" in compatible_params:
+                    del compatible_params["top_k"]
+                return compatible_params
 
         # For Claude 3.x with thinking mode (existing behavior)
         if self.thinking:
@@ -341,18 +364,55 @@ Please extract the relevant information from this reasoning and format it exactl
                 ]
             ),
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
             "timeout": self.timeout,
         }
+
+        if self._uses_adaptive_thinking_api():
+            self._warn_dropped_sampling_params()
+        else:
+            api_params["temperature"] = self.temperature
+            api_params["top_p"] = self.top_p
+            api_params["top_k"] = self.top_k
 
         if system_prompt is not None:
             api_params["system"] = system_prompt
 
         return api_params
 
+    def _warn_dropped_sampling_params(self) -> None:
+        """Opus 4.7+ rejects temperature/top_p/top_k. Drop them silently when the user is
+        riding defaults (the framework supplied those, not the user), but warn loudly when
+        the user explicitly customized one — so they know their request is being changed.
+        """
+        dropped = []
+        if self.temperature != ANTHROPIC_DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={self.temperature}")
+        if self.top_p != ANTHROPIC_DEFAULT_TOP_P:
+            dropped.append(f"top_p={self.top_p}")
+        if self.top_k != ANTHROPIC_DEFAULT_TOP_K:
+            dropped.append(f"top_k={self.top_k}")
+        if dropped:
+            logger.warning(
+                f"[ANTHROPIC] Claude Opus 4.7+ removed sampling params from the API. "
+                f"Dropping user-set value(s): {', '.join(dropped)}. "
+                f"Use prompting to guide model behavior instead."
+            )
+
     def _apply_thinking_configuration(self, api_params: dict) -> dict:
+        if self._uses_adaptive_thinking_api():
+            if self.thinking_config is not None:
+                thinking_block = {"type": "adaptive"}
+                if self.thinking_config.include_thoughts:
+                    thinking_block["display"] = "summarized"
+                api_params["thinking"] = thinking_block
+                api_params["output_config"] = {"effort": self._resolve_effort()}
+            major, minor = self._parse_model_version()
+            if self.thinking_config is not None and major >= 4 and minor >= 5:
+                api_params["extra_headers"] = {
+                    "anthropic-beta": "interleaved-thinking-2025-05-14"
+                }
+            return self._get_compatible_params(api_params)
+
         if self.thinking and self._is_reasoning_model():
             api_params["thinking"] = {
                 "type": self.thinking.type,
@@ -369,6 +429,31 @@ Please extract the relevant information from this reasoning and format it exactl
         # to handle temperature/top_p conflicts and thinking mode requirements
         api_params = self._get_compatible_params(api_params)
         return api_params
+
+    def _resolve_effort(self) -> str:
+        """Convert the unified ThinkingConfig into Opus 4.7's effort string.
+        token_budget gets coerced to a bucket — match patterpunk's existing convention
+        (silent coercion across providers) but log a warning so the user knows."""
+        if self.thinking_config.effort is not None:
+            return self.thinking_config.effort
+
+        budget = self.thinking_config.token_budget
+        if budget <= 4_000:
+            effort = "low"
+        elif budget <= 12_000:
+            effort = "medium"
+        elif budget <= 32_000:
+            effort = "high"
+        elif budget <= 96_000:
+            effort = "xhigh"
+        else:
+            effort = "max"
+        logger.warning(
+            f"[ANTHROPIC] Claude Opus 4.7+ no longer accepts numeric thinking budgets. "
+            f"Coercing token_budget={budget} to effort='{effort}'. "
+            f"Pass ThinkingConfig(effort='{effort}') directly to silence this warning."
+        )
+        return effort
 
     def _initialize_retry_state(self) -> int:
         """Initialize retry counter for the retry loop."""

@@ -1,4 +1,4 @@
 jinja2==3.1.6
-docstring_parser==0.17.0
-pydantic==2.11.7
+docstring_parser==0.18.0
+pydantic==2.13.3
 tiktoken>=0.12.0

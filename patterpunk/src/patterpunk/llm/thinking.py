@@ -4,7 +4,7 @@ from typing import Optional, Literal
 
 @dataclass
 class ThinkingConfig:
-    effort: Optional[Literal["low", "medium", "high"]] = None
+    effort: Optional[Literal["low", "medium", "high", "xhigh", "max"]] = None
     token_budget: Optional[int] = None
     include_thoughts: bool = False
 

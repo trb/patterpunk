@@ -361,11 +361,22 @@ except ToolExecutionAbortError as e:
 
 | Provider | Thinking Support | Configuration |
 |----------|-----------------|---------------|
-| Anthropic | Full (Claude 4.5+) | `ThinkingConfig(token_budget=N)` |
+| Anthropic (Claude 3.7 – 4.6) | Numeric budget | `ThinkingConfig(token_budget=N)` |
+| Anthropic (Claude Opus 4.7+) | Adaptive + effort | `ThinkingConfig(effort="xhigh")` |
 | OpenAI | End-only (o3-mini) | `ThinkingConfig(effort="medium")` |
 | AWS Bedrock | Full (Claude models) | `ThinkingConfig(token_budget=N)` |
 | Google | Best-effort | `ThinkingConfig(token_budget=N, include_thoughts=True)` |
 | Azure OpenAI | End-only | `ThinkingConfig(effort="medium")` |
+
+### Claude Opus 4.7 — Adaptive Thinking
+
+Opus 4.7 replaced the fixed `budget_tokens` knob with **adaptive thinking** plus an `effort` level. The wire format is `thinking={"type": "adaptive"}` plus a sibling `output_config={"effort": "..."}`. patterpunk emits this automatically when the model id is `claude-opus-4-7` (or any future 4.7+ id):
+
+- Effort vocabulary: `low | medium | high | xhigh | max` (xhigh and max are 4.7-only).
+- If you pass `ThinkingConfig(token_budget=N)` to Opus 4.7+, patterpunk will **silently coerce to a bucketed effort** (`≤4K→low`, `≤12K→medium`, `≤32K→high`, `≤96K→xhigh`, `>96K→max`) and log a WARNING. Switch to `effort=` to silence the warning.
+- `include_thoughts=True` maps to `thinking.display="summarized"` (Opus 4.7 hides reasoning by default — opt in to see it).
+- **Sampling params are silently dropped** for Opus 4.7+ (`temperature`, `top_p`, `top_k`). Use prompting to guide behavior. patterpunk warns when the user explicitly customized one of those.
+- Other providers (OpenAI / Google / Bedrock) clamp `xhigh`/`max` down to `high` with a WARNING — they keep working, just at the highest effort each platform supports.
 
 ### Interleaved Thinking (Anthropic)
 

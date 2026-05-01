@@ -19,7 +19,6 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 
-
 # Use a flash model for faster tests
 GOOGLE_TEST_MODEL = "gemini-2.5-flash"
 GOOGLE_TEST_LOCATION = (

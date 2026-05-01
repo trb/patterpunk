@@ -15,7 +15,6 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
 
-
 # Use a Bedrock model that supports streaming
 BEDROCK_MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0"
 # Claude Sonnet 4.5 supports extended thinking/reasoning on Bedrock

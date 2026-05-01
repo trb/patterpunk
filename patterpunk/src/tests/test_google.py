@@ -62,17 +62,13 @@ def test_structured_output():
     when she was 10 years old.
     """
 
-    chat = chat.add_message(
-        SystemMessage(
-            """
+    chat = chat.add_message(SystemMessage("""
             Extract information about the book from the provided text.
             Include the title, author, and publication year.
             If available, also extract the ISBN, genres, page count, and whether it's a bestseller.
             
             Strictly extract information about the book from the provided text and do not infer information.
-            """
-        )
-    )
+            """))
 
     chat = chat.add_message(
         UserMessage(sample_text, structured_output=ThoughtfulBookResponse)
