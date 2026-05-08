@@ -126,7 +126,7 @@ All message types implement `serialize()` and `deserialize()`:
 |-------------|-------------------|
 | `SystemMessage` | id, content |
 | `UserMessage` | id, content, structured_output, allow_tool_calls |
-| `AssistantMessage` | id, content, thinking_blocks, structured_output |
+| `AssistantMessage` | id, content, thinking_blocks, thinking_token_count, finish_reason, provider_data, structured_output |
 | `ToolCallMessage` | id, tool_calls, thinking_blocks |
 | `ToolResultMessage` | id, content, call_id, function_name, is_error |
 
@@ -183,6 +183,32 @@ data = thinking_msg.serialize()
 restored = deserialize_message(data)
 assert restored.thinking_blocks == thinking_msg.thinking_blocks
 ```
+
+### Message with Response Diagnostics
+
+`AssistantMessage` carries response diagnostics (`finish_reason`, `_provider`) populated by the provider model. Both round-trip through serialization, so you can persist *why* a model stopped generating alongside its content:
+
+```python
+from patterpunk.llm.finish_reason import FinishReason
+from patterpunk.llm.messages import AssistantMessage, deserialize_message
+
+response_msg = chat.latest_message  # AssistantMessage with diagnostics from a provider
+
+data = response_msg.serialize()
+# data["finish_reason"]  ==  "safety"  (when applicable)
+# data["provider_data"]  ==  {"raw_finish_reason": "PROHIBITED_CONTENT",
+#                              "prompt_block_reason": null}
+
+restored = deserialize_message(data)
+assert restored.finish_reason == FinishReason.SAFETY
+assert restored._provider.raw_finish_reason == "PROHIBITED_CONTENT"
+```
+
+`finish_reason` is serialized as its string value and restored to the enum on deserialization. A corrupt value not in the enum raises `ValueError` immediately at the boundary — failing fast at the load site rather than silently propagating bad state.
+
+`provider_data` is omitted from serialized output when no fields are populated, keeping payloads compact. Legacy payloads without these fields deserialize cleanly with `finish_reason=None` and an empty `ProviderData` (any field access returns `None`).
+
+See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full vocabulary and per-provider mapping tables.
 
 ## Structured Output Handling
 
@@ -316,7 +342,10 @@ Each message type includes a `type` discriminator and a unique `id`:
 {"type": "user", "id": "uuid...", "content": {...}, "allow_tool_calls": True, "structured_output": {...}}
 
 # AssistantMessage
-{"type": "assistant", "id": "uuid...", "content": {...}, "thinking_blocks": [...], "structured_output": {...}}
+{"type": "assistant", "id": "uuid...", "content": {...}, "thinking_blocks": [...],
+ "thinking_token_count": 1234, "finish_reason": "stop",
+ "provider_data": {"raw_finish_reason": "end_turn", "prompt_block_reason": null},
+ "structured_output": {...}}
 
 # ToolCallMessage
 {"type": "tool_call", "id": "uuid...", "tool_calls": [...], "thinking_blocks": [...]}

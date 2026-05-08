@@ -2,10 +2,12 @@ import warnings
 from typing import Optional, Any, Union, List
 
 from ..chunks import CacheChunk, MultimodalChunk, TextChunk
+from ..finish_reason import FinishReason
 from ..types import ContentType
 from .base import Message
 from .roles import ROLE_ASSISTANT
 from .cache import get_content_as_string
+from .provider_data import ProviderData
 from .serialization import (
     serialize_content,
     deserialize_content,
@@ -23,6 +25,8 @@ class AssistantMessage(Message):
         parsed_output: Optional[Any] = None,
         thinking_blocks: Optional[List[dict]] = None,
         thinking_token_count: Optional[int] = None,
+        finish_reason: Optional[FinishReason] = None,
+        provider_data: Optional[ProviderData] = None,
         id: Optional[str] = None,
     ):
         super().__init__(content, ROLE_ASSISTANT, id=id)
@@ -31,6 +35,8 @@ class AssistantMessage(Message):
         self._raw_content = content
         self.thinking_blocks = thinking_blocks or []
         self._thinking_token_count = thinking_token_count
+        self._finish_reason = finish_reason
+        self._provider = provider_data if provider_data is not None else ProviderData()
 
     @property
     def content(self) -> str:
@@ -138,6 +144,16 @@ class AssistantMessage(Message):
     def thinking_token_count(self, value: Optional[int]):
         self._thinking_token_count = value
 
+    @property
+    def finish_reason(self) -> Optional[FinishReason]:
+        """Normalized finish reason — a ``FinishReason`` enum member or ``None``.
+
+        ``FinishReason`` is a ``StrEnum``, so equality with string literals
+        still works (``message.finish_reason == "stop"`` evaluates as expected).
+        For provider-native values, see ``_provider.raw_finish_reason``.
+        """
+        return self._finish_reason
+
     def to_dict(self, prompt_for_structured_output: bool = False) -> dict:
         """
         Convert to dictionary format for API calls.
@@ -168,6 +184,11 @@ class AssistantMessage(Message):
             result["thinking_blocks"] = self.thinking_blocks
         if self._thinking_token_count is not None:
             result["thinking_token_count"] = self._thinking_token_count
+        if self._finish_reason is not None:
+            result["finish_reason"] = self._finish_reason.value
+        provider_dict = self._provider.to_dict()
+        if provider_dict:
+            result["provider_data"] = provider_dict
         if self.structured_output:
             result["structured_output"] = serialize_structured_output(
                 self.structured_output
@@ -187,6 +208,10 @@ class AssistantMessage(Message):
             content = deserialize_content(raw_content)
         else:
             content = raw_content
+        finish_reason_raw = data.get("finish_reason")
+        finish_reason = (
+            FinishReason(finish_reason_raw) if finish_reason_raw is not None else None
+        )
         return cls(
             content=content,
             structured_output=deserialize_structured_output(
@@ -194,5 +219,7 @@ class AssistantMessage(Message):
             ),
             thinking_blocks=data.get("thinking_blocks"),
             thinking_token_count=data.get("thinking_token_count"),
+            finish_reason=finish_reason,
+            provider_data=ProviderData.from_dict(data.get("provider_data")),
             id=data.get("id"),
         )

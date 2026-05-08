@@ -22,8 +22,10 @@ from patterpunk.config.providers.openai import (
 )
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.lib.extract_json import extract_json
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
@@ -53,6 +55,43 @@ class OpenAiMissingConfigurationError(Exception):
 
 class OpenAiApiError(Exception):
     pass
+
+
+# OpenAI Responses API exposes outcome via two fields:
+#   response.status: 'completed' | 'failed' | 'in_progress' | 'cancelled' | 'queued' | 'incomplete'
+#   response.incomplete_details.reason: 'max_output_tokens' | 'content_filter' (only when status='incomplete')
+# We extract the most-specific value (the incomplete reason if present, otherwise
+# the status) and normalize it.
+_FINISH_REASON_MAP: dict = {
+    "completed": FinishReason.STOP,
+    "max_output_tokens": FinishReason.MAX_TOKENS,
+    "content_filter": FinishReason.SAFETY,
+}
+
+
+def _extract_raw_finish_reason(response) -> Optional[str]:
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        if details is not None:
+            reason = getattr(details, "reason", None)
+            if reason is not None:
+                return reason
+    return status
+
+
+def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
+    if raw is None:
+        return None
+    return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+def _build_diagnostics_kwargs(response) -> dict:
+    raw = _extract_raw_finish_reason(response)
+    return {
+        "finish_reason": _normalize_finish_reason(raw),
+        "provider_data": ProviderData(raw_finish_reason=raw),
+    }
 
 
 class OpenAiReasoningEffort(enum.Enum):
@@ -572,6 +611,7 @@ class OpenAiModel(Model, ABC):
                     chunks,
                     structured_output=structured_output,
                     thinking_token_count=thinking_token_count,
+                    **_build_diagnostics_kwargs(response),
                 )
 
         return None
@@ -715,6 +755,7 @@ class OpenAiModel(Model, ABC):
             structured_output=structured_output,
             parsed_output=parsed_output,
             thinking_token_count=thinking_token_count,
+            **_build_diagnostics_kwargs(response),
         )
 
     def _log_request_start(self, messages: List[Message]) -> None:
@@ -731,7 +772,16 @@ class OpenAiModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[AssistantMessage, ToolCallMessage]:
+        if disable_safety_filters:
+            logger.debug(
+                "[OPENAI] disable_safety_filters has no effect — OpenAI does not "
+                "expose API parameters that weaken intrinsic safety. Azure OpenAI "
+                "deployments configure content filters at the deployment level "
+                "(severity profiles + the gated 'Modified Content Filters' approval); "
+                "no SDK request parameter can disable them."
+            )
         self._log_request_start(messages)
 
         responses_parameters = self._prepare_request_parameters(
@@ -993,6 +1043,7 @@ class OpenAiModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator["StreamChunk"]:
         """
         Stream the assistant message response from OpenAI.
@@ -1000,6 +1051,11 @@ class OpenAiModel(Model, ABC):
         Yields StreamChunk objects for each streaming event.
         Uses the OpenAI Responses API with stream=True.
         """
+        if disable_safety_filters:
+            logger.debug(
+                "[OPENAI] disable_safety_filters has no effect — OpenAI does not "
+                "expose API parameters that weaken intrinsic safety."
+            )
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
         self._log_request_start(messages)

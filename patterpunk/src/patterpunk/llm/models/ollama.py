@@ -19,8 +19,10 @@ from patterpunk.config.defaults import (
 from patterpunk.lib.retry import calculate_backoff_delay
 from patterpunk.logger import logger
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.base import Message
+from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model
@@ -34,6 +36,29 @@ class OllamaAPIError(Exception):
     """Raised when Ollama API requests fail after all retry attempts."""
 
     pass
+
+
+# Native Ollama done_reason values → normalized FinishReason. ``load`` and
+# ``unload`` are model-state events that also surface here on edge cases; they
+# fall through to OTHER.
+_FINISH_REASON_MAP: dict = {
+    "stop": FinishReason.STOP,
+    "length": FinishReason.MAX_TOKENS,
+}
+
+
+def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
+    if raw is None:
+        return None
+    return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+def _build_diagnostics_kwargs(response: dict) -> dict:
+    raw = response.get("done_reason") if isinstance(response, dict) else None
+    return {
+        "finish_reason": _normalize_finish_reason(raw),
+        "provider_data": ProviderData(raw_finish_reason=raw),
+    }
 
 
 # Status codes that indicate transient errors and should trigger retry
@@ -362,7 +387,9 @@ class OllamaModel(Model, ABC):
         self, response: dict, structured_output: Optional[object] = None
     ) -> AssistantMessage:
         return AssistantMessage(
-            response["message"]["content"], structured_output=structured_output
+            response["message"]["content"],
+            structured_output=structured_output,
+            **_build_diagnostics_kwargs(response),
         )
 
     def _cleanup_temp_files(self):
@@ -399,7 +426,13 @@ class OllamaModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[Message, "ToolCallMessage"]:
+        if disable_safety_filters:
+            logger.debug(
+                "[OLLAMA] disable_safety_filters has no effect — Ollama serves local "
+                "models with no API-level safety filtering layer."
+            )
         ollama_messages, all_images = self._prepare_messages(messages)
 
         chat_params = self._build_chat_params(

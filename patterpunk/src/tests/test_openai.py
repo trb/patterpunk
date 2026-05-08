@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
@@ -549,3 +550,23 @@ def test_cache_chunks():
         term in content_lower
         for term in ["context", "information", "document", "reference"]
     )
+
+
+def test_diagnostics_and_safety_filter_integration():
+    """Live integration: confirms disable_safety_filters is accepted by OpenAI
+    (no-op + debug log), finish_reason normalizes to STOP, and
+    _provider.raw_finish_reason carries the Responses API status 'completed'."""
+    response = (
+        Chat(
+            model=OpenAiModel(model="gpt-4o", temperature=0.1),
+            disable_safety_filters=True,
+        )
+        .add_message(UserMessage("Say hello in exactly one short sentence."))
+        .complete()
+        .latest_message
+    )
+
+    assert response.content
+    assert len(response.content.strip()) > 0
+    assert response.finish_reason == FinishReason.STOP
+    assert response._provider.raw_finish_reason == "completed"

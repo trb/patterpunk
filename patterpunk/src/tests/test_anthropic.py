@@ -2,6 +2,7 @@ import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.messages.system import SystemMessage
@@ -1945,3 +1946,27 @@ def test_opus_4_7_xhigh_with_include_thoughts_sends_display_summarized(monkeypat
         "display": "summarized",
     }
     assert captured_kwargs["output_config"] == {"effort": "xhigh"}
+
+
+def test_diagnostics_and_safety_filter_integration():
+    """Live integration: confirms disable_safety_filters is accepted by Anthropic
+    (no-op + debug log), finish_reason normalizes to STOP, and
+    _provider.raw_finish_reason carries the native 'end_turn' string."""
+    response = (
+        Chat(
+            model=AnthropicModel(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=128,
+                temperature=0.1,
+            ),
+            disable_safety_filters=True,
+        )
+        .add_message(UserMessage("Say hello in exactly one short sentence."))
+        .complete()
+        .latest_message
+    )
+
+    assert response.content
+    assert len(response.content) > 0
+    assert response.finish_reason == FinishReason.STOP
+    assert response._provider.raw_finish_reason == "end_turn"

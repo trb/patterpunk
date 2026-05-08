@@ -3,6 +3,7 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
@@ -435,3 +436,24 @@ def test_multimodal_pdf():
     assert "bank of canada" in title.lower()
     # The model should mention research or economic content
     assert "research" in title.lower() or "economic" in title.lower()
+
+
+def test_diagnostics_and_safety_filter_integration():
+    """Live integration: confirms disable_safety_filters reaches Vertex without
+    errors, finish_reason normalizes to STOP on a benign completion, and
+    _provider.raw_finish_reason carries the native Vertex enum name."""
+    model = GoogleModel(
+        model="gemini-2.5-flash", location="us-central1", temperature=0.1
+    )
+
+    response = (
+        Chat(model=model, disable_safety_filters=True)
+        .add_message(UserMessage("Say hello in exactly one short sentence."))
+        .complete()
+        .latest_message
+    )
+
+    assert response.content
+    assert len(response.content) > 0
+    assert response.finish_reason == FinishReason.STOP
+    assert response._provider.raw_finish_reason == "STOP"

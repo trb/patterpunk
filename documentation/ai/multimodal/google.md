@@ -176,3 +176,13 @@ client = genai.Client(vertexai=True, project='your-project-id', location='us-cen
 - **API**: Use `client.models.generate_content()` with content array
 - **File Handling**: GCS URLs, Files API upload, or inline bytes
 - **Context**: Long context support for large files
+
+## Safety Filters and Diagnostics
+
+`GoogleModel` supports two patterpunk-level safety controls plus an empty-response sentinel:
+
+- **`GoogleModel(safety_settings=[...])`** — fine-grained per-category control. Pass a list of `types.SafetySetting` for any combination of the SDK's 10 `HarmCategory` enum members (text + image categories).
+- **`Chat(disable_safety_filters=True)`** — coarse "all OFF" toggle. For Google, this sets every `HarmCategory` to `HarmBlockThreshold.OFF`. Model-level `safety_settings` wins if both are specified.
+- **`GoogleModel(allow_empty_response=True)`** — receive `AssistantMessage("")` instead of `GoogleAPIError` when Vertex returns an empty candidate. Diagnostic fields (`finish_reason`, `_provider.prompt_block_reason`) are still populated on the empty message so callers can triage.
+
+Useful for legal, medical, or research corpora where Vertex's default filters fire on benign content. See [DIAGNOSTICS.md](../../../DIAGNOSTICS.md) for the full surface and per-provider behavior.
