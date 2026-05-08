@@ -1,26 +1,22 @@
 #!/bin/bash
 
-# Define the file to update
+set -e
+
 FILE="/app/setup.py"
 
-# Extract the current version string from the file
-VERSION_LINE=$(grep -Eo "VERSION = \"[0-9]+\.[0-9]+\.[0-9]+\"" $FILE)
+/app/bin/clean
+#/app/bin/test
 
-# Extract the version numbers
+# Extract and bump the PATCH version after cleaning, so a clean failure aborts
+# before we mutate setup.py.
+VERSION_LINE=$(grep -Eo "VERSION = \"[0-9]+\.[0-9]+\.[0-9]+\"" $FILE)
 VERSION_NUMBERS=$(echo $VERSION_LINE | grep -Eo "[0-9]+\.[0-9]+\.[0-9]+")
 MAJOR=$(echo $VERSION_NUMBERS | cut -d. -f1)
 MINOR=$(echo $VERSION_NUMBERS | cut -d. -f2)
 PATCH=$(echo $VERSION_NUMBERS | cut -d. -f3)
-
 NEW_PATCH=$((PATCH+1))
 
-# Construct the new version string
 NEW_VERSION="VERSION = \"$MAJOR.$MINOR.$NEW_PATCH\""
-
-# Use sed to replace the old version with the new version in the file
 sed -i -E "s/$VERSION_LINE/$NEW_VERSION/" $FILE
 
-/app/bin/clean
-#/app/bin/test
 /app/bin/build
-/app/bin/clean

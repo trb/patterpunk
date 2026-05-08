@@ -1693,3 +1693,255 @@ def test_compat_params_temperature_top_p_conflict_now_warns_not_raises(caplog):
         "Dropping top_p=0.5" in r.message and r.levelname == "WARNING"
         for r in caplog.records
     )
+
+
+# =============================================================================
+# Opus 4.7 must NOT clamp xhigh/max — those are its native effort levels
+# =============================================================================
+
+
+def test_opus_4_7_xhigh_does_not_warn_in_init(caplog):
+    """xhigh is a native Opus 4.7+ effort level. The init-time legacy clamping
+    warning must NOT fire — the user is using xhigh on a model that supports it."""
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    clamp_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "clamping to 'high'" in r.message.lower()
+    ]
+    assert clamp_warnings == [], (
+        f"Opus 4.7 + xhigh should not clamp; got warnings: "
+        f"{[r.message for r in clamp_warnings]}"
+    )
+
+
+def test_opus_4_7_max_does_not_warn_in_init(caplog):
+    """max is a native Opus 4.7+ effort level. No clamping warning expected."""
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(effort="max"),
+        )
+    clamp_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "clamping to 'high'" in r.message.lower()
+    ]
+    assert clamp_warnings == [], (
+        f"Opus 4.7 + max should not clamp; got warnings: "
+        f"{[r.message for r in clamp_warnings]}"
+    )
+
+
+def test_opus_4_7_dated_xhigh_does_not_warn_in_init(caplog):
+    """The dated form claude-opus-4-7-20260416 must also skip the clamp warning."""
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        AnthropicModel(
+            model="claude-opus-4-7-20260416",
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    clamp_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "clamping to 'high'" in r.message.lower()
+    ]
+    assert clamp_warnings == [], (
+        f"Dated Opus 4.7 + xhigh should not clamp; got warnings: "
+        f"{[r.message for r in clamp_warnings]}"
+    )
+
+
+def test_opus_4_7_xhigh_reaches_api_unchanged():
+    """End-to-end: xhigh on Opus 4.7 must reach the wire as effort='xhigh'."""
+    model = AnthropicModel(
+        model="claude-opus-4-7",
+        thinking_config=ThinkingConfig(effort="xhigh"),
+    )
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["thinking"] == {"type": "adaptive"}
+    assert api_params["output_config"] == {
+        "effort": "xhigh"
+    }, f"Expected effort='xhigh' in output_config, got {api_params.get('output_config')}"
+
+
+def test_opus_4_7_max_reaches_api_unchanged():
+    """End-to-end: max on Opus 4.7 must reach the wire as effort='max'."""
+    model = AnthropicModel(
+        model="claude-opus-4-7",
+        thinking_config=ThinkingConfig(effort="max"),
+    )
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["output_config"] == {
+        "effort": "max"
+    }, f"Expected effort='max' in output_config, got {api_params.get('output_config')}"
+
+
+def test_opus_4_7_xhigh_live_call():
+    """Live API call to Opus 4.7 with effort='xhigh' must succeed (no 400 from Anthropic)."""
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-opus-4-7",
+            max_tokens=1024,
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    )
+    chat = chat.add_message(UserMessage("Reply with the single word: ready")).complete()
+    assert chat.latest_message is not None
+    assert chat.latest_message.content is not None
+    assert len(chat.latest_message.content) > 0
+
+
+def test_opus_4_7_max_live_call():
+    """Live API call to Opus 4.7 with effort='max' must succeed (no 400 from Anthropic)."""
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-opus-4-7",
+            max_tokens=1024,
+            thinking_config=ThinkingConfig(effort="max"),
+        )
+    )
+    chat = chat.add_message(UserMessage("Reply with the single word: ready")).complete()
+    assert chat.latest_message is not None
+    assert chat.latest_message.content is not None
+    assert len(chat.latest_message.content) > 0
+
+
+# =============================================================================
+# Wire-payload assertions: capture the actual kwargs sent to anthropic.messages.create
+# These tests intercept the SDK call and prove what's *literally* sent over the wire.
+# =============================================================================
+
+
+def _make_fake_anthropic_response(text: str = "ok"):
+    """Minimal stand-in for an anthropic.types.Message — provides the attributes
+    patterpunk actually reads after a successful messages.create() call."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text=text)],
+        id="msg_test",
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
+    )
+
+
+def test_opus_4_7_xhigh_actually_sent_to_api(monkeypatch):
+    """Smoking gun: assert anthropic.messages.create is called with output_config={'effort': 'xhigh'}."""
+    from patterpunk.llm.models import anthropic as anthropic_mod
+
+    captured_kwargs = {}
+
+    def capture(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_fake_anthropic_response("ok")
+
+    monkeypatch.setattr(anthropic_mod.anthropic.messages, "create", capture)
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    )
+    chat.add_message(UserMessage("hi")).complete()
+
+    assert "output_config" in captured_kwargs, (
+        f"output_config missing from kwargs sent to anthropic.messages.create. "
+        f"Got: {sorted(captured_kwargs.keys())}"
+    )
+    assert captured_kwargs["output_config"] == {
+        "effort": "xhigh"
+    }, f"Expected output_config={{'effort': 'xhigh'}}, got {captured_kwargs['output_config']}"
+    assert captured_kwargs["thinking"] == {"type": "adaptive"}
+    # Sampling params must NOT be in the wire payload for Opus 4.7+
+    for k in ("temperature", "top_p", "top_k"):
+        assert (
+            k not in captured_kwargs
+        ), f"Sampling param '{k}' must not be sent for Opus 4.7+; got {captured_kwargs[k]}"
+
+
+def test_opus_4_7_max_actually_sent_to_api(monkeypatch):
+    """Smoking gun: assert max also reaches anthropic.messages.create unchanged."""
+    from patterpunk.llm.models import anthropic as anthropic_mod
+
+    captured_kwargs = {}
+
+    def capture(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_fake_anthropic_response("ok")
+
+    monkeypatch.setattr(anthropic_mod.anthropic.messages, "create", capture)
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(effort="max"),
+        )
+    )
+    chat.add_message(UserMessage("hi")).complete()
+
+    assert captured_kwargs.get("output_config") == {
+        "effort": "max"
+    }, f"Expected output_config={{'effort': 'max'}}, got {captured_kwargs.get('output_config')}"
+    assert captured_kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_opus_4_7_self_thinking_is_none():
+    """Refactor invariant: self.thinking is the legacy {type, budget_tokens} payload.
+    For Opus 4.7+ that payload is never sent — it must be None, not a placeholder."""
+    model = AnthropicModel(
+        model="claude-opus-4-7",
+        thinking_config=ThinkingConfig(effort="xhigh"),
+    )
+    assert model.thinking is None
+    assert model.thinking_config is not None
+    assert model.thinking_config.effort == "xhigh"
+
+
+def test_legacy_self_thinking_is_populated():
+    """Regression: pre-4.7 models still get the legacy budget payload populated."""
+    model = AnthropicModel(
+        model="claude-sonnet-4-5-20250614",
+        thinking_config=ThinkingConfig(token_budget=8000),
+    )
+    assert model.thinking is not None
+    assert model.thinking.budget_tokens == 8000
+
+
+def test_opus_4_7_xhigh_with_include_thoughts_sends_display_summarized(monkeypatch):
+    """include_thoughts=True with xhigh should send thinking={'type': 'adaptive', 'display': 'summarized'}
+    AND output_config={'effort': 'xhigh'}."""
+    from patterpunk.llm.models import anthropic as anthropic_mod
+
+    captured_kwargs = {}
+
+    def capture(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _make_fake_anthropic_response("ok")
+
+    monkeypatch.setattr(anthropic_mod.anthropic.messages, "create", capture)
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(effort="xhigh", include_thoughts=True),
+        )
+    )
+    chat.add_message(UserMessage("hi")).complete()
+
+    assert captured_kwargs["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+    }
+    assert captured_kwargs["output_config"] == {"effort": "xhigh"}

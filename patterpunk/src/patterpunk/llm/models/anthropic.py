@@ -81,30 +81,42 @@ class AnthropicModel(Model, ABC):
         timeout: int = ANTHROPIC_DEFAULT_TIMEOUT,
         thinking_config: Optional[UnifiedThinkingConfig] = None,
     ):
-        thinking = None
-        if thinking_config is not None:
-            if thinking_config.token_budget is not None:
-                budget_tokens = min(thinking_config.token_budget, 128000)
-            else:
-                effort_to_tokens = {"low": 2000, "medium": 8000, "high": 24000}
-                effort = thinking_config.effort
-                if effort not in effort_to_tokens:
-                    logger.warning(
-                        f"[ANTHROPIC] effort='{effort}' is only supported on Claude Opus 4.7+. "
-                        f"For the legacy thinking API on model '{model}', clamping to 'high'."
-                    )
-                    effort = "high"
-                budget_tokens = effort_to_tokens[effort]
-            thinking = ThinkingConfig(type="enabled", budget_tokens=budget_tokens)
-
+        # Set self.model first so _uses_adaptive_thinking_api() can read it below.
         self.model = model
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.max_tokens = max_tokens
         self.timeout = timeout
-        self.thinking = thinking
         self.thinking_config = thinking_config
+
+        # self.thinking is the legacy {type, budget_tokens} payload sent to pre-Opus-4.7
+        # models. None means "not applicable" — either because the user didn't enable
+        # thinking, or because the model uses the adaptive API (Opus 4.7+) which reads
+        # self.thinking_config directly via _resolve_effort().
+        self.thinking = None
+        if thinking_config is not None and not self._uses_adaptive_thinking_api():
+            self.thinking = self._build_legacy_thinking(thinking_config)
+
+    def _build_legacy_thinking(
+        self, thinking_config: UnifiedThinkingConfig
+    ) -> "ThinkingConfig":
+        """Convert a unified ThinkingConfig into the legacy budget-tokens payload."""
+        if thinking_config.token_budget is not None:
+            return ThinkingConfig(
+                type="enabled",
+                budget_tokens=min(thinking_config.token_budget, 128000),
+            )
+
+        effort_to_tokens = {"low": 2000, "medium": 8000, "high": 24000}
+        effort = thinking_config.effort
+        if effort not in effort_to_tokens:
+            logger.warning(
+                f"[ANTHROPIC] effort='{effort}' is only supported on Claude Opus 4.7+. "
+                f"For the legacy thinking API on model '{self.model}', clamping to 'high'."
+            )
+            effort = "high"
+        return ThinkingConfig(type="enabled", budget_tokens=effort_to_tokens[effort])
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         anthropic_tools = []
@@ -602,7 +614,7 @@ Please extract the relevant information from this reasoning and format it exactl
         structured_output: Optional[object],
     ) -> dict:
         if structured_output and has_model_schema(structured_output):
-            if self.thinking and self._is_reasoning_model():
+            if self.thinking_config is not None and self._is_reasoning_model():
                 return self._configure_reasoning_structured_output_auto(
                     api_params, tools, structured_output
                 )
@@ -726,7 +738,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 if (
                     structured_output
                     and has_model_schema(structured_output)
-                    and self.thinking
+                    and self.thinking_config is not None
                     and self._is_reasoning_model()
                 ):
                     logger.info(
