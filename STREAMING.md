@@ -399,6 +399,22 @@ async with chat.complete_stream() as stream:
         print(content)
 ```
 
+### Safety Filtering and Diagnostics
+
+`Chat(disable_safety_filters=True)` flows through the streaming path the same way it flows through `complete()` — for Google streaming requests, all 10 safety categories are set to `OFF`. Other providers no-op (Anthropic / OpenAI / Bedrock / Ollama have no API parameter that weakens intrinsic safety).
+
+```python
+chat = Chat(model=GoogleModel(model="gemini-2.5-pro"), disable_safety_filters=True)
+
+async with chat.complete_stream() as stream:
+    async for content in stream.content:
+        ...
+```
+
+`AssistantMessage.finish_reason` and `_provider.raw_finish_reason` are populated on the final `await stream.chat` result. The streaming chunk surface (`stream.content`, `stream.content_delta`, etc.) does not currently expose finish-reason events — consumers that need real-time finish-reason signals should read the SDK's final-chunk metadata at the call site, or inspect `final_chat.latest_message.finish_reason` after the stream completes.
+
+See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full diagnostic and safety-toggle surface.
+
 ## Complete Examples
 
 ### Real-Time Terminal Display

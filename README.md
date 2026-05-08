@@ -139,6 +139,34 @@ response = Chat(model=model).add_message(
 weather_data = response.parsed_output  # Typed WeatherReport instance
 ```
 
+### Response Diagnostics & Safety Filtering
+
+Every `AssistantMessage` carries a normalized `finish_reason` (5-value enum) so you can triage non-text outcomes without learning each provider's native vocabulary:
+
+```python
+from patterpunk.llm.finish_reason import FinishReason
+
+result = chat.complete().latest_message
+
+if result.finish_reason == FinishReason.SAFETY:
+    log.warning("Content blocked")
+elif result.finish_reason == FinishReason.MAX_TOKENS:
+    log.warning("Output truncated")
+
+# Provider-native value is always available via the escape hatch:
+raw = result._provider.raw_finish_reason  # e.g., "RECITATION" (Google), "refusal" (Anthropic)
+```
+
+For corpora that trip default safety filters (legal, medical, security research), use the chat-level toggle:
+
+```python
+chat = Chat(model=GoogleModel(model="gemini-2.5-pro"), disable_safety_filters=True)
+```
+
+Today only Google has an API-level safety-disable toggle; other providers no-op with a debug log. For per-category Google control, use `GoogleModel(safety_settings=[...])`. To opt into empty-response sentinels instead of `GoogleAPIError`, use `GoogleModel(allow_empty_response=True)` — useful in batch pipelines where ~2.5% empty results shouldn't abort the whole job.
+
+See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full vocabulary, per-provider mapping tables, and end-to-end patterns.
+
 ### Token Counting
 
 Estimate token usage for cost tracking and context window management:
@@ -224,6 +252,7 @@ For detailed information on specific features:
 - **[Prompt Caching](PROMPT_CACHING.md)** - Cache control, provider support, cost optimization
 - **[Multimodal Content](MULTIMODAL.md)** - Images, files, content chunking, provider support
 - **[Agent Workflows](AGENTS.md)** - Sequential chains, parallel execution, type-safe agents
+- **[Diagnostics & Safety](DIAGNOSTICS.md)** - Unified finish_reason, provider escape hatch, safety filtering, empty-response handling
 - **[Serialization](SERIALIZATION.md)** - Message persistence, database storage, conversation resumption
 - **[Logging](LOGGING.md)** - Debug LLM interactions, configure log levels, silence noisy libraries
 

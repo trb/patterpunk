@@ -35,8 +35,10 @@ from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 
 if boto3:
     from botocore.exceptions import ClientError
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
@@ -55,6 +57,32 @@ BEDROCK_STREAM_TIMEOUT_SECONDS = 300  # 5 minutes
 
 class BedrockMissingCredentialsError(Exception):
     pass
+
+
+# Native Bedrock Converse stopReason values → normalized FinishReason. Values
+# not in this map (e.g. ``malformed_*``, ``model_context_window_exceeded``)
+# fall through to OTHER.
+_FINISH_REASON_MAP: dict = {
+    "end_turn": FinishReason.STOP,
+    "stop_sequence": FinishReason.STOP,
+    "max_tokens": FinishReason.MAX_TOKENS,
+    "tool_use": FinishReason.TOOL_USE,
+    "guardrail_intervened": FinishReason.SAFETY,
+    "content_filtered": FinishReason.SAFETY,
+}
+
+
+def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
+    if raw is None:
+        return None
+    return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+def _build_diagnostics_kwargs(stop_reason: Optional[str]) -> dict:
+    return {
+        "finish_reason": _normalize_finish_reason(stop_reason),
+        "provider_data": ProviderData(raw_finish_reason=stop_reason),
+    }
 
 
 def get_bedrock_conversation_content(message: Message):
@@ -464,7 +492,10 @@ class BedrockModel(Model, ABC):
         return converse_params
 
     def _process_converse_response(
-        self, output: dict, structured_output: Optional[object] = None
+        self,
+        output: dict,
+        structured_output: Optional[object] = None,
+        stop_reason: Optional[str] = None,
     ) -> Union[AssistantMessage, ToolCallMessage]:
         # Check for tool use in content blocks regardless of stopReason
         # Some models return tool calls in content without setting stopReason to "tool_use"
@@ -508,7 +539,11 @@ class BedrockModel(Model, ABC):
 
         logger_llm.info(f"[Assistant]\n{full_response}")
 
-        return AssistantMessage(full_response, structured_output=structured_output)
+        return AssistantMessage(
+            full_response,
+            structured_output=structured_output,
+            **_build_diagnostics_kwargs(stop_reason),
+        )
 
     # Error codes that indicate transient rate limiting and should trigger retry
     RETRYABLE_ERROR_CODES = ("ThrottlingException", "ServiceUnavailableException")
@@ -670,7 +705,14 @@ class BedrockModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[AssistantMessage, "ToolCallMessage"]:
+        if disable_safety_filters:
+            logger.debug(
+                "[BEDROCK] disable_safety_filters has no effect — Bedrock guardrails "
+                "are additive (they ADD filtering when configured) and there is no "
+                "API parameter that weakens the underlying model's intrinsic safety."
+            )
         logger.info("Request to AWS Bedrock made")
         logger_llm.debug(
             "\n---\n".join(
@@ -697,7 +739,11 @@ class BedrockModel(Model, ABC):
             )
             raise
 
-        return self._process_converse_response(response["output"], structured_output)
+        return self._process_converse_response(
+            response["output"],
+            structured_output,
+            stop_reason=response.get("stopReason"),
+        )
 
     @staticmethod
     def get_name():
@@ -993,6 +1039,7 @@ class BedrockModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator["StreamChunk"]:
         """
         Stream the assistant message response from AWS Bedrock.
@@ -1007,6 +1054,11 @@ class BedrockModel(Model, ABC):
         synchronous converse_stream call in a thread pool executor and yields
         chunks asynchronously.
         """
+        if disable_safety_filters:
+            logger.debug(
+                "[BEDROCK] disable_safety_filters has no effect — Bedrock guardrails "
+                "are additive and there is no API parameter that weakens intrinsic safety."
+            )
         logger.info("Request to AWS Bedrock (streaming) made")
         logger_llm.info(
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"

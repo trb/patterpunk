@@ -40,6 +40,7 @@ class Chat:
         messages: Optional[List[Message]] = None,
         model: Optional[Model] = None,
         tools: Optional[ToolDefinition] = None,
+        disable_safety_filters: bool = False,
     ):
         if messages is None:
             messages = []
@@ -47,6 +48,7 @@ class Chat:
 
         self.model = default_model() if model is None else model
         self.tools = tools
+        self.disable_safety_filters = disable_safety_filters
         self._mcp_client = None
         self._tool_functions = {}  # Maps function names to callables
 
@@ -90,6 +92,7 @@ class Chat:
             tools_to_use,
             structured_output=getattr(message, "structured_output", None),
             output_types=output_types,
+            disable_safety_filters=self.disable_safety_filters,
         )
 
         new_chat = self.add_message(response_message)
@@ -121,6 +124,7 @@ class Chat:
             tools_to_use,
             structured_output=getattr(message, "structured_output", None),
             output_types=output_types,
+            disable_safety_filters=self.disable_safety_filters,
         )
 
         new_chat = self.add_message(response_message)
@@ -159,6 +163,7 @@ class Chat:
             tools_to_use,
             structured_output=getattr(message, "structured_output", None),
             output_types=output_types,
+            disable_safety_filters=self.disable_safety_filters,
         )
 
         factory = ChatStreamFactory(self)

@@ -38,9 +38,11 @@ try:
 except ImportError:
     google_genai_available = False
 
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
@@ -70,6 +72,68 @@ class GoogleNotImplemented(Exception):
 
 class GoogleAPIError(Exception):
     pass
+
+
+# Native Vertex finish_reason enum names → normalized FinishReason. Unknown
+# values fall through to FinishReason.OTHER. RECITATION, MALFORMED_FUNCTION_CALL,
+# OTHER, LANGUAGE, IMAGE_OTHER, UNSPECIFIED, UNEXPECTED_TOOL_CALL,
+# TOO_MANY_TOOL_CALLS map to OTHER by omission.
+_FINISH_REASON_MAP: Dict[str, FinishReason] = {
+    "STOP": FinishReason.STOP,
+    "MAX_TOKENS": FinishReason.MAX_TOKENS,
+    "SAFETY": FinishReason.SAFETY,
+    "PROHIBITED_CONTENT": FinishReason.SAFETY,
+    "BLOCKLIST": FinishReason.SAFETY,
+    "SPII": FinishReason.SAFETY,
+    "IMAGE_SAFETY": FinishReason.SAFETY,
+    "IMAGE_PROHIBITED_CONTENT": FinishReason.SAFETY,
+}
+
+
+def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
+    if raw is None:
+        return None
+    return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+def _build_all_safety_off() -> Optional[List["types.SafetySetting"]]:
+    """Construct an OFF threshold for every HarmCategory the SDK exposes.
+
+    Built lazily so the SDK import gate (``google_genai_available``) is honored
+    on systems that don't have google-genai installed. Skips
+    ``HARM_CATEGORY_UNSPECIFIED``.
+    """
+    if not google_genai_available:
+        return None
+    categories = [
+        getattr(types.HarmCategory, name)
+        for name in dir(types.HarmCategory)
+        if name.startswith("HARM_") and name != "HARM_CATEGORY_UNSPECIFIED"
+    ]
+    return [
+        types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.OFF)
+        for c in categories
+    ]
+
+
+def _extract_finish_reason_raw(response) -> Optional[str]:
+    if not getattr(response, "candidates", None):
+        return None
+    candidate = response.candidates[0]
+    finish_reason = getattr(candidate, "finish_reason", None)
+    if finish_reason is None:
+        return None
+    return finish_reason.name if hasattr(finish_reason, "name") else str(finish_reason)
+
+
+def _extract_prompt_block_reason(response) -> Optional[str]:
+    feedback = getattr(response, "prompt_feedback", None)
+    if feedback is None:
+        return None
+    reason = getattr(feedback, "block_reason", None)
+    if reason is None:
+        return None
+    return reason.name if hasattr(reason, "name") else str(reason)
 
 
 @dataclass
@@ -133,6 +197,8 @@ class GoogleModel(Model, ABC):
         google_account_credentials: Optional[str] = None,
         client: Optional[genai.Client] = None,
         thinking_config: Optional[ThinkingConfig] = None,
+        safety_settings: Optional[List["types.SafetySetting"]] = None,
+        allow_empty_response: bool = False,
     ):
         if not google_genai_available:
             raise ImportError(
@@ -183,6 +249,8 @@ class GoogleModel(Model, ABC):
         self.thinking_budget = thinking_budget
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
+        self.safety_settings = safety_settings
+        self.allow_empty_response = allow_empty_response
         self._logged_message_ids: Set[str] = set()
 
     def _get_log_mode(self) -> str:
@@ -645,6 +713,7 @@ class GoogleModel(Model, ABC):
         structured_output: Optional[object],
         output_types: Optional[Union[List[OutputType], Set[OutputType]]],
         system_instruction: Optional[str],
+        disable_safety_filters: bool = False,
     ) -> types.GenerateContentConfig:
         config = types.GenerateContentConfig(
             max_output_tokens=self.max_tokens,
@@ -666,6 +735,15 @@ class GoogleModel(Model, ABC):
             if self.include_thoughts:
                 thinking_config_kwargs["include_thoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)
+
+        # Model-level safety_settings wins over chat-level disable_safety_filters
+        # — the user who set per-category settings has already opted in to a
+        # specific configuration; the chat-level flag is the coarse default.
+        effective_safety = self.safety_settings
+        if disable_safety_filters and effective_safety is None:
+            effective_safety = _build_all_safety_off()
+        if effective_safety is not None:
+            config.safety_settings = effective_safety
 
         if system_instruction:
             config.system_instruction = system_instruction
@@ -693,6 +771,7 @@ class GoogleModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> tuple[List[types.Content], types.GenerateContentConfig, dict[str, str]]:
         system_instruction = self._convert_system_messages_for_google_with_cache(
             messages
@@ -703,7 +782,11 @@ class GoogleModel(Model, ABC):
         )
 
         config = self._build_generation_config(
-            tools, structured_output, output_types, system_instruction
+            tools,
+            structured_output,
+            output_types,
+            system_instruction,
+            disable_safety_filters=disable_safety_filters,
         )
 
         return contents, config, cache_mappings
@@ -711,6 +794,18 @@ class GoogleModel(Model, ABC):
     def _process_generation_response(
         self, response, structured_output: Optional[object]
     ) -> Union[Message, "ToolCallMessage"]:
+        raw_finish_reason = _extract_finish_reason_raw(response)
+        finish_reason = _normalize_finish_reason(raw_finish_reason)
+        prompt_block_reason = _extract_prompt_block_reason(response)
+
+        diagnostics_kwargs = {
+            "finish_reason": finish_reason,
+            "provider_data": ProviderData(
+                raw_finish_reason=raw_finish_reason,
+                prompt_block_reason=prompt_block_reason,
+            ),
+        }
+
         if hasattr(response, "candidates") and response.candidates:
             candidate = response.candidates[0]
             if hasattr(candidate, "content") and candidate.content.parts:
@@ -773,20 +868,33 @@ class GoogleModel(Model, ABC):
                             chunks[0].content,
                             structured_output=structured_output,
                             **thinking_kwargs,
+                            **diagnostics_kwargs,
                         )
                     else:
                         return AssistantMessage(
                             chunks,
                             structured_output=structured_output,
                             **thinking_kwargs,
+                            **diagnostics_kwargs,
                         )
 
         try:
             if hasattr(response, "text") and response.text:
                 content = response.text
-                return AssistantMessage(content, structured_output=structured_output)
+                return AssistantMessage(
+                    content,
+                    structured_output=structured_output,
+                    **diagnostics_kwargs,
+                )
         except Exception:
             pass
+
+        if self.allow_empty_response:
+            return AssistantMessage(
+                "",
+                structured_output=structured_output,
+                **diagnostics_kwargs,
+            )
 
         raise GoogleAPIError("No content found in Vertex AI response")
 
@@ -796,11 +904,16 @@ class GoogleModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[Message, "ToolCallMessage"]:
         self._log_request_start(messages)
 
         contents, config, cache_mappings = self._prepare_generation_request(
-            messages, tools, structured_output, output_types
+            messages,
+            tools,
+            structured_output,
+            output_types,
+            disable_safety_filters=disable_safety_filters,
         )
 
         self._log_request_parameters(tools)
@@ -987,6 +1100,8 @@ class GoogleModel(Model, ABC):
             max_tokens=self.max_tokens,
             client=self.client,
             thinking_config=self.thinking_config,
+            safety_settings=self.safety_settings,
+            allow_empty_response=self.allow_empty_response,
         )
         new_model._logged_message_ids = self._logged_message_ids.copy()
         return new_model
@@ -1073,6 +1188,7 @@ class GoogleModel(Model, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator["StreamChunk"]:
         """
         Stream the assistant message response from Google Vertex AI.
@@ -1086,7 +1202,11 @@ class GoogleModel(Model, ABC):
         self._log_request_start(messages)
 
         contents, config, _ = self._prepare_generation_request(
-            messages, tools, structured_output, output_types
+            messages,
+            tools,
+            structured_output,
+            output_types,
+            disable_safety_filters=disable_safety_filters,
         )
 
         self._log_request_parameters(tools)

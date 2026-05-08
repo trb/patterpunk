@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.chat.core import Chat
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.assistant import AssistantMessage
@@ -624,3 +625,26 @@ def test_cache_chunks(model_id):
         term in content_lower
         for term in ["context", "information", "document", "reference"]
     )
+
+
+def test_diagnostics_and_safety_filter_integration():
+    """Live integration: confirms disable_safety_filters is accepted by Bedrock
+    (no-op + debug log), finish_reason normalizes to STOP, and
+    _provider.raw_finish_reason carries the Converse API 'end_turn' value."""
+    response = (
+        Chat(
+            model=BedrockModel(
+                model_id="anthropic.claude-3-haiku-20240307-v1:0",
+                temperature=0.1,
+            ),
+            disable_safety_filters=True,
+        )
+        .add_message(UserMessage("Say hello in exactly one short sentence."))
+        .complete()
+        .latest_message
+    )
+
+    assert response.content
+    assert len(response.content.strip()) > 0
+    assert response.finish_reason == FinishReason.STOP
+    assert response._provider.raw_finish_reason == "end_turn"

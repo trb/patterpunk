@@ -30,9 +30,11 @@ from patterpunk.config.defaults import (
     RETRY_JITTER_FACTOR,
 )
 from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
+from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.base import Message
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_USER, ROLE_ASSISTANT
 from patterpunk.llm.messages.assistant import AssistantMessage
+from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
@@ -68,6 +70,34 @@ class AnthropicNotImplemented(Exception):
 
 class AnthropicAPIError(Exception):
     pass
+
+
+# Native Anthropic stop_reason values → normalized FinishReason. Values not in
+# this map (e.g. ``model_context_window_exceeded``) fall through to OTHER.
+_FINISH_REASON_MAP: dict = {
+    "end_turn": FinishReason.STOP,
+    "stop_sequence": FinishReason.STOP,
+    "max_tokens": FinishReason.MAX_TOKENS,
+    "tool_use": FinishReason.TOOL_USE,
+    "refusal": FinishReason.SAFETY,
+}
+
+
+def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
+    if raw is None:
+        return None
+    return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+def _build_diagnostics_kwargs(response) -> dict:
+    """Build the diagnostics kwargs (finish_reason + provider_data) to pass to
+    every ``AssistantMessage`` constructor in this module from a raw Anthropic
+    response object."""
+    raw = getattr(response, "stop_reason", None)
+    return {
+        "finish_reason": _normalize_finish_reason(raw),
+        "provider_data": ProviderData(raw_finish_reason=raw),
+    }
 
 
 class AnthropicModel(Model, ABC):
@@ -151,6 +181,7 @@ class AnthropicModel(Model, ABC):
         structured_output: object,
         original_messages: List[Message],
         thinking_blocks: Optional[List[dict]] = None,
+        diagnostics_kwargs: Optional[dict] = None,
     ) -> AssistantMessage:
         """
         Reasoning models can't use tool_choice constraints, so we use a two-model approach:
@@ -161,6 +192,7 @@ class AnthropicModel(Model, ABC):
             "[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku"
         )
 
+        diagnostics_kwargs = diagnostics_kwargs or {}
         structured_output_tool = self._create_structured_output_tool(structured_output)
 
         user_context = ""
@@ -212,6 +244,7 @@ Please extract the relevant information from this reasoning and format it exactl
                                 structured_output=structured_output,
                                 parsed_output=parsed_output,
                                 thinking_blocks=thinking_blocks,
+                                **diagnostics_kwargs,
                             )
                         except Exception as e:
                             logger.error(
@@ -225,6 +258,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 reasoning_content,
                 structured_output=structured_output,
                 thinking_blocks=thinking_blocks,
+                **diagnostics_kwargs,
             )
 
         except Exception as e:
@@ -235,6 +269,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 reasoning_content,
                 structured_output=structured_output,
                 thinking_blocks=thinking_blocks,
+                **diagnostics_kwargs,
             )
 
     def _parse_model_version(self) -> tuple[int, int]:
@@ -667,6 +702,7 @@ Please extract the relevant information from this reasoning and format it exactl
         block,
         structured_output: object,
         thinking_blocks: Optional[List[dict]] = None,
+        diagnostics_kwargs: Optional[dict] = None,
     ) -> Optional[AssistantMessage]:
         if block.name == "provide_structured_response" and structured_output:
             if hasattr(block, "input") and block.input:
@@ -679,6 +715,7 @@ Please extract the relevant information from this reasoning and format it exactl
                         structured_output=structured_output,
                         parsed_output=parsed_output,
                         thinking_blocks=thinking_blocks,
+                        **(diagnostics_kwargs or {}),
                     )
                 except Exception as e:
                     logger.warning(
@@ -711,6 +748,7 @@ Please extract the relevant information from this reasoning and format it exactl
             content,
             structured_output=structured_output,
             thinking_blocks=thinking_blocks,
+            **_build_diagnostics_kwargs(response),
         )
 
     def _validate_stop_reason(self, response) -> None:
@@ -751,6 +789,9 @@ Please extract the relevant information from this reasoning and format it exactl
 
                     try:
                         reasoning_response = anthropic.messages.create(**api_params)
+                        reasoning_diagnostics = _build_diagnostics_kwargs(
+                            reasoning_response
+                        )
                         thinking_blocks = self._extract_thinking_blocks(
                             reasoning_response
                         )
@@ -779,6 +820,7 @@ Please extract the relevant information from this reasoning and format it exactl
                                             structured_output=structured_output,
                                             parsed_output=parsed_output,
                                             thinking_blocks=thinking_blocks,
+                                            **reasoning_diagnostics,
                                         )
                                     except Exception as e:
                                         logger.warning(
@@ -798,6 +840,7 @@ Please extract the relevant information from this reasoning and format it exactl
                             structured_output,
                             messages,
                             thinking_blocks,
+                            diagnostics_kwargs=reasoning_diagnostics,
                         )
 
                     except Exception as e:
@@ -809,6 +852,9 @@ Please extract the relevant information from this reasoning and format it exactl
                             api_params, tools
                         )
                         reasoning_response = anthropic.messages.create(**api_params)
+                        reasoning_diagnostics = _build_diagnostics_kwargs(
+                            reasoning_response
+                        )
                         thinking_blocks = self._extract_thinking_blocks(
                             reasoning_response
                         )
@@ -820,6 +866,7 @@ Please extract the relevant information from this reasoning and format it exactl
                             structured_output,
                             messages,
                             thinking_blocks,
+                            diagnostics_kwargs=reasoning_diagnostics,
                         )
 
                 else:
@@ -840,12 +887,16 @@ Please extract the relevant information from this reasoning and format it exactl
                 elif response.stop_reason == "tool_use":
                     tool_calls = []
                     thinking_blocks = self._extract_thinking_blocks(response)
+                    response_diagnostics = _build_diagnostics_kwargs(response)
 
                     for block in response.content:
                         if block.type == "tool_use":
                             structured_result = (
                                 self._parse_structured_output_from_tool_call(
-                                    block, structured_output, thinking_blocks
+                                    block,
+                                    structured_output,
+                                    thinking_blocks,
+                                    diagnostics_kwargs=response_diagnostics,
                                 )
                             )
                             if structured_result:
@@ -1075,7 +1126,13 @@ Please extract the relevant information from this reasoning and format it exactl
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[Message, "ToolCallMessage"]:
+        if disable_safety_filters:
+            logger.debug(
+                "[ANTHROPIC] disable_safety_filters has no effect — Anthropic does "
+                "not expose API parameters that weaken intrinsic safety."
+            )
         return self._execute_with_retry_loop(messages, tools, structured_output)
 
     def _prepare_streaming_parameters(
@@ -1222,6 +1279,7 @@ Please extract the relevant information from this reasoning and format it exactl
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator["StreamChunk"]:
         """
         Stream the assistant message response from Anthropic.
@@ -1234,6 +1292,11 @@ Please extract the relevant information from this reasoning and format it exactl
         - Mid-stream SSE error events: Detected and raised as exceptions
           (cannot be retried as stream is already consumed)
         """
+        if disable_safety_filters:
+            logger.debug(
+                "[ANTHROPIC] disable_safety_filters has no effect — Anthropic does "
+                "not expose API parameters that weaken intrinsic safety."
+            )
         from patterpunk.llm.streaming import StreamChunk, StreamEventType
 
         # Build API parameters (same as sync, but we'll use async client)

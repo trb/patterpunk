@@ -38,6 +38,7 @@ class Model(ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[Message, "ToolCallMessage"]:
         raise ModelNotImplemented("You need to use a LLM-specific model")
 
@@ -47,6 +48,7 @@ class Model(ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> Union[Message, "ToolCallMessage"]:
         """
         Async version of generate_assistant_message.
@@ -58,7 +60,11 @@ class Model(ABC):
         return await loop.run_in_executor(
             _executor,
             lambda: self.generate_assistant_message(
-                messages, tools, structured_output, output_types
+                messages,
+                tools,
+                structured_output,
+                output_types,
+                disable_safety_filters=disable_safety_filters,
             ),
         )
 
@@ -68,6 +74,7 @@ class Model(ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream the assistant message response.
