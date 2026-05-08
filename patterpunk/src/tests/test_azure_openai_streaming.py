@@ -18,7 +18,6 @@ from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
 from patterpunk.llm.thinking import ThinkingConfig
 
-
 # Azure OpenAI reasoning model deployment name (gpt-5.2)
 AZURE_REASONING_DEPLOYMENT = "gpt-5.2"
 

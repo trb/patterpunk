@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import List, TypedDict, Dict, Optional, Literal, Union
 
-
 # =============================================================================
 # Tool Definition Types (for defining available tools)
 # =============================================================================

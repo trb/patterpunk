@@ -13,8 +13,13 @@ from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.streaming import StreamIncompleteError, ToolExecutionAbortError
-from patterpunk.llm.thinking import ThinkingConfig
+from tests.test_utils import openai_quota_available
 
+pytestmark = pytest.mark.skipif(
+    not openai_quota_available(),
+    reason="OpenAI account is out of quota (429) — skipping live API tests.",
+)
+from patterpunk.llm.thinking import ThinkingConfig
 
 # OpenAI reasoning model for thinking/reasoning tests
 OPENAI_REASONING_MODEL = "o3-mini"

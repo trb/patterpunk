@@ -10,7 +10,12 @@ from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
 from patterpunk.llm.output_types import OutputType
-from tests.test_utils import get_resource
+from tests.test_utils import get_resource, openai_quota_available
+
+pytestmark = pytest.mark.skipif(
+    not openai_quota_available(),
+    reason="OpenAI account is out of quota (429) — skipping live API tests.",
+)
 
 try:
     from openai import PermissionDeniedError
@@ -223,17 +228,15 @@ def test_openai_generate_abstract_art():
     chat = Chat(model=model)
 
     try:
-        response = chat.add_message(
-            UserMessage(
-                """Generate an abstract art piece with:
+        response = chat.add_message(UserMessage("""Generate an abstract art piece with:
                     - Vibrant, contrasting colors
                     - Geometric shapes and patterns
                     - A sense of movement and energy
                     - Modern art style inspired by Kandinsky
                     
-                    Create a visually striking abstract composition."""
-            )
-        ).complete(output_types=[OutputType.IMAGE])
+                    Create a visually striking abstract composition.""")).complete(
+            output_types=[OutputType.IMAGE]
+        )
     except OpenAiApiError as e:
         error_message = str(e)
         if "too many api errors" in error_message.lower():
@@ -307,15 +310,11 @@ def test_openai_mixed_text_and_image_generation():
                     "You are a creative educator who uses visuals to explain concepts."
                 )
             )
-            .add_message(
-                UserMessage(
-                    """Explain the water cycle with:
+            .add_message(UserMessage("""Explain the water cycle with:
                     1. A brief text description (2-3 sentences)
                     2. Generate a diagram showing the water cycle with labeled components
                     
-                    Make it educational and clear."""
-                )
-            )
+                    Make it educational and clear."""))
             .complete(output_types={OutputType.TEXT, OutputType.IMAGE})
         )
     except OpenAiApiError as e:

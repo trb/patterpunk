@@ -1,3 +1,5 @@
 #!/bin/bash
 
-twine upload dist/* --verbose
+# --skip-existing: dist/ accumulates wheels across releases. PyPI rejects re-uploads,
+# so without this flag any prior version in dist/ blocks the new one from going up.
+twine upload dist/* --skip-existing --verbose

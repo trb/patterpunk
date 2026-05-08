@@ -121,7 +121,17 @@ class BedrockModel(Model, ABC):
             return {}
 
         if self.thinking_config.effort is not None:
-            additional_fields["reasoning_effort"] = self.thinking_config.effort
+            effort = self.thinking_config.effort
+            # Bedrock's reasoning_effort accepts low/medium/high. xhigh and max are
+            # Anthropic-Opus-4.7-only and not valid here yet — clamp with a warning.
+            if effort not in {"low", "medium", "high"}:
+                logger.warning(
+                    f"[BEDROCK] effort='{effort}' is only supported on Anthropic Opus 4.7+ "
+                    f"via the Messages API. Bedrock's reasoning_effort accepts only "
+                    f"low/medium/high. Clamping to 'high'."
+                )
+                effort = "high"
+            additional_fields["reasoning_effort"] = effort
 
         if self.thinking_config.token_budget is not None:
             budget_tokens = max(

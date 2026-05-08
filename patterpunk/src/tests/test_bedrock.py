@@ -343,12 +343,12 @@ def test_tool_calling():
     "model_id,region,thinking_config",
     [
         (
-            "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "us-east-1",
             ThinkingConfig(token_budget=2000),
         ),
         (
-            "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "us-east-1",
             ThinkingConfig(token_budget=4000, include_thoughts=True),
         ),
@@ -584,13 +584,10 @@ def test_cache_chunks(model_id):
     chat = Chat(model=BedrockModel(model_id=model_id, temperature=0.1, top_p=0.98))
 
     # Create a message with mixed cacheable and non-cacheable content
-    large_context = (
-        """
+    large_context = """
     This is a large context document that should be cached for performance.
     It contains important information that will be referenced multiple times.
-    """
-        * 100
-    )  # Make it larger to benefit from caching
+    """ * 100  # Make it larger to benefit from caching
 
     response = (
         chat.add_message(

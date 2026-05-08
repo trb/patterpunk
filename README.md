@@ -122,9 +122,11 @@ class WeatherReport(BaseModel):
     conditions: str
 
 # Structured output with reasoning mode
+# Effort levels: "low" | "medium" | "high" | "xhigh" | "max"
+# (xhigh and max are Anthropic Claude Opus 4.7+ only; OpenAI/Google clamp to "high".)
 model = AnthropicModel(
-    model="claude-sonnet-4-20250514",
-    thinking=ThinkingConfig(effort="high")
+    model="claude-opus-4-7",
+    thinking_config=ThinkingConfig(effort="xhigh")
 )
 
 response = Chat(model=model).add_message(

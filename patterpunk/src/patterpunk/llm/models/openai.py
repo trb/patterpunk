@@ -112,7 +112,14 @@ class OpenAiModel(Model, ABC):
         reasoning_effort = OpenAiReasoningEffort.LOW
         if thinking_config is not None:
             if thinking_config.effort is not None:
-                reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
+                effort = thinking_config.effort
+                if effort not in {"low", "medium", "high"}:
+                    logger.warning(
+                        f"[OPENAI] effort='{effort}' is Anthropic-only (Opus 4.7+). "
+                        f"OpenAI supports only low/medium/high. Clamping to 'high'."
+                    )
+                    effort = "high"
+                reasoning_effort = OpenAiReasoningEffort[effort.upper()]
             else:
                 if thinking_config.token_budget == 0:
                     reasoning_effort = OpenAiReasoningEffort.LOW
@@ -631,24 +638,22 @@ class OpenAiModel(Model, ABC):
                 logger.info("OpenAi Responses API response received")
                 done = True
             except APIError as error:
-                # TODO: Revisit this fallback. As of Feb 2026, OpenAI reasoning models
-                # (o3-mini, o4-mini, gpt-5, etc.) are accessible even without org
-                # verification. This fallback strips `reasoning` and adds `temperature`,
-                # but reasoning models reject `temperature` — causing a second failure.
-                # The fix: remove only `summary` from the reasoning dict instead of
-                # stripping the entire param. Also add thinking_token_count assertions
-                # to OpenAI tests once the non-streaming path works with reasoning models.
+                # Org-not-verified fallback: only the reasoning *summary* is gated by
+                # org verification. The reasoning model itself works without it. Strip
+                # `summary` from the reasoning dict and retry — leave reasoning intact.
+                # (Stripping the entire reasoning dict and adding temperature/top_p
+                # back triggers a 400 because reasoning models reject sampling params.)
                 if (
                     "reasoning.summary" in str(error)
                     and "reasoning" in responses_parameters
                 ):
                     logger.info(
-                        "Organization not verified for reasoning summaries, removing reasoning parameter and treating as regular model"
+                        "[OPENAI] Organization not verified for reasoning summaries; "
+                        "dropping 'summary' from reasoning config and retrying."
                     )
-                    responses_parameters.pop("reasoning", None)
-                    responses_parameters["temperature"] = self.temperature
-                    responses_parameters["top_p"] = self.top_p
-                    # Retry immediately for this specific error (no rate limit)
+                    reasoning = responses_parameters.get("reasoning", {})
+                    if isinstance(reasoning, dict):
+                        reasoning.pop("summary", None)
                     retry_count += 1
                     continue
 

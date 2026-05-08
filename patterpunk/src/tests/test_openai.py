@@ -9,7 +9,12 @@ from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.openai import OpenAiModel
 from patterpunk.llm.thinking import ThinkingConfig
-from tests.test_utils import get_resource
+from tests.test_utils import get_resource, openai_quota_available
+
+pytestmark = pytest.mark.skipif(
+    not openai_quota_available(),
+    reason="OpenAI account is out of quota (429 insufficient_quota) — skipping live API tests.",
+)
 
 
 def test_basic():
@@ -21,9 +26,7 @@ def test_basic():
     chat = Chat(model=OpenAiModel(model="gpt-4o", temperature=0.1))
 
     chat = (
-        chat.add_message(
-            SystemMessage(
-                """
+        chat.add_message(SystemMessage("""
 Extract the most applicable date from the document based on the type of document you're dealing
 with. Then write a title for the document, target about 6 words. Be extremely concise and information
 dense.
@@ -36,12 +39,8 @@ Response with the following JSON structure:
 ```json
 {"date": "date you picked", "title": "title you wrote"}
 ```
-    """
-            )
-        )
-        .add_message(
-            UserMessage(
-                """
+    """))
+        .add_message(UserMessage("""
 Here's the beginning of the document:
 
 ===START_OF_BEGINNING===
@@ -217,9 +216,7 @@ nager, WAMITAB
 
  00146135
 ===END_OF_END===
-    """
-            )
-        )
+    """))
         .complete()
     )
 
@@ -288,17 +285,13 @@ def test_structured_output(model_name):
     when she was 10 years old.
     """
 
-    chat = chat.add_message(
-        SystemMessage(
-            """
+    chat = chat.add_message(SystemMessage("""
             Extract information about the book from the provided text.
             Include the title, author, and publication year.
             If available, also extract the ISBN, genres, page count, and whether it's a bestseller.
             
             Strictly extract information about the book from the provided text and do not infer information.
-            """
-        )
-    )
+            """))
 
     chat = chat.add_message(
         UserMessage(sample_text, structured_output=ThoughtfulBookResponse)
@@ -516,13 +509,10 @@ def test_cache_chunks():
     chat = Chat(model=OpenAiModel(model="gpt-4o-mini", temperature=0.1))
 
     # Create a message with mixed cacheable and non-cacheable content
-    large_context = (
-        """
+    large_context = """
     This is a large context document that should be cached for performance.
     It contains important information that will be referenced multiple times.
-    """
-        * 100
-    )  # Make it larger to benefit from caching
+    """ * 100  # Make it larger to benefit from caching
 
     response = (
         chat.add_message(

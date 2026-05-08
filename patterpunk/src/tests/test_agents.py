@@ -1,12 +1,19 @@
 import logging
 from dataclasses import dataclass
 from typing import List
+import pytest
 from pydantic import BaseModel
 
 from patterpunk.llm.agent import Agent
 from patterpunk.llm.chain import AgentChain, Parallel
 from patterpunk.llm.models.openai import OpenAiModel
 from patterpunk.logger import logger, logger_llm
+from tests.test_utils import openai_quota_available
+
+pytestmark = pytest.mark.skipif(
+    not openai_quota_available(),
+    reason="OpenAI account is out of quota (429) — agent tests use OpenAI under the hood.",
+)
 
 
 @dataclass

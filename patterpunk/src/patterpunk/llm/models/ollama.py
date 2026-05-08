@@ -4,6 +4,8 @@ import time
 from abc import ABC
 from typing import List, Optional, Callable, Set, Union
 
+import tiktoken
+
 from patterpunk.config.providers.ollama import (
     ollama,
     OLLAMA_MAX_RETRIES,
@@ -431,3 +433,29 @@ class OllamaModel(Model, ABC):
     @staticmethod
     def get_available_models() -> List[str]:
         return [model["model"] for model in ollama.list()["models"]]
+
+    def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
+        """Approximate token count using tiktoken's cl100k_base encoding.
+
+        Ollama hosts many different models, each with its own tokenizer, and the
+        Ollama API does not expose a token-counting endpoint. We use cl100k_base as
+        a reasonable cross-model approximation — it will be off by ~10-30% for
+        non-OpenAI tokenizers but is enough to drive context-window decisions.
+        """
+        encoding = tiktoken.get_encoding("cl100k_base")
+        if isinstance(content, str):
+            return len(encoding.encode(content))
+        if isinstance(content, list):
+            return sum(self._count_message_tokens(m, encoding) for m in content)
+        return self._count_message_tokens(content, encoding)
+
+    def _count_message_tokens(self, message: Message, encoding) -> int:
+        # ~4 tokens of structural overhead per message (role markers, delimiters)
+        total = 4
+        text = (
+            message.get_content_as_string()
+            if hasattr(message, "get_content_as_string")
+            else str(message.content)
+        )
+        total += len(encoding.encode(text))
+        return total
