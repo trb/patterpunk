@@ -63,9 +63,7 @@ def test_simple_bedrock(model_id):
 
     # Find JSON in the response (it might be embedded in other text, and weaker
     # models may emit skeleton JSON during reasoning before the real answer)
-    json_candidates = re.findall(
-        r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response
-    )
+    json_candidates = re.findall(r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response)
     assert (
         json_candidates
     ), f"Response should contain valid JSON format. Got: {response[:500]}"
@@ -77,11 +75,7 @@ def test_simple_bedrock(model_id):
         except json.JSONDecodeError:
             continue
         country = parsed.get("country")
-        if (
-            isinstance(country, dict)
-            and country.get("name")
-            and country.get("capital")
-        ):
+        if isinstance(country, dict) and country.get("name") and country.get("capital"):
             parsed_json = parsed
             break
 
