@@ -1,6 +1,8 @@
 import os
 import functools
 
+from patterpunk.config.providers.openai import get_openai_client
+
 DIRECTORY = os.path.dirname(__file__)
 RESOURCES = f"{DIRECTORY}/resources"
 
@@ -15,11 +17,10 @@ def openai_quota_available() -> bool:
     so the test file's pytestmark skips everything cleanly instead of every test
     spinning in retry/backoff for minutes."""
     try:
-        from patterpunk.config.providers.openai import openai
-
-        if openai is None:
+        client = get_openai_client()
+        if client is None:
             return False
-        openai.chat.completions.create(
+        client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1,

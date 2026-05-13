@@ -9,11 +9,12 @@ from patterpunk.config.defaults import (
     RETRY_JITTER_FACTOR,
 )
 from patterpunk.config.providers.azure_openai import (
-    azure_openai,
-    azure_openai_async,
-    azure_openai_reasoning,
-    azure_openai_reasoning_async,
+    get_azure_openai_client,
+    get_azure_openai_async_client,
+    get_azure_openai_reasoning_client,
+    get_azure_openai_reasoning_async_client,
     AZURE_OPENAI_MAX_RETRIES,
+    AZURE_OPENAI_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
@@ -44,8 +45,18 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         presence_penalty=None,
         logit_bias=None,
         thinking_config: Optional[ThinkingConfig] = None,
+        timeout: int = AZURE_OPENAI_DEFAULT_TIMEOUT,
     ):
-        if not azure_openai:
+        self._azure_client = get_azure_openai_client(timeout=timeout)
+        self._azure_async_client = get_azure_openai_async_client(timeout=timeout)
+        self._azure_reasoning_client = get_azure_openai_reasoning_client(
+            timeout=timeout
+        )
+        self._azure_reasoning_async_client = get_azure_openai_reasoning_async_client(
+            timeout=timeout
+        )
+
+        if not self._azure_client:
             raise AzureOpenAiMissingConfigurationError(
                 "Azure OpenAI was not initialized correctly. "
                 "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
@@ -59,25 +70,41 @@ class AzureOpenAiModel(OpenAiModel, ABC):
             presence_penalty=presence_penalty,
             logit_bias=logit_bias,
             thinking_config=thinking_config,
+            timeout=timeout,
             _INTERNAL__skip_client_validation=True,
+        )
+
+    def __deepcopy__(self, memo_dict):
+        # Skip the four SDK clients; their httpx connection pools hold
+        # _thread.RLock objects that cannot be pickled. The new instance
+        # rebuilds them in __init__.
+        return AzureOpenAiModel(
+            deployment_name=self.model,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            logit_bias=self.logit_bias,
+            thinking_config=self.thinking_config,
+            timeout=self.timeout,
         )
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:
         # Use reasoning client for reasoning models, regular client otherwise
         if self._is_reasoning_model(self.model):
-            if not azure_openai_reasoning:
+            if not self._azure_reasoning_client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI reasoning client was not initialized. "
                     "Check that PP_AZURE_OPENAI_REASONING_ENDPOINT and PP_AZURE_OPENAI_REASONING_API_KEY are set."
                 )
-            client = azure_openai_reasoning
+            client = self._azure_reasoning_client
         else:
-            if not azure_openai:
+            if not self._azure_client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI client was not initialized. "
                     "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
                 )
-            client = azure_openai
+            client = self._azure_client
 
         retry_count = 0
         done = False
@@ -226,19 +253,19 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         """
         # Use reasoning client for reasoning models, regular client otherwise
         if self._is_reasoning_model(self.model):
-            if not azure_openai_reasoning_async:
+            if not self._azure_reasoning_async_client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI reasoning async client was not initialized. "
                     "Check that PP_AZURE_OPENAI_API_KEY is set."
                 )
-            client = azure_openai_reasoning_async
+            client = self._azure_reasoning_async_client
         else:
-            if not azure_openai_async:
+            if not self._azure_async_client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI async client was not initialized. "
                     "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
                 )
-            client = azure_openai_async
+            client = self._azure_async_client
 
         self._log_request_start(messages)
 

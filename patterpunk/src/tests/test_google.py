@@ -88,7 +88,8 @@ def test_structured_output():
 def test_available_models():
     us_models = GoogleModel.get_available_models(location="us-central1")
     assert "gemini-2.5-flash" in us_models
-    assert len(us_models) > 3
+    assert "gemini-2.5-pro" in us_models
+    assert "gemini-2.0-flash" in us_models
 
     # Test a different US region
     us_east_models = GoogleModel.get_available_models(location="us-east4")

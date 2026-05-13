@@ -12,12 +12,15 @@ from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk
 from tests.test_utils import get_resource
 from patterpunk.logger import logger, logger_llm
-from patterpunk.config.providers.ollama import ollama
+from patterpunk.config.providers.ollama import get_ollama_client
 
 
 def _ollama_reachable() -> bool:
     try:
-        ollama.list()
+        client = get_ollama_client()
+        if client is None:
+            return False
+        client.list()
         return True
     except Exception:
         return False

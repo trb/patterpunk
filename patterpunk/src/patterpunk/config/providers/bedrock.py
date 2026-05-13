@@ -1,9 +1,14 @@
 import os
 from typing import Optional, Union, Literal
 
+from botocore.config import Config
+
+from ..defaults import resolve_timeout_default
+
 AWS_REGION = os.getenv("PP_AWS_REGION", None)
 AWS_ACCESS_KEY_ID = os.getenv("PP_AWS_ACCESS_KEY_ID", None)
 AWS_SECRET_ACCESS_KEY = os.getenv("PP_AWS_SECRET_ACCESS_KEY", None)
+BEDROCK_DEFAULT_TIMEOUT = resolve_timeout_default("PP_BEDROCK_DEFAULT_TIMEOUT")
 
 _boto3 = None
 
@@ -22,6 +27,7 @@ def get_bedrock_client_by_region(
     region: Optional[str] = None,
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
+    timeout: int = BEDROCK_DEFAULT_TIMEOUT,
 ):
     boto3_module = get_boto3()
     if not boto3_module:
@@ -37,17 +43,21 @@ def get_bedrock_client_by_region(
     if region is None:
         region = AWS_REGION
 
+    botocore_config = Config(read_timeout=timeout, connect_timeout=10)
+
     if access_key_id and secret_access_key:
         return boto3_module.client(
             client_type,
             region_name=region,
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
+            config=botocore_config,
         )
     else:
         return boto3_module.client(
             client_type,
             region_name=region,
+            config=botocore_config,
         )
 
 
@@ -55,6 +65,7 @@ def create_bedrock_client_for_streaming(
     region: Optional[str] = None,
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
+    timeout: int = BEDROCK_DEFAULT_TIMEOUT,
 ):
     """
     Create a new boto3 bedrock-runtime client for streaming.
@@ -80,6 +91,7 @@ def create_bedrock_client_for_streaming(
         region=region,
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
+        timeout=timeout,
     )
 
 

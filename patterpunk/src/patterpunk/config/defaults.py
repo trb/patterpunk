@@ -19,6 +19,17 @@ SDK_MAX_RETRIES = int(
     os.getenv("PP_SDK_MAX_RETRIES", "0")
 )  # SDK internal retries (0=disabled)
 
+
+def resolve_timeout_default(provider_env_var: str, fallback: int = 3600) -> int:
+    provider_value = os.getenv(provider_env_var)
+    if provider_value is not None:
+        return int(provider_value)
+    global_value = os.getenv("PP_DEFAULT_TIMEOUT")
+    if global_value is not None:
+        return int(global_value)
+    return fallback
+
+
 # Minimum token budget for extended thinking/reasoning features
 # Used by providers that support reasoning (e.g., Bedrock with Claude)
 MIN_THINKING_BUDGET_TOKENS = 1024

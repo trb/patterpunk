@@ -1,12 +1,14 @@
 import os
 from typing import Optional
 
+from ..defaults import resolve_timeout_default
+
 ANTHROPIC_API_KEY = os.getenv("PP_ANTHROPIC_API_KEY", None)
 ANTHROPIC_DEFAULT_TEMPERATURE = os.getenv("PP_ANTHROPIC_DEFAULT_TEMPERATURE", 0.7)
 ANTHROPIC_DEFAULT_TOP_P = os.getenv("PP_ANTHROPIC_DEFAULT_TOP_P", 1.0)
 ANTHROPIC_DEFAULT_TOP_K = os.getenv("PP_ANTHROPIC_DEFAULT_TOP_K", 200)
 ANTHROPIC_DEFAULT_MAX_TOKENS = os.getenv("PP_ANTHROPIC_DEFAULT_MAX_TOKENS", 8192)
-ANTHROPIC_DEFAULT_TIMEOUT = 600
+ANTHROPIC_DEFAULT_TIMEOUT = resolve_timeout_default("PP_ANTHROPIC_DEFAULT_TIMEOUT")
 
 _anthropic_client = None
 _anthropic_async_client = None
