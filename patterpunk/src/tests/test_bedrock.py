@@ -1,3 +1,6 @@
+import json
+import re
+
 import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -36,7 +39,7 @@ def test_simple_bedrock(model_id):
     response = (
         chat.add_message(
             UserMessage(
-                'What is the capital of Canada? Answer with JSON in this format: {"country": {"name": "the country the user asked for", "capital": "the capital of the country"}}. Think out loud and work step by step. Show your work. Do this before you generate the JSON response.'
+                'What is the capital of Canada? Respond with a JSON object containing a "country" key, whose value is an object with two fields: "name" (the country name) and "capital" (the capital city name). Think out loud and work step by step. Show your work. Do this before you generate the JSON response.'
             )
         )
         .complete()
@@ -58,38 +61,44 @@ def test_simple_bedrock(model_id):
         "ottawa" in response.lower()
     ), f"Response should mention Ottawa as the capital. Got: {response[:200]}"
 
-    # JSON format validation
-    import json
-    import re
-
-    # Find JSON in the response (it might be embedded in other text)
-    json_match = re.search(r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response)
+    # Find JSON in the response (it might be embedded in other text, and weaker
+    # models may emit skeleton JSON during reasoning before the real answer)
+    json_candidates = re.findall(
+        r'\{[^{}]*"country"[^{}]*\{[^{}]*\}[^{}]*\}', response
+    )
     assert (
-        json_match is not None
+        json_candidates
     ), f"Response should contain valid JSON format. Got: {response[:500]}"
 
-    try:
-        parsed_json = json.loads(json_match.group())
-        assert "country" in parsed_json, "JSON should have 'country' key"
-        assert "name" in parsed_json["country"], "JSON should have 'country.name' field"
-        assert (
-            "capital" in parsed_json["country"]
-        ), "JSON should have 'country.capital' field"
+    parsed_json = None
+    for candidate in reversed(json_candidates):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        country = parsed.get("country")
+        if (
+            isinstance(country, dict)
+            and country.get("name")
+            and country.get("capital")
+        ):
+            parsed_json = parsed
+            break
 
-        # Verify correct values
-        country_name = parsed_json["country"]["name"].lower()
-        assert (
-            "canada" in country_name
-        ), f"Country name should be Canada, got: {parsed_json['country']['name']}"
+    assert (
+        parsed_json is not None
+    ), f"Response should contain JSON with non-empty country.name and country.capital. Got: {response[:500]}"
 
-        capital_name = parsed_json["country"]["capital"].lower()
-        assert (
-            "ottawa" in capital_name
-        ), f"Capital should be Ottawa, got: {parsed_json['country']['capital']}"
-    except json.JSONDecodeError as e:
-        pytest.fail(
-            f"Failed to parse JSON from response: {e}. JSON string: {json_match.group()}"
-        )
+    # Verify correct values
+    country_name = parsed_json["country"]["name"].lower()
+    assert (
+        "canada" in country_name
+    ), f"Country name should be Canada, got: {parsed_json['country']['name']}"
+
+    capital_name = parsed_json["country"]["capital"].lower()
+    assert (
+        "ottawa" in capital_name
+    ), f"Capital should be Ottawa, got: {parsed_json['country']['capital']}"
 
 
 @pytest.mark.parametrize(

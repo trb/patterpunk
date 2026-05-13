@@ -30,6 +30,7 @@ from patterpunk.config.providers.bedrock import (
     boto3,
     get_bedrock_client_by_region,
     create_bedrock_client_for_streaming,
+    BEDROCK_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 
@@ -109,18 +110,21 @@ class BedrockModel(Model, ABC):
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
         thinking_config: Optional[UnifiedThinkingConfig] = None,
+        timeout: int = BEDROCK_DEFAULT_TIMEOUT,
     ):
         self.model_id = model_id
         self.temperature = temperature
         self.top_p = top_p  # None means don't specify (some models don't allow both temp and top_p)
         self.max_tokens = max_tokens
         self.thinking_config = thinking_config
+        self.timeout = timeout
 
         self.client = get_bedrock_client_by_region(
             client_type="bedrock-runtime",
             region=region_name,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
+            timeout=timeout,
         )
 
     def _convert_tools_to_bedrock_format(self, tools: ToolDefinition) -> dict:
@@ -754,8 +758,11 @@ class BedrockModel(Model, ABC):
         region: str = None,
         aws_access_key_id: Optional[str] = None,
         aws_secret_access_key: Optional[str] = None,
+        timeout: int = BEDROCK_DEFAULT_TIMEOUT,
     ) -> List[str]:
-        client = get_bedrock_client_by_region(client_type="bedrock", region=region)
+        client = get_bedrock_client_by_region(
+            client_type="bedrock", region=region, timeout=timeout
+        )
 
         return [
             model["modelName"]
@@ -1073,7 +1080,9 @@ class BedrockModel(Model, ABC):
 
         # Create a fresh client for this streaming operation
         # This avoids thread-safety issues with sharing clients
-        streaming_client = create_bedrock_client_for_streaming(region=region_name)
+        streaming_client = create_bedrock_client_for_streaming(
+            region=region_name, timeout=self.timeout
+        )
 
         # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
         async for chunk in self._stream_with_retry(
@@ -1306,4 +1315,5 @@ class BedrockModel(Model, ABC):
             max_tokens=self.max_tokens,
             region_name=self.client.meta.region_name,
             thinking_config=self.thinking_config,
+            timeout=self.timeout,
         )

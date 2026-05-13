@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from ..defaults import DEFAULT_TEMPERATURE, DEFAULT_TOP_P
+from ..defaults import DEFAULT_TEMPERATURE, DEFAULT_TOP_P, resolve_timeout_default
 
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("PP_GOOGLE_APPLICATION_CREDENTIALS", None)
 GEMINI_REGION = os.getenv("PP_GEMINI_REGION", "us-central1")
@@ -12,6 +12,7 @@ GOOGLE_DEFAULT_TEMPERATURE = os.getenv(
 GOOGLE_DEFAULT_TOP_P = os.getenv("PP_GOOGLE_DEFAULT_TOP_P", DEFAULT_TOP_P)
 GOOGLE_DEFAULT_TOP_K = os.getenv("PP_GOOGLE_DEFAULT_TOP_K", None)
 GOOGLE_DEFAULT_MAX_TOKENS = os.getenv("PP_GOOGLE_DEFAULT_MAX_TOKENS", None)
+GOOGLE_DEFAULT_TIMEOUT = resolve_timeout_default("PP_GOOGLE_DEFAULT_TIMEOUT")
 
 
 def is_google_available() -> bool:

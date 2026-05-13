@@ -14,6 +14,7 @@ from patterpunk.config.providers.google import (
     GOOGLE_APPLICATION_CREDENTIALS,
     GOOGLE_DEFAULT_MAX_TOKENS,
     GOOGLE_DEFAULT_TEMPERATURE,
+    GOOGLE_DEFAULT_TIMEOUT,
     GOOGLE_DEFAULT_TOP_K,
     GOOGLE_DEFAULT_TOP_P,
     GEMINI_REGION,
@@ -149,12 +150,11 @@ class ToolResultBatch:
 
 
 class GoogleModel(Model, ABC):
-    client: Optional[genai.Client] = None
-
     @staticmethod
     def get_client(
         location: str,
         google_account_credentials: Optional[str] = None,
+        timeout: int = GOOGLE_DEFAULT_TIMEOUT,
     ):
         if google_account_credentials is None:
             google_account_credentials = GOOGLE_APPLICATION_CREDENTIALS
@@ -163,11 +163,9 @@ class GoogleModel(Model, ABC):
                 "No Google account credentials provided. Please pass `google_account_credentials` to constructor or set `PP_GOOGLE_ACCOUNT_CREDENTIALS` environment variable."
             )
 
-        from json import JSONDecodeError
-
         try:
             credentials_info = json.loads(google_account_credentials)
-        except JSONDecodeError:
+        except json.JSONDecodeError:
             raise GoogleAuthenticationError(
                 f"Provided credentials were not in JSON format, please provide the account key .json file as a one-line string in json format"
             )
@@ -184,6 +182,7 @@ class GoogleModel(Model, ABC):
             project=project_id,
             location=location,
             credentials=credentials,
+            http_options=types.HttpOptions(timeout=timeout * 1000),
         )
 
     def __init__(
@@ -199,6 +198,7 @@ class GoogleModel(Model, ABC):
         thinking_config: Optional[ThinkingConfig] = None,
         safety_settings: Optional[List["types.SafetySetting"]] = None,
         allow_empty_response: bool = False,
+        timeout: int = GOOGLE_DEFAULT_TIMEOUT,
     ):
         if not google_genai_available:
             raise ImportError(
@@ -230,14 +230,8 @@ class GoogleModel(Model, ABC):
         if client:
             self.client = client
         else:
-            if not GoogleModel.client:
-                GoogleModel.client = GoogleModel.get_client(
-                    location, google_account_credentials
-                )
-            self.client = (
-                GoogleModel.get_client(location, google_account_credentials)
-                if google_account_credentials
-                else GoogleModel.client
+            self.client = GoogleModel.get_client(
+                location, google_account_credentials, timeout=timeout
             )
 
         self.model = model
@@ -246,6 +240,7 @@ class GoogleModel(Model, ABC):
         self.top_p = top_p
         self.top_k = top_k
         self.max_tokens = max_tokens
+        self.timeout = timeout
         self.thinking_budget = thinking_budget
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
@@ -1102,6 +1097,7 @@ class GoogleModel(Model, ABC):
             thinking_config=self.thinking_config,
             safety_settings=self.safety_settings,
             allow_empty_response=self.allow_empty_response,
+            timeout=self.timeout,
         )
         new_model._logged_message_ids = self._logged_message_ids.copy()
         return new_model

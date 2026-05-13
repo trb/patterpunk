@@ -7,8 +7,9 @@ from typing import List, Optional, Callable, Set, Union
 import tiktoken
 
 from patterpunk.config.providers.ollama import (
-    ollama,
+    get_ollama_client,
     OLLAMA_MAX_RETRIES,
+    OLLAMA_DEFAULT_TIMEOUT,
 )
 from patterpunk.config.defaults import (
     RETRY_BASE_DELAY,
@@ -78,6 +79,7 @@ class OllamaModel(Model, ABC):
         seed: Optional[int] = None,
         num_ctx: Optional[int] = None,
         max_tokens: Optional[int] = None,
+        timeout: int = OLLAMA_DEFAULT_TIMEOUT,
     ):
         self.model = model
         self.temperature = temperature
@@ -87,6 +89,23 @@ class OllamaModel(Model, ABC):
         self.seed = seed
         self.num_ctx = num_ctx
         self.max_tokens = max_tokens
+        self.timeout = timeout
+        self._client = get_ollama_client(timeout=timeout)
+
+    def __deepcopy__(self, memo_dict):
+        # Skip the SDK client; its httpx connection pool holds an RLock that
+        # cannot be pickled. A fresh client is rebuilt in __init__.
+        return OllamaModel(
+            model=self.model,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            presence_penalty=self.presence_penalty,
+            seed=self.seed,
+            num_ctx=self.num_ctx,
+            max_tokens=self.max_tokens,
+            timeout=self.timeout,
+        )
 
     def _prepare_tools(self, tools: ToolDefinition) -> List[dict]:
         ollama_tools = []
@@ -265,9 +284,7 @@ class OllamaModel(Model, ABC):
         return chat_params
 
     def _execute_chat_request(self, chat_params: dict) -> dict:
-        from patterpunk.config.providers.ollama import ollama
-
-        return ollama.chat(**chat_params)
+        return self._client.chat(**chat_params)
 
     def _execute_with_retry(self, chat_params: dict) -> dict:
         """
@@ -465,7 +482,8 @@ class OllamaModel(Model, ABC):
 
     @staticmethod
     def get_available_models() -> List[str]:
-        return [model["model"] for model in ollama.list()["models"]]
+        client = get_ollama_client()
+        return [model["model"] for model in client.list()["models"]]
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
         """Approximate token count using tiktoken's cl100k_base encoding.

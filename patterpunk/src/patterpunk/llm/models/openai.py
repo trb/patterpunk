@@ -16,9 +16,10 @@ from patterpunk.config.defaults import (
 )
 from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.config.providers.openai import (
-    openai,
-    openai_async,
+    get_openai_client,
+    get_openai_async_client,
     OPENAI_MAX_RETRIES,
+    OPENAI_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.lib.extract_json import extract_json
@@ -110,9 +111,14 @@ class OpenAiModel(Model, ABC):
         presence_penalty=None,
         logit_bias=None,
         thinking_config: Optional[ThinkingConfig] = None,
+        timeout: int = OPENAI_DEFAULT_TIMEOUT,
         _INTERNAL__skip_client_validation: bool = False,
     ):
-        if not _INTERNAL__skip_client_validation and not openai:
+        self.timeout = timeout
+        self._client = get_openai_client(timeout=timeout)
+        self._async_client = get_openai_async_client(timeout=timeout)
+
+        if not _INTERNAL__skip_client_validation and not self._client:
             raise OpenAiMissingConfigurationError(
                 "OpenAi was not initialized correctly, did you set the api key?"
             )
@@ -178,6 +184,20 @@ class OpenAiModel(Model, ABC):
         self.completion = None
         self.reasoning_effort = reasoning_effort
         self.thinking_config = thinking_config
+
+    def __deepcopy__(self, memo_dict):
+        # Skip the SDK client; it contains an httpx connection pool whose
+        # internal RLock cannot be pickled. A fresh client is rebuilt in __init__.
+        return self.__class__(
+            model=self.model,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            frequency_penalty=self.frequency_penalty,
+            presence_penalty=self.presence_penalty,
+            logit_bias=self.logit_bias,
+            thinking_config=self.thinking_config,
+            timeout=self.timeout,
+        )
 
     def _process_cache_chunks_for_openai(
         self, chunks: List[Union[TextChunk, CacheChunk]]
@@ -674,7 +694,7 @@ class OpenAiModel(Model, ABC):
 
         while not done and retry_count < OPENAI_MAX_RETRIES:
             try:
-                response = openai.responses.create(**responses_parameters)
+                response = self._client.responses.create(**responses_parameters)
                 logger.info("OpenAi Responses API response received")
                 done = True
             except APIError as error:
@@ -800,7 +820,8 @@ class OpenAiModel(Model, ABC):
 
     @staticmethod
     def get_available_models() -> List[str]:
-        return [model.id for model in openai.models.list().data]
+        client = get_openai_client()
+        return [model.id for model in client.models.list().data]
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
         """
@@ -1072,7 +1093,7 @@ class OpenAiModel(Model, ABC):
         current_tool_name = None
 
         async for event in self._stream_with_retry(
-            openai_async,
+            self._async_client,
             responses_parameters,
             OPENAI_MAX_RETRIES,
         ):
