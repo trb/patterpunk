@@ -26,7 +26,12 @@ from patterpunk.config.defaults import (
     RETRY_MIN_DELAY,
     RETRY_JITTER_FACTOR,
 )
-from patterpunk.lib.retry import calculate_backoff_delay
+from patterpunk.lib.retry import (
+    calculate_backoff_delay,
+    run_with_retry_config,
+    stream_with_retry_config,
+)
+from patterpunk.llm.retry_config import RetryConfig
 
 try:
     from google import genai
@@ -160,7 +165,7 @@ class GoogleModel(Model, ABC):
             google_account_credentials = GOOGLE_APPLICATION_CREDENTIALS
         if not google_account_credentials:
             raise GoogleAuthenticationError(
-                "No Google account credentials provided. Please pass `google_account_credentials` to constructor or set `PP_GOOGLE_ACCOUNT_CREDENTIALS` environment variable."
+                "No Google account credentials provided. Please pass `google_account_credentials` to constructor or set `PP_GOOGLE_APPLICATION_CREDENTIALS` environment variable."
             )
 
         try:
@@ -199,6 +204,7 @@ class GoogleModel(Model, ABC):
         safety_settings: Optional[List["types.SafetySetting"]] = None,
         allow_empty_response: bool = False,
         timeout: int = GOOGLE_DEFAULT_TIMEOUT,
+        retry_config: Optional[RetryConfig] = None,
     ):
         if not google_genai_available:
             raise ImportError(
@@ -246,6 +252,7 @@ class GoogleModel(Model, ABC):
         self.thinking_config = thinking_config
         self.safety_settings = safety_settings
         self.allow_empty_response = allow_empty_response
+        self.retry_config = retry_config
         self._logged_message_ids: Set[str] = set()
 
     def _get_log_mode(self) -> str:
@@ -913,6 +920,18 @@ class GoogleModel(Model, ABC):
 
         self._log_request_parameters(tools)
 
+        if self.retry_config is not None:
+            response = run_with_retry_config(
+                self.retry_config,
+                lambda: self.client.models.generate_content(
+                    model=self.model, contents=contents, config=config
+                ),
+                "VertexAI",
+            )
+            result = self._process_generation_response(response, structured_output)
+            self._log_response(result)
+            return result
+
         retry_count = 0
 
         while retry_count < MAX_RETRIES:
@@ -1098,6 +1117,7 @@ class GoogleModel(Model, ABC):
             safety_settings=self.safety_settings,
             allow_empty_response=self.allow_empty_response,
             timeout=self.timeout,
+            retry_config=self.retry_config,
         )
         new_model._logged_message_ids = self._logged_message_ids.copy()
         return new_model
@@ -1214,12 +1234,24 @@ class GoogleModel(Model, ABC):
         accumulated_tool_calls: List[ToolCall] = []
         thinking_present = False
 
-        # Use retry wrapper instead of direct call
-        async for chunk in self._stream_with_retry(
-            contents=contents,
-            config=config,
-            max_retries=MAX_RETRIES,
-        ):
+        if self.retry_config is not None:
+
+            async def acquire_stream():
+                return await self.client.aio.models.generate_content_stream(
+                    model=self.model, contents=contents, config=config
+                )
+
+            chunk_stream = stream_with_retry_config(
+                self.retry_config, acquire_stream, "VertexAI"
+            )
+        else:
+            chunk_stream = self._stream_with_retry(
+                contents=contents,
+                config=config,
+                max_retries=MAX_RETRIES,
+            )
+
+        async for chunk in chunk_stream:
             # Yield all events from this chunk
             for stream_chunk in self._convert_stream_chunk_to_events(chunk):
                 # Accumulate for final logging

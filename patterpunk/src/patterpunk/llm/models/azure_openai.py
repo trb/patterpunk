@@ -18,6 +18,7 @@ from patterpunk.config.providers.azure_openai import (
 )
 from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
 from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
+from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.types import ToolDefinition
@@ -46,6 +47,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         logit_bias=None,
         thinking_config: Optional[ThinkingConfig] = None,
         timeout: int = AZURE_OPENAI_DEFAULT_TIMEOUT,
+        retry_config: Optional[RetryConfig] = None,
     ):
         self._azure_client = get_azure_openai_client(timeout=timeout)
         self._azure_async_client = get_azure_openai_async_client(timeout=timeout)
@@ -72,6 +74,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
             thinking_config=thinking_config,
             timeout=timeout,
             _INTERNAL__skip_client_validation=True,
+            retry_config=retry_config,
         )
 
     def __deepcopy__(self, memo_dict):
@@ -87,6 +90,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
             logit_bias=self.logit_bias,
             thinking_config=self.thinking_config,
             timeout=self.timeout,
+            retry_config=self.retry_config,
         )
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:
@@ -105,6 +109,9 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                     "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
                 )
             client = self._azure_client
+
+        if self.retry_config is not None:
+            return self._execute_with_retry_config(responses_parameters, client)
 
         retry_count = 0
         done = False
@@ -276,11 +283,16 @@ class AzureOpenAiModel(OpenAiModel, ABC):
 
         self._log_request_parameters(responses_parameters)
 
-        async for event in self._stream_with_retry(
-            client,
-            responses_parameters,
-            AZURE_OPENAI_MAX_RETRIES,
-        ):
+        if self.retry_config is not None:
+            event_stream = self._stream_with_retry_config(responses_parameters, client)
+        else:
+            event_stream = self._stream_with_retry(
+                client,
+                responses_parameters,
+                AZURE_OPENAI_MAX_RETRIES,
+            )
+
+        async for event in event_stream:
             chunk = self._convert_openai_event_to_chunk(event)
             if chunk is not None:
                 yield chunk

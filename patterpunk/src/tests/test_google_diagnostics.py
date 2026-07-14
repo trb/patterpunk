@@ -11,8 +11,10 @@ from typing import Optional
 
 import pytest
 from google.genai import types
+from pydantic import BaseModel, RootModel
 
 from patterpunk.llm.finish_reason import FinishReason
+from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.models.google import (
     GoogleAPIError,
     GoogleModel,
@@ -286,3 +288,36 @@ def test_normal_response_carries_diagnostics():
     assert result.finish_reason is FinishReason.STOP
     assert result._provider.raw_finish_reason == "STOP"
     assert result._provider.prompt_block_reason is None
+
+
+# ---- structured_output pass-through (RootModel / top-level array schemas) ----
+
+
+class _ChronologyEntry(BaseModel):
+    name: str
+
+
+def test_structured_output_root_model_passes_through_natively():
+    """A RootModel[list[...]] schema must reach the SDK unchanged as the native
+    response_schema with JSON mime type — no wrapping or conversion."""
+    items_schema = RootModel[list[_ChronologyEntry]]
+    model = _make_test_model()
+    config = model._build_generation_config(
+        tools=None,
+        structured_output=items_schema,
+        output_types=None,
+        system_instruction=None,
+    )
+    assert config.response_mime_type == "application/json"
+    assert config.response_schema is items_schema
+
+
+def test_root_model_parsed_output_roundtrip():
+    """Message-level parsed_output validates a top-level JSON array against a
+    RootModel schema without any model calls."""
+    items_schema = RootModel[list[_ChronologyEntry]]
+    message = AssistantMessage(
+        '[{"name": "first"}, {"name": "second"}]', structured_output=items_schema
+    )
+    parsed = message.parsed_output
+    assert [item.name for item in parsed.root] == ["first", "second"]

@@ -25,7 +25,12 @@ from patterpunk.config.defaults import (
     RETRY_MIN_DELAY,
     RETRY_JITTER_FACTOR,
 )
-from patterpunk.lib.retry import calculate_backoff_delay
+from patterpunk.lib.retry import (
+    calculate_backoff_delay,
+    run_with_retry_config,
+    stream_with_retry_config,
+)
+from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.config.providers.bedrock import (
     boto3,
     get_bedrock_client_by_region,
@@ -111,6 +116,7 @@ class BedrockModel(Model, ABC):
         aws_secret_access_key: Optional[str] = None,
         thinking_config: Optional[UnifiedThinkingConfig] = None,
         timeout: int = BEDROCK_DEFAULT_TIMEOUT,
+        retry_config: Optional[RetryConfig] = None,
     ):
         self.model_id = model_id
         self.temperature = temperature
@@ -118,13 +124,18 @@ class BedrockModel(Model, ABC):
         self.max_tokens = max_tokens
         self.thinking_config = thinking_config
         self.timeout = timeout
+        self.retry_config = retry_config
 
+        # When a RetryConfig governs retries, botocore's own retry layer must
+        # not stack additional attempts underneath the configured schedule.
+        sdk_max_attempts = 1 if retry_config is not None else None
         self.client = get_bedrock_client_by_region(
             client_type="bedrock-runtime",
             region=region_name,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
             timeout=timeout,
+            sdk_max_attempts=sdk_max_attempts,
         )
 
     def _convert_tools_to_bedrock_format(self, tools: ToolDefinition) -> dict:
@@ -573,6 +584,9 @@ class BedrockModel(Model, ABC):
         Raises:
             ClientError: If non-retryable error or max retries exceeded
         """
+        if self.retry_config is not None:
+            return run_with_retry_config(self.retry_config, operation, operation_name)
+
         retry = 0
 
         while True:
@@ -1080,16 +1094,38 @@ class BedrockModel(Model, ABC):
 
         # Create a fresh client for this streaming operation
         # This avoids thread-safety issues with sharing clients
+        sdk_max_attempts = 1 if self.retry_config is not None else None
         streaming_client = create_bedrock_client_for_streaming(
-            region=region_name, timeout=self.timeout
+            region=region_name,
+            timeout=self.timeout,
+            sdk_max_attempts=sdk_max_attempts,
         )
 
-        # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
-        async for chunk in self._stream_with_retry(
-            streaming_client,
-            converse_params,
-            MAX_RETRIES,
-        ):
+        if self.retry_config is not None:
+
+            async def acquire_stream():
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: streaming_client.converse_stream(**converse_params),
+                )
+                stream = response.get("stream")
+                if not stream:
+                    raise ValueError("No stream returned from converse_stream")
+                return self._iterate_stream_events(stream)
+
+            chunk_stream = stream_with_retry_config(
+                self.retry_config, acquire_stream, "Bedrock streaming"
+            )
+        else:
+            # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
+            chunk_stream = self._stream_with_retry(
+                streaming_client,
+                converse_params,
+                MAX_RETRIES,
+            )
+
+        async for chunk in chunk_stream:
             yield chunk
 
     def _extract_usage_from_event(self, event: dict) -> Optional[dict]:
@@ -1316,4 +1352,5 @@ class BedrockModel(Model, ABC):
             region_name=self.client.meta.region_name,
             thinking_config=self.thinking_config,
             timeout=self.timeout,
+            retry_config=self.retry_config,
         )

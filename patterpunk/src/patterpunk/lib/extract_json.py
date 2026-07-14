@@ -19,9 +19,10 @@ def extract_json(json_string: str) -> List[str]:
                 bracket_type = char
             stack.append(char)
         elif (
-            char in ["}", "]"] and not inside_string and stack and bracket_type == "{"
-            if char == "}"
-            else bracket_type == "["
+            char in ["}", "]"]
+            and not inside_string
+            and stack
+            and bracket_type == ("{" if char == "}" else "[")
         ):
             stack.pop()
             if not stack:

@@ -28,6 +28,7 @@ def get_bedrock_client_by_region(
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
     timeout: int = BEDROCK_DEFAULT_TIMEOUT,
+    sdk_max_attempts: Optional[int] = None,
 ):
     boto3_module = get_boto3()
     if not boto3_module:
@@ -43,7 +44,14 @@ def get_bedrock_client_by_region(
     if region is None:
         region = AWS_REGION
 
-    botocore_config = Config(read_timeout=timeout, connect_timeout=10)
+    if sdk_max_attempts is None:
+        botocore_config = Config(read_timeout=timeout, connect_timeout=10)
+    else:
+        botocore_config = Config(
+            read_timeout=timeout,
+            connect_timeout=10,
+            retries={"total_max_attempts": sdk_max_attempts, "mode": "standard"},
+        )
 
     if access_key_id and secret_access_key:
         return boto3_module.client(
@@ -66,6 +74,7 @@ def create_bedrock_client_for_streaming(
     aws_access_key_id: Optional[str] = None,
     aws_secret_access_key: Optional[str] = None,
     timeout: int = BEDROCK_DEFAULT_TIMEOUT,
+    sdk_max_attempts: Optional[int] = None,
 ):
     """
     Create a new boto3 bedrock-runtime client for streaming.
@@ -92,6 +101,7 @@ def create_bedrock_client_for_streaming(
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
         timeout=timeout,
+        sdk_max_attempts=sdk_max_attempts,
     )
 
 
