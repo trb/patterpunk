@@ -17,7 +17,8 @@ from patterpunk.config.defaults import (
     RETRY_MIN_DELAY,
     RETRY_JITTER_FACTOR,
 )
-from patterpunk.lib.retry import calculate_backoff_delay
+from patterpunk.lib.retry import calculate_backoff_delay, run_with_retry_config
+from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.logger import logger
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.finish_reason import FinishReason
@@ -80,6 +81,7 @@ class OllamaModel(Model, ABC):
         num_ctx: Optional[int] = None,
         max_tokens: Optional[int] = None,
         timeout: int = OLLAMA_DEFAULT_TIMEOUT,
+        retry_config: Optional[RetryConfig] = None,
     ):
         self.model = model
         self.temperature = temperature
@@ -90,6 +92,7 @@ class OllamaModel(Model, ABC):
         self.num_ctx = num_ctx
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.retry_config = retry_config
         self._client = get_ollama_client(timeout=timeout)
 
     def __deepcopy__(self, memo_dict):
@@ -105,6 +108,7 @@ class OllamaModel(Model, ABC):
             num_ctx=self.num_ctx,
             max_tokens=self.max_tokens,
             timeout=self.timeout,
+            retry_config=self.retry_config,
         )
 
     def _prepare_tools(self, tools: ToolDefinition) -> List[dict]:
@@ -303,6 +307,13 @@ class OllamaModel(Model, ABC):
         - 400 Bad Request (invalid parameters)
         - 404 Not Found (model doesn't exist)
         """
+        if self.retry_config is not None:
+            return run_with_retry_config(
+                self.retry_config,
+                lambda: self._execute_chat_request(chat_params),
+                "Ollama",
+            )
+
         try:
             from ollama import ResponseError
         except ImportError:

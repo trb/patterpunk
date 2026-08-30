@@ -79,3 +79,30 @@ def test_complex_json():
     assert extracted_json["confidence_score"] == 0.85
     assert extracted_json["is_factual"] is True
     assert extracted_json["sentiment"] == "neutral"
+
+
+def test_top_level_array():
+    """Top-level JSON arrays must be extracted whole (RootModel[list[...]]
+    schemas produce these). A precedence bug used to pop the array bracket on
+    every non-brace character and return garbage fragments."""
+    json_str = '[{"name": "first"}, {"name": "second"}]'
+    extracted = extract_json(json_str)
+    assert extracted == [json_str]
+    assert json.loads(extracted[0]) == [{"name": "first"}, {"name": "second"}]
+
+
+def test_top_level_array_with_surrounding_text():
+    json_str = 'Here is the result:\n[{"a": 1}, {"a": 2}]\nDone.'
+    extracted = extract_json(json_str)
+    assert extracted == ['[{"a": 1}, {"a": 2}]']
+
+
+def test_nested_arrays_in_top_level_array():
+    json_str = '[[1, 2], [3, {"x": "]"}]]'
+    extracted = extract_json(json_str)
+    assert extracted == [json_str]
+
+
+def test_object_and_array_side_by_side():
+    json_str = 'first {"a": 1} then [1, 2, 3]'
+    assert extract_json(json_str) == ['{"a": 1}', "[1, 2, 3]"]

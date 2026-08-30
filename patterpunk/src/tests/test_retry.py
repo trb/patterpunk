@@ -12,14 +12,20 @@ Run with:
     docker compose -p patterpunk run --rm patterpunk -c '/app/bin/test.dev /app/tests/test_retry.py'
 """
 
+import ssl
+
+import httpx
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from patterpunk.lib.retry import (
     calculate_backoff_delay,
     extract_retry_after,
     is_retryable_error,
+    run_with_retry_config,
+    stream_with_retry_config,
 )
+from patterpunk.llm.retry_config import RetryConfig
 
 
 class TestCalculateBackoffDelay:
@@ -280,19 +286,257 @@ class TestIsRetryableError:
         error = MockError("Request timeout")
         assert is_retryable_error(error) is True
 
+    def test_408_status_code_is_retryable(self):
+        """408 Request Timeout should be retryable via the status_code attribute."""
+
+        class FakeStatusError(Exception):
+            status_code = 408
+
+        assert is_retryable_error(FakeStatusError("timed out")) is True
+
+    def test_408_code_attribute_is_retryable(self):
+        """408 should also be retryable via the Google-style code attribute."""
+
+        class FakeCodeError(Exception):
+            code = 408
+
+        assert is_retryable_error(FakeCodeError("timed out")) is True
+
+    def test_builtin_transport_errors_are_retryable(self):
+        """Bare transport exceptions (empty str()) hit the isinstance check,
+        not the message fallback."""
+        assert is_retryable_error(ConnectionResetError()) is True
+        assert is_retryable_error(BrokenPipeError()) is True
+        assert is_retryable_error(TimeoutError()) is True
+        assert is_retryable_error(ssl.SSLError()) is True
+
+    def test_httpx_transport_errors_are_retryable(self):
+        """httpx transport failures (connect, read, TLS, timeout) are retryable.
+        httpx.ReadError('') stringifies empty, so only isinstance catches it."""
+        assert is_retryable_error(httpx.ReadError("")) is True
+        assert is_retryable_error(httpx.ConnectError("connection refused")) is True
+        assert is_retryable_error(httpx.ConnectTimeout("timed out")) is True
+
+    def test_plain_application_errors_are_not_retryable(self):
+        """Application-level errors must fail fast."""
+        assert is_retryable_error(ValueError("invalid literal")) is False
+        assert is_retryable_error(TypeError("bad type")) is False
+        assert is_retryable_error(Exception()) is False
+
+    def test_provider_processing_error_is_not_retryable(self):
+        """Errors raised by response processing (not the API) must fail fast."""
+
+        class FakeAppError(Exception):
+            pass
+
+        error = FakeAppError("No content found in response")
+        assert is_retryable_error(error) is False
+
+
+class _FlakyOperation:
+    """Callable that raises the given errors in order, then returns a value."""
+
+    def __init__(self, errors, result="success"):
+        self.errors = list(errors)
+        self.result = result
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.result
+
+
+def _retryable_error():
+    return ConnectionResetError("connection reset by peer")
+
+
+class TestRunWithRetryConfig:
+    """Tests for the schedule-driven retry executor."""
+
+    def test_success_on_first_attempt_makes_no_sleep(self):
+        operation = _FlakyOperation(errors=[])
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            result = run_with_retry_config(
+                RetryConfig(delays_s=(10.0,)), operation, "Test"
+            )
+        assert result == "success"
+        assert operation.calls == 1
+        sleep.assert_not_called()
+
+    def test_schedule_honored_with_jitter_bounds(self):
+        """Each sleep must be delays_s[n] * uniform(0.5, 1.0)."""
+        operation = _FlakyOperation(errors=[_retryable_error(), _retryable_error()])
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            result = run_with_retry_config(
+                RetryConfig(delays_s=(10.0, 20.0, 40.0)), operation, "Test"
+            )
+        assert result == "success"
+        assert operation.calls == 3
+        sleep_durations = [call.args[0] for call in sleep.call_args_list]
+        assert len(sleep_durations) == 2
+        assert 5.0 <= sleep_durations[0] <= 10.0
+        assert 10.0 <= sleep_durations[1] <= 20.0
+
+    def test_deterministic_jitter_gives_exact_sleeps(self):
+        operation = _FlakyOperation(
+            errors=[_retryable_error(), _retryable_error(), _retryable_error()]
+        )
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            run_with_retry_config(
+                RetryConfig(delays_s=(10.0, 20.0, 40.0), jitter=(1.0, 1.0)),
+                operation,
+                "Test",
+            )
+        sleep_durations = [call.args[0] for call in sleep.call_args_list]
+        assert sleep_durations == [10.0, 20.0, 40.0]
+
+    def test_non_retryable_error_fails_fast(self):
+        original = ValueError("bad request")
+        operation = _FlakyOperation(errors=[original])
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            with pytest.raises(ValueError) as exc_info:
+                run_with_retry_config(
+                    RetryConfig(delays_s=(10.0, 20.0)), operation, "Test"
+                )
+        assert exc_info.value is original
+        assert operation.calls == 1
+        sleep.assert_not_called()
+
+    def test_exhaustion_reraises_last_native_error(self):
+        errors = [_retryable_error(), _retryable_error(), _retryable_error()]
+        last_error = errors[-1]
+        operation = _FlakyOperation(errors=errors)
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            with pytest.raises(ConnectionResetError) as exc_info:
+                run_with_retry_config(
+                    RetryConfig(delays_s=(10.0, 20.0)), operation, "Test"
+                )
+        assert exc_info.value is last_error
+        assert operation.calls == 3
+        assert len(sleep.call_args_list) == 2
+
+    def test_empty_delays_makes_single_native_attempt(self):
+        original = _retryable_error()
+        operation = _FlakyOperation(errors=[original])
+        with patch("patterpunk.lib.retry.time.sleep") as sleep:
+            with pytest.raises(ConnectionResetError) as exc_info:
+                run_with_retry_config(RetryConfig(delays_s=()), operation, "Test")
+        assert exc_info.value is original
+        assert operation.calls == 1
+        sleep.assert_not_called()
+
+
+async def _stream_of(items):
+    for item in items:
+        yield item
+
+
+class _FlakyStreamFactory:
+    """acquire_stream fake that raises the given errors in order, then streams."""
+
+    def __init__(self, errors, items=("a", "b")):
+        self.errors = list(errors)
+        self.items = items
+        self.calls = 0
+
+    async def __call__(self):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return _stream_of(self.items)
+
+
+class TestStreamWithRetryConfig:
+    """Tests for the schedule-driven streaming retry executor."""
+
+    async def test_failure_then_stream_yields_all_items(self):
+        factory = _FlakyStreamFactory(errors=[_retryable_error()])
+        with patch("patterpunk.lib.retry.asyncio.sleep") as sleep:
+            items = [
+                item
+                async for item in stream_with_retry_config(
+                    RetryConfig(delays_s=(10.0,)), factory, "Test"
+                )
+            ]
+        assert items == ["a", "b"]
+        assert factory.calls == 2
+        assert len(sleep.call_args_list) == 1
+        assert 5.0 <= sleep.call_args_list[0].args[0] <= 10.0
+
+    async def test_exhaustion_reraises_last_native_error(self):
+        errors = [_retryable_error(), _retryable_error()]
+        last_error = errors[-1]
+        factory = _FlakyStreamFactory(errors=errors)
+        with patch("patterpunk.lib.retry.asyncio.sleep"):
+            with pytest.raises(ConnectionResetError) as exc_info:
+                async for _ in stream_with_retry_config(
+                    RetryConfig(delays_s=(10.0,)), factory, "Test"
+                ):
+                    pass
+        assert exc_info.value is last_error
+        assert factory.calls == 2
+
+    async def test_non_retryable_error_fails_fast(self):
+        original = ValueError("bad request")
+        factory = _FlakyStreamFactory(errors=[original])
+        with patch("patterpunk.lib.retry.asyncio.sleep") as sleep:
+            with pytest.raises(ValueError):
+                async for _ in stream_with_retry_config(
+                    RetryConfig(delays_s=(10.0,)), factory, "Test"
+                ):
+                    pass
+        assert factory.calls == 1
+        sleep.assert_not_called()
+
+    async def test_mid_stream_failure_reyields_from_start(self):
+        """Whole-stream retry: a failure after partial yield re-acquires the
+        stream and re-yields from the start (accepted duplicate-yield wart)."""
+
+        class MidStreamFailingFactory:
+            def __init__(self):
+                self.calls = 0
+
+            async def __call__(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return self._failing_stream()
+                return _stream_of(["a", "b"])
+
+            async def _failing_stream(self):
+                yield "a"
+                raise _retryable_error()
+
+        factory = MidStreamFailingFactory()
+        with patch("patterpunk.lib.retry.asyncio.sleep"):
+            items = [
+                item
+                async for item in stream_with_retry_config(
+                    RetryConfig(delays_s=(10.0,)), factory, "Test"
+                )
+            ]
+        assert items == ["a", "a", "b"]
+        assert factory.calls == 2
+
 
 class TestBackoffIntegration:
     """Integration tests for the retry backoff system."""
 
     def test_thundering_herd_prevention(self):
-        """Verify jitter prevents synchronized retries."""
+        """Verify jitter prevents synchronized retries.
+
+        min_delay is 0 here: with the default 45s floor, jittered values below
+        the floor all clamp to exactly 45.0, which collapses the very variation
+        this test asserts on (and made it flaky).
+        """
         # Simulate 10 clients hitting rate limit at the same time
         delays = [
             calculate_backoff_delay(
                 attempt=0,
                 base_delay=60.0,
                 max_delay=300.0,
-                min_delay=45.0,
+                min_delay=0.0,
                 jitter_factor=0.5,
             )
             for _ in range(10)

@@ -14,7 +14,13 @@ from patterpunk.config.defaults import (
     RETRY_MIN_DELAY,
     RETRY_JITTER_FACTOR,
 )
-from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
+from patterpunk.lib.retry import (
+    calculate_backoff_delay,
+    extract_retry_after,
+    run_with_retry_config,
+    stream_with_retry_config,
+)
+from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.config.providers.openai import (
     get_openai_client,
     get_openai_async_client,
@@ -101,6 +107,28 @@ class OpenAiReasoningEffort(enum.Enum):
     HIGH = enum.auto()
 
 
+def _strip_reasoning_summary_if_unverified(
+    error: Exception, responses_parameters: dict
+) -> bool:
+    # Org-not-verified fallback: only the reasoning *summary* is gated by
+    # org verification. The reasoning model itself works without it. Strip
+    # `summary` from the reasoning dict — leave reasoning intact.
+    is_summary_gated = (
+        "reasoning.summary" in str(error) and "reasoning" in responses_parameters
+    )
+    if not is_summary_gated:
+        return False
+
+    logger.info(
+        "[OPENAI] Organization not verified for reasoning summaries; "
+        "dropping 'summary' from reasoning config and retrying."
+    )
+    reasoning = responses_parameters.get("reasoning", {})
+    if isinstance(reasoning, dict):
+        reasoning.pop("summary", None)
+    return True
+
+
 class OpenAiModel(Model, ABC):
     def __init__(
         self,
@@ -113,6 +141,7 @@ class OpenAiModel(Model, ABC):
         thinking_config: Optional[ThinkingConfig] = None,
         timeout: int = OPENAI_DEFAULT_TIMEOUT,
         _INTERNAL__skip_client_validation: bool = False,
+        retry_config: Optional[RetryConfig] = None,
     ):
         self.timeout = timeout
         self._client = get_openai_client(timeout=timeout)
@@ -184,6 +213,7 @@ class OpenAiModel(Model, ABC):
         self.completion = None
         self.reasoning_effort = reasoning_effort
         self.thinking_config = thinking_config
+        self.retry_config = retry_config
 
     def __deepcopy__(self, memo_dict):
         # Skip the SDK client; it contains an httpx connection pool whose
@@ -197,6 +227,7 @@ class OpenAiModel(Model, ABC):
             logit_bias=self.logit_bias,
             thinking_config=self.thinking_config,
             timeout=self.timeout,
+            retry_config=self.retry_config,
         )
 
     def _process_cache_chunks_for_openai(
@@ -688,6 +719,9 @@ class OpenAiModel(Model, ABC):
         return responses_parameters
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:
+        if self.retry_config is not None:
+            return self._execute_with_retry_config(responses_parameters, self._client)
+
         retry_count = 0
         done = False
         response = False
@@ -748,6 +782,17 @@ class OpenAiModel(Model, ABC):
             )
 
         return response
+
+    def _execute_with_retry_config(self, responses_parameters: dict, client) -> object:
+        def attempt():
+            return client.responses.create(**responses_parameters)
+
+        try:
+            return run_with_retry_config(self.retry_config, attempt, "OpenAI")
+        except APIError as error:
+            if not _strip_reasoning_summary_if_unverified(error, responses_parameters):
+                raise
+            return run_with_retry_config(self.retry_config, attempt, "OpenAI")
 
     def _process_response(
         self, response, structured_output: Optional[object]
@@ -1058,6 +1103,25 @@ class OpenAiModel(Model, ABC):
             f"OpenAI streaming API failed after {max_retries} retries"
         ) from last_error
 
+    async def _stream_with_retry_config(
+        self, responses_parameters: dict, client
+    ) -> AsyncIterator:
+        async def acquire_stream():
+            return await client.responses.create(**responses_parameters)
+
+        try:
+            async for event in stream_with_retry_config(
+                self.retry_config, acquire_stream, "OpenAI streaming"
+            ):
+                yield event
+        except APIError as error:
+            if not _strip_reasoning_summary_if_unverified(error, responses_parameters):
+                raise
+            async for event in stream_with_retry_config(
+                self.retry_config, acquire_stream, "OpenAI streaming"
+            ):
+                yield event
+
     async def stream_assistant_message(
         self,
         messages: List[Message],
@@ -1092,11 +1156,18 @@ class OpenAiModel(Model, ABC):
         current_tool_id = None
         current_tool_name = None
 
-        async for event in self._stream_with_retry(
-            self._async_client,
-            responses_parameters,
-            OPENAI_MAX_RETRIES,
-        ):
+        if self.retry_config is not None:
+            event_stream = self._stream_with_retry_config(
+                responses_parameters, self._async_client
+            )
+        else:
+            event_stream = self._stream_with_retry(
+                self._async_client,
+                responses_parameters,
+                OPENAI_MAX_RETRIES,
+            )
+
+        async for event in event_stream:
             chunk = self._convert_stream_event_to_chunk(
                 event, current_tool_id, current_tool_name
             )

@@ -167,6 +167,21 @@ Today only Google has an API-level safety-disable toggle; other providers no-op 
 
 See [DIAGNOSTICS.md](DIAGNOSTICS.md) for the full vocabulary, per-provider mapping tables, and end-to-end patterns.
 
+### Per-Model Retry Configuration
+
+Every provider model accepts a `retry_config` for schedule-driven retries — useful for long-running batch jobs that must survive multi-hour provider outages:
+
+```python
+from patterpunk.llm.retry_config import RetryConfig
+
+model = GoogleModel(
+    model="gemini-2.5-pro",
+    retry_config=RetryConfig(delays_s=(30, 15 * 60, 45 * 60, 120 * 60)),
+)
+```
+
+The model makes `len(delays_s) + 1` attempts, sleeping `delays_s[n] * uniform(*jitter)` before each re-attempt (default jitter `(0.5, 1.0)` desynchronizes parallel workers). Retryable errors are 408/429/5xx and transport-level failures (connection resets, TLS errors, timeouts); other 4xx errors fail fast. On exhaustion the last native SDK error is re-raised unwrapped — `.code`/`.status_code` stay intact for triage. Without `retry_config`, the legacy env-driven retry behavior (`PP_MAX_RETRIES` etc.) is unchanged.
+
 ### Token Counting
 
 Estimate token usage for cost tracking and context window management:

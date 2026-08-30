@@ -2,11 +2,27 @@
 Retry utilities for handling rate limits and transient errors.
 
 This module provides exponential backoff with jitter, designed specifically
-for per-minute rate limits common with OpenAI and Azure OpenAI APIs.
+for per-minute rate limits common with OpenAI and Azure OpenAI APIs, plus
+schedule-driven retry execution for models configured with a RetryConfig.
 """
 
+import asyncio
 import random
-from typing import Optional
+import ssl
+import time
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Optional
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+from patterpunk.llm.retry_config import RetryConfig
+from patterpunk.logger import logger
+
+_TRANSPORT_ERROR_TYPES = (ConnectionError, TimeoutError, ssl.SSLError) + (
+    (httpx.TransportError,) if httpx is not None else ()
+)
 
 
 def calculate_backoff_delay(
@@ -104,12 +120,13 @@ def is_retryable_error(error: Exception) -> bool:
     Determine if an error should trigger a retry.
 
     Retryable errors include:
+    - 408 Request Timeout
     - 429 Too Many Requests (rate limit)
     - 500 Internal Server Error
     - 502 Bad Gateway
     - 503 Service Unavailable
     - 504 Gateway Timeout
-    - Connection errors
+    - Transport-level failures (connection reset, TLS errors, local timeouts)
     - AWS Bedrock throttling/service unavailable errors
 
     Args:
@@ -118,7 +135,7 @@ def is_retryable_error(error: Exception) -> bool:
     Returns:
         True if the error is retryable, False otherwise
     """
-    retryable_status_codes = (429, 500, 502, 503, 504)
+    retryable_status_codes = (408, 429, 500, 502, 503, 504)
 
     # Check for status_code attribute (OpenAI, Anthropic, Ollama)
     status_code = getattr(error, "status_code", None)
@@ -129,6 +146,9 @@ def is_retryable_error(error: Exception) -> bool:
     code = getattr(error, "code", None)
     if code is not None:
         return code in retryable_status_codes
+
+    if isinstance(error, _TRANSPORT_ERROR_TYPES):
+        return True
 
     # Check for AWS Bedrock ClientError format
     response = getattr(error, "response", None)
@@ -164,3 +184,66 @@ def is_retryable_error(error: Exception) -> bool:
         return True
 
     return False
+
+
+def run_with_retry_config(
+    retry_config: RetryConfig,
+    attempt: Callable[[], Any],
+    provider_name: str,
+) -> Any:
+    """
+    Execute attempt() under a RetryConfig schedule.
+
+    Makes len(delays_s) + 1 attempts total, sleeping delays_s[n] * uniform(*jitter)
+    before each re-attempt. Non-retryable errors (per is_retryable_error) raise
+    immediately; on exhaustion the last native error is re-raised unwrapped.
+    """
+    total_attempts = len(retry_config.delays_s) + 1
+    for attempt_number, delay_s in enumerate(retry_config.delays_s, start=1):
+        try:
+            return attempt()
+        except Exception as error:
+            if not is_retryable_error(error):
+                raise
+            wait_time = delay_s * random.uniform(*retry_config.jitter)
+            logger.warning(
+                f"{provider_name}: retryable error on attempt "
+                f"{attempt_number}/{total_attempts}: {error!r}. "
+                f"Waiting {wait_time:.1f}s before retry."
+            )
+            time.sleep(wait_time)
+    return attempt()
+
+
+async def stream_with_retry_config(
+    retry_config: RetryConfig,
+    acquire_stream: Callable[[], Awaitable[AsyncIterable]],
+    provider_name: str,
+) -> AsyncIterator:
+    """
+    Async-generator counterpart of run_with_retry_config.
+
+    Retries the whole stream: a mid-stream failure after partial yield
+    re-acquires the stream and re-yields from the start, matching the
+    behavior of the providers' legacy streaming retry loops.
+    """
+    total_attempts = len(retry_config.delays_s) + 1
+    for attempt_number, delay_s in enumerate(retry_config.delays_s, start=1):
+        try:
+            stream = await acquire_stream()
+            async for item in stream:
+                yield item
+            return
+        except Exception as error:
+            if not is_retryable_error(error):
+                raise
+            wait_time = delay_s * random.uniform(*retry_config.jitter)
+            logger.warning(
+                f"{provider_name}: retryable streaming error on attempt "
+                f"{attempt_number}/{total_attempts}: {error!r}. "
+                f"Waiting {wait_time:.1f}s before retry."
+            )
+            await asyncio.sleep(wait_time)
+    stream = await acquire_stream()
+    async for item in stream:
+        yield item
