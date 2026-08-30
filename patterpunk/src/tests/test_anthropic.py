@@ -1,5 +1,6 @@
 import pytest
 from pydantic import BaseModel, Field
+from datetime import timedelta
 from typing import List, Optional
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.finish_reason import FinishReason
@@ -2167,3 +2168,60 @@ def test_fable_5_structured_output_live():
     assert "paris" in parsed.answer.lower()
     assert 0.0 <= parsed.confidence <= 1.0
     assert json.loads(chat.latest_message.content)["answer"] == parsed.answer
+
+
+# =============================================================================
+# Cache TTL: Anthropic accepts only "5m" (default) and "1h", never integer seconds
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "ttl, expected_ttl, warns",
+    [
+        (None, None, False),
+        (timedelta(minutes=5), None, False),
+        (timedelta(hours=1), "1h", False),
+        (timedelta(minutes=30), "1h", True),
+        (timedelta(hours=2), "1h", True),
+    ],
+)
+def test_cache_control_ttl_mapping(caplog, ttl, expected_ttl, warns):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    chunk = CacheChunk("x" * 10, cacheable=True, ttl=ttl)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        blocks = model._convert_content_to_anthropic_format([chunk])
+    cache_control = blocks[0]["cache_control"]
+    assert cache_control["type"] == "ephemeral"
+    assert cache_control.get("ttl") == expected_ttl
+    assert not any(isinstance(v, int) for v in cache_control.values())
+    warned = any("Cache ttl" in r.message for r in caplog.records)
+    assert warned is warns
+
+
+def test_one_hour_cache_ttl_live():
+    """Live: a 1h cache_control is accepted and the second call reads the cache."""
+    from patterpunk.config.providers.anthropic import anthropic
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001", max_tokens=50)
+    filler = " ".join(
+        f"Fact number {i}: the sky is blue on day {i}." for i in range(400)
+    )
+    messages = [
+        SystemMessage([CacheChunk(filler, cacheable=True, ttl=timedelta(hours=1))]),
+        UserMessage("Reply with the single word OK."),
+    ]
+    api_params = model._build_base_api_parameters(
+        messages, model._prepare_system_prompt(messages)
+    )
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["system"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+    }
+    first = anthropic.messages.create(**_to_sdk_kwargs(api_params))
+    second = anthropic.messages.create(**_to_sdk_kwargs(api_params))
+    assert first.usage.cache_creation_input_tokens > 0 or (
+        first.usage.cache_read_input_tokens > 0
+    )
+    assert second.usage.cache_read_input_tokens > 0

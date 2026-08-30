@@ -3,6 +3,7 @@ import re
 import time
 from abc import ABC
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import (
     AsyncIterator,
     List,
@@ -126,6 +127,26 @@ def _to_sdk_kwargs(api_params: dict) -> dict:
     kwargs = {k: v for k, v in api_params.items() if k not in sampling}
     kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **sampling}
     return kwargs
+
+
+_FIVE_MINUTES = timedelta(minutes=5)
+_ONE_HOUR = timedelta(hours=1)
+
+
+def _build_cache_control(chunk: CacheChunk) -> dict:
+    """Map a CacheChunk ttl onto the two cache lifetimes Anthropic offers."""
+    # The API accepts only the strings "5m" (default, omitted here) and "1h"; an
+    # integer ttl is rejected. Within one request every 1h breakpoint has to
+    # precede the 5m ones, and patterpunk sends chunks in caller order.
+    # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    if chunk.ttl is None or chunk.ttl <= _FIVE_MINUTES:
+        return {"type": "ephemeral"}
+    if chunk.ttl != _ONE_HOUR:
+        logger.warning(
+            f"[ANTHROPIC] Cache ttl {chunk.ttl} is not supported; Anthropic offers only "
+            f"5-minute and 1-hour caches. Using the 1-hour cache."
+        )
+    return {"type": "ephemeral", "ttl": "1h"}
 
 
 class AnthropicModel(Model, ABC):
@@ -1005,10 +1026,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 content_block = {"type": "text", "text": chunk.content}
 
                 if chunk.cacheable:
-                    cache_control = {"type": "ephemeral"}
-                    if chunk.ttl:
-                        cache_control["ttl"] = int(chunk.ttl.total_seconds())
-                    content_block["cache_control"] = cache_control
+                    content_block["cache_control"] = _build_cache_control(chunk)
 
                 anthropic_content.append(content_block)
 

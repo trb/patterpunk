@@ -20,7 +20,7 @@ message = UserMessage([
     CacheChunk(
         content="System instructions...",
         cacheable=True,
-        ttl=timedelta(hours=2)
+        ttl=timedelta(hours=1)
     ),
     CacheChunk(content="Current request", cacheable=False)
 ])
@@ -63,7 +63,24 @@ OpenAI implementation validates prefix patterns and logs warnings:
 
 ### Anthropic
 
-Needs no specific considerations
+Anthropic offers exactly two cache lifetimes: 5 minutes (the default) and 1 hour. Patterpunk maps `CacheChunk.ttl` onto them:
+
+| `ttl` | Sent as |
+|---|---|
+| `None` or up to 5 minutes | default 5-minute cache (no `ttl` field) |
+| exactly `timedelta(hours=1)` | `"1h"` |
+| anything else | `"1h"`, with a warning that the value was mapped |
+
+Within one request, every 1-hour breakpoint has to come before any 5-minute breakpoint; the API rejects the reverse order. Patterpunk sends chunks in the order you give them and does not reorder, so place `timedelta(hours=1)` chunks first.
+
+```python
+system = SystemMessage([
+    CacheChunk(stable_instructions, cacheable=True, ttl=timedelta(hours=1)),
+    CacheChunk(session_context, cacheable=True),  # 5-minute tier, after the 1h chunk
+])
+```
+
+Docs: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 
 ### Google
 
@@ -91,7 +108,7 @@ message = UserMessage([
 # System message caching for persistent context
 system = SystemMessage([
     CacheChunk("You are an expert with access to:", cacheable=False),
-    CacheChunk(large_knowledge_base, cacheable=True, ttl=timedelta(hours=4)),
+    CacheChunk(large_knowledge_base, cacheable=True, ttl=timedelta(hours=1)),
     CacheChunk("Current session settings: " + settings, cacheable=False)
 ])
 ```
@@ -159,7 +176,7 @@ from patterpunk.llm.chunks import CacheChunk
 system_context = CacheChunk(
     content=load_large_documentation(),
     cacheable=True,
-    ttl=timedelta(hours=8)  # Long TTL for stable content
+    ttl=timedelta(hours=1)  # Long TTL for stable content
 )
 
 # Low-value caching: Avoid for small or dynamic content
@@ -172,7 +189,7 @@ user_query = CacheChunk(
 conversation_history = CacheChunk(
     content=format_history(messages),
     cacheable=True,
-    ttl=timedelta(minutes=30)  # Shorter TTL for dynamic content
+    ttl=timedelta(minutes=5)  # Shorter TTL for dynamic content
 )
 ```
 
@@ -301,7 +318,7 @@ from patterpunk.llm.chunks import CacheChunk
 class CachedAgent(Agent[str, str]):
     def prepare_chat(self):
         return super().prepare_chat().add_message(SystemMessage([
-            CacheChunk(self.system_knowledge, cacheable=True, ttl=timedelta(hours=2)),
+            CacheChunk(self.system_knowledge, cacheable=True, ttl=timedelta(hours=1)),
             CacheChunk("Current task context: ", cacheable=False)
         ]))
 ```
