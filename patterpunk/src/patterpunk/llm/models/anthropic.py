@@ -55,7 +55,7 @@ from patterpunk.llm.streaming import StreamChunk, StreamEventType
 from patterpunk.logger import logger
 
 if anthropic:
-    from anthropic import APIError
+    from anthropic import APIError, transform_schema
 
 
 @dataclass
@@ -214,12 +214,12 @@ class AnthropicModel(Model, ABC):
         diagnostics_kwargs: Optional[dict] = None,
     ) -> AssistantMessage:
         """
-        Reasoning models can't use tool_choice constraints, so we use a two-model approach:
-        first the reasoning model generates analysis, then Haiku formats it to structured JSON.
-        We use Haiku because it's fast, cheap, and reliable for formatting tasks.
+        Legacy path for models below Claude 4.5, which lack native structured output.
+        Reasoning models can't use forced tool_choice, so a second, non-thinking Haiku
+        call formats the reasoning text into the schema via a forced tool call.
         """
         logger.info(
-            "[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku"
+            "[ANTHROPIC] Formatting reasoning output to structured JSON using Claude Haiku 4.5"
         )
 
         diagnostics_kwargs = diagnostics_kwargs or {}
@@ -241,7 +241,7 @@ Reasoning and analysis from Claude:
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
         haiku_params = {
-            "model": "claude-3-5-haiku-20241022",
+            "model": "claude-haiku-4-5",
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
             "temperature": 0.1,
@@ -371,6 +371,26 @@ Please extract the relevant information from this reasoning and format it exactl
         """
         major, minor = self._parse_model_version()
         return (major, minor) >= (4, 7)
+
+    def _supports_native_structured_output(self) -> bool:
+        """Claude 4.5+ (Opus/Sonnet/Haiku 4.5, 4.6-4.8 and the 5 family) accept
+        output_config.format; older models need the tool-based fallback."""
+        return self._parse_model_version() >= (4, 5)
+
+    def _apply_native_structured_output(
+        self, api_params: dict, structured_output: object
+    ) -> dict:
+        # transform_schema sets additionalProperties=false on every object and moves
+        # constraints the API rejects (minimum/maximum, minLength, ...) into the
+        # description. Pydantic still enforces them client-side when parsing.
+        # _apply_thinking_configuration may already have put {"effort": ...} into
+        # output_config, so the format entry is merged rather than assigned.
+        schema = transform_schema(get_model_schema(structured_output))
+        api_params.setdefault("output_config", {})["format"] = {
+            "type": "json_schema",
+            "schema": schema,
+        }
+        return api_params
 
     def _get_compatible_params(self, api_params: dict) -> dict:
         major, minor = self._parse_model_version()
@@ -685,6 +705,11 @@ Please extract the relevant information from this reasoning and format it exactl
         structured_output: Optional[object],
     ) -> dict:
         if structured_output and has_model_schema(structured_output):
+            if self._supports_native_structured_output():
+                api_params = self._configure_regular_tools(api_params, tools)
+                return self._apply_native_structured_output(
+                    api_params, structured_output
+                )
             if self.thinking_config is not None and self._is_reasoning_model():
                 return self._configure_reasoning_structured_output_auto(
                     api_params, tools, structured_output
@@ -840,6 +865,7 @@ Please extract the relevant information from this reasoning and format it exactl
         if (
             structured_output
             and has_model_schema(structured_output)
+            and not self._supports_native_structured_output()
             and self.thinking_config is not None
             and self._is_reasoning_model()
         ):

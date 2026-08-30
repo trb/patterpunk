@@ -2074,3 +2074,96 @@ def test_unknown_claude_id_falls_back_to_adaptive_with_warning(caplog):
         for r in caplog.records
     )
     assert AnthropicModel(model="some-unknown-model")._parse_model_version() == (0, 0)
+
+
+# =============================================================================
+# Native structured outputs (output_config.format) on Claude 4.5+
+# =============================================================================
+
+
+class _Verdict(BaseModel):
+    answer: str = Field(description="The answer")
+    confidence: float = Field(ge=0.0, le=1.0)
+    tags: List[str] = Field(min_length=1)
+
+
+def lookup_weather(city: str) -> str:
+    """Look up the weather for a city.
+
+    :param city: City name
+    """
+    return "sunny"
+
+
+def test_native_structured_output_merges_into_output_config_with_effort():
+    model = AnthropicModel(
+        model="claude-fable-5", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._apply_thinking_configuration(
+        model._build_base_api_parameters([], None)
+    )
+    api_params = model._configure_tools_and_structured_output(
+        api_params, None, _Verdict
+    )
+    assert api_params["output_config"]["effort"] == "high"
+    fmt = api_params["output_config"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"]["additionalProperties"] is False
+    assert "tools" not in api_params
+    assert "tool_choice" not in api_params
+
+
+def test_native_structured_output_keeps_real_tools_only():
+    from patterpunk.lib.function_to_tool.converter import function_to_tool
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    api_params = model._configure_tools_and_structured_output(
+        {}, [function_to_tool(lookup_weather)], _Verdict
+    )
+    assert [tool["name"] for tool in api_params["tools"]] == ["lookup_weather"]
+    assert "tool_choice" not in api_params
+    assert api_params["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_pre_4_5_models_keep_tool_based_structured_output():
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=ThinkingConfig(token_budget=2000),
+        max_tokens=4000,
+    )
+    api_params = model._configure_tools_and_structured_output({}, None, _Verdict)
+    assert "output_config" not in api_params
+    assert api_params["tools"][0]["name"] == "provide_structured_response"
+    assert api_params["tool_choice"] == {"type": "auto"}
+
+    plain = AnthropicModel(model="claude-3-haiku-20240307")
+    api_params = plain._configure_tools_and_structured_output({}, None, _Verdict)
+    assert api_params["tool_choice"] == {
+        "type": "tool",
+        "name": "provide_structured_response",
+    }
+
+
+def test_fable_5_structured_output_live():
+    """Live: Fable 5 with adaptive thinking returns schema-conforming JSON text."""
+    import json
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-fable-5",
+            thinking_config=ThinkingConfig(effort="low"),
+            max_tokens=4000,
+        )
+    )
+    chat = chat.add_message(
+        UserMessage(
+            "What is the capital of France? Tag the answer with at least one topic.",
+            structured_output=_Verdict,
+        )
+    ).complete()
+
+    parsed = chat.parsed_output
+    assert isinstance(parsed, _Verdict)
+    assert "paris" in parsed.answer.lower()
+    assert 0.0 <= parsed.confidence <= 1.0
+    assert json.loads(chat.latest_message.content)["answer"] == parsed.answer
