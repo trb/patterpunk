@@ -253,8 +253,10 @@ async def test_stream_delta_iterators():
         )
     )
 
+    # A reply this long always arrives as several text_delta events; a five-line
+    # count fit in a single delta and made the assertion below flaky.
     chat = chat.add_message(SystemMessage("You are a helpful assistant.")).add_message(
-        UserMessage("Count from 1 to 5, one number per line.")
+        UserMessage("Count from 1 to 40, one number per line.")
     )
 
     deltas = []
