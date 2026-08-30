@@ -178,6 +178,19 @@ class AnthropicModel(Model, ABC):
         self.thinking = None
         if thinking_config is not None and not self._uses_adaptive_thinking_api():
             self.thinking = self._build_legacy_thinking(thinking_config)
+            self._validate_legacy_thinking_budget()
+
+    def _validate_legacy_thinking_budget(self) -> None:
+        # The API requires budget_tokens < max_tokens and answers 400 otherwise.
+        # Failing at construction surfaces the misconfiguration instead of letting
+        # callers' retry loops swallow the error on every request.
+        budget = self.thinking.budget_tokens
+        if budget >= self.max_tokens:
+            raise ValueError(
+                f"[ANTHROPIC] thinking budget {budget} must be below max_tokens "
+                f"{self.max_tokens} for model '{self.model}'. Raise max_tokens or "
+                f"lower the thinking effort/token_budget."
+            )
 
     def _build_legacy_thinking(
         self, thinking_config: UnifiedThinkingConfig

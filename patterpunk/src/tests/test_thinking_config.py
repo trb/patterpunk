@@ -43,7 +43,9 @@ def test_openai_model_thinking_config_integration():
 def test_anthropic_model_thinking_config_integration():
     thinking_config = ThinkingConfig(token_budget=10000)
     model = AnthropicModel(
-        model="claude-3-7-sonnet-20250219", thinking_config=thinking_config
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=thinking_config,
+        max_tokens=20000,
     )
     assert model.thinking_config == thinking_config
     assert model.thinking.budget_tokens == 10000
@@ -129,7 +131,9 @@ def test_legacy_anthropic_clamps_xhigh_to_high_with_warning(caplog):
     """Pre-Opus-4.7 Anthropic models clamp xhigh/max to high in __init__."""
     config = ThinkingConfig(effort="xhigh")
     with caplog.at_level("WARNING", logger="patterpunk"):
-        model = AnthropicModel(model="claude-sonnet-4-20250514", thinking_config=config)
+        model = AnthropicModel(
+            model="claude-sonnet-4-20250514", thinking_config=config, max_tokens=30000
+        )
     # 'high' maps to 24000 in Anthropic's legacy effort_to_tokens
     assert model.thinking.budget_tokens == 24000
     assert any(

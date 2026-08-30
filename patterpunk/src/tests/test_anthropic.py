@@ -510,7 +510,7 @@ def test_reasoning_mode_initialization():
         model="claude-sonnet-4-20250514",
         thinking_config=thinking_config,
         temperature=0.5,
-        max_tokens=2000,
+        max_tokens=20000,
     )
 
     assert model.thinking_config == thinking_config
@@ -518,7 +518,7 @@ def test_reasoning_mode_initialization():
     assert model.thinking.budget_tokens == 8000
     assert model.model == "claude-sonnet-4-20250514"
     assert model.temperature == 0.5
-    assert model.max_tokens == 2000
+    assert model.max_tokens == 20000
     assert model._is_reasoning_model() == True
 
 
@@ -530,7 +530,7 @@ def test_reasoning_mode_default_type():
         model="claude-opus-4-20250514",
         thinking_config=thinking_config,
         temperature=0.3,
-        max_tokens=1500,
+        max_tokens=15000,
     )
 
     assert model.thinking.type == "enabled"
@@ -564,7 +564,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
             temperature=0.7,
             top_p=0.9,
             top_k=40,
-            max_tokens=2000,
+            max_tokens=8000,
         )
     )
 
@@ -577,7 +577,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
         "temperature": 0.7,
         "top_p": 0.9,
         "top_k": 40,
-        "max_tokens": 2000,
+        "max_tokens": 8000,
         "system": "You are a helpful assistant.",
         "messages": [],
     }
@@ -589,7 +589,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
     assert "top_k" not in filtered_params
     assert "temperature" in filtered_params
     assert filtered_params["temperature"] == 1.0
-    assert filtered_params["max_tokens"] == 2000
+    assert filtered_params["max_tokens"] == 8000
 
     chat_37 = Chat(
         model=AnthropicModel(
@@ -1664,6 +1664,7 @@ def test_xhigh_clamped_to_high_on_legacy_anthropic_with_warning(caplog):
         model = AnthropicModel(
             model="claude-sonnet-4-5-20250614",
             thinking_config=ThinkingConfig(effort="xhigh"),
+            max_tokens=30000,
         )
     # Legacy budget mapping for "high" is 24_000
     assert model.thinking.budget_tokens == 24_000
@@ -2225,3 +2226,34 @@ def test_one_hour_cache_ttl_live():
         first.usage.cache_read_input_tokens > 0
     )
     assert second.usage.cache_read_input_tokens > 0
+
+
+# =============================================================================
+# Legacy thinking budgets must stay below max_tokens (API rejects otherwise)
+# =============================================================================
+
+
+def test_legacy_thinking_budget_above_max_tokens_fails_at_construction():
+    with pytest.raises(ValueError, match="must be below max_tokens"):
+        AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(effort="high"),  # 24000 > default 8192
+        )
+    with pytest.raises(ValueError, match="must be below max_tokens"):
+        AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=4000),
+            max_tokens=4000,
+        )
+
+
+def test_legacy_thinking_budget_below_max_tokens_constructs():
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(effort="high"),
+        max_tokens=30000,
+    )
+    assert model.thinking.budget_tokens == 24000
+
+    # Adaptive models have no budget, so the guard never applies to them.
+    AnthropicModel(model="claude-fable-5", thinking_config=ThinkingConfig(effort="max"))
