@@ -251,6 +251,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream the assistant message response from Azure OpenAI.

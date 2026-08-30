@@ -39,7 +39,7 @@ def test_azure_model_requires_credentials():
 
         # Verify client was NOT created
         assert (
-            azure_config.azure_openai is None
+            azure_config.get_azure_openai_client() is None
         ), "Azure OpenAI client should be None without credentials"
 
         # Verify model raises error
@@ -114,7 +114,7 @@ def test_azure_endpoint_url_formatting():
             # Reset module to force re-initialization
             importlib.reload(azure_openai)
 
-            client = azure_openai.azure_openai
+            client = azure_openai.get_azure_openai_client()
             assert (
                 client is not None
             ), f"Client should be created for endpoint: {input_endpoint}"
@@ -167,7 +167,7 @@ def test_azure_client_not_created_without_credentials():
         importlib.reload(azure_openai)
 
         assert (
-            azure_openai.azure_openai is None
+            azure_openai.get_azure_openai_client() is None
         ), "Client should be None without credentials"
         assert (
             not azure_openai.is_azure_openai_available()
@@ -239,12 +239,12 @@ def test_azure_openai_works_without_openai_api_key():
 
         # Verify Azure client was created
         assert (
-            azure_config.azure_openai is not None
+            azure_config.get_azure_openai_client() is not None
         ), "Azure OpenAI client should be created with Azure credentials"
 
         # Verify OpenAI client was NOT created (no PP_OPENAI_API_KEY)
         assert (
-            openai_config.openai is None
+            openai_config.get_openai_client() is None
         ), "OpenAI client should be None without PP_OPENAI_API_KEY"
 
         # This is the key assertion: Azure model should work without OpenAI API key

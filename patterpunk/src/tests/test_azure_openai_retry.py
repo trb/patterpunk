@@ -62,7 +62,9 @@ class TestAPIErrorImportFix:
             importlib.reload(azure_model)
 
             # Verify that openai client is None (simulating Azure-only setup)
-            assert openai_config.openai is None, "Expected openai client to be None"
+            assert (
+                openai_config.get_openai_client() is None
+            ), "Expected openai client to be None"
 
             # THE CRITICAL CHECK: APIError must still be available in openai_model
             # This is where the bug occurred - APIError wasn't defined when openai was None
