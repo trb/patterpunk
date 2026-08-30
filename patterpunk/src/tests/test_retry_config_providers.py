@@ -12,7 +12,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import httpx
+import httpx2
 import pytest
 from openai import APIError
 
@@ -74,7 +74,7 @@ def test_openai_legacy_exhaustion_still_wraps():
     OPENAI_MAX_RETRIES and exhaustion wraps into OpenAiApiError."""
     model = _make_openai_model()
     api_error = APIError(
-        "simulated 500", httpx.Request("POST", "http://test"), body=None
+        "simulated 500", httpx2.Request("POST", "http://test"), body=None
     )
     model._client.responses.create = Mock(side_effect=api_error)
     with patch("time.sleep"):

@@ -1970,3 +1970,48 @@ def test_diagnostics_and_safety_filter_integration():
     assert len(response.content) > 0
     assert response.finish_reason == FinishReason.STOP
     assert response._provider.raw_finish_reason == "end_turn"
+
+
+# =============================================================================
+# anthropic>=1.0 removed temperature/top_p/top_k from the SDK signatures.
+# The API still accepts them for Claude <= 4.6, so they travel via extra_body.
+# =============================================================================
+
+
+def test_to_sdk_kwargs_moves_sampling_params_into_extra_body():
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    api_params = {
+        "model": "claude-sonnet-4-5-20250614",
+        "max_tokens": 100,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "top_k": 40,
+    }
+    kwargs = _to_sdk_kwargs(api_params)
+    assert kwargs["extra_body"] == {"temperature": 0.2, "top_p": 0.9, "top_k": 40}
+    assert not {"temperature", "top_p", "top_k"} & kwargs.keys()
+    assert kwargs["model"] == "claude-sonnet-4-5-20250614"
+    assert kwargs["max_tokens"] == 100
+    # The internal dict is left untouched so the normalization helpers keep working.
+    assert api_params["temperature"] == 0.2
+
+
+def test_to_sdk_kwargs_is_identity_without_sampling_params():
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    api_params = {"model": "claude-opus-4-7", "max_tokens": 100}
+    assert _to_sdk_kwargs(api_params) is api_params
+
+
+def test_legacy_model_sends_sampling_params_via_extra_body():
+    """End-to-end on the parameter builders: a pre-4.7 model still reaches the SDK
+    with temperature/top_p/top_k, but only inside extra_body."""
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001", temperature=0.3)
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    kwargs = _to_sdk_kwargs(api_params)
+    assert "temperature" not in kwargs
+    assert kwargs["extra_body"]["temperature"] == 0.3

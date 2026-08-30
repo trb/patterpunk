@@ -15,6 +15,7 @@ Run with:
 import ssl
 
 import httpx
+import httpx2
 import pytest
 from unittest.mock import Mock, patch
 
@@ -316,6 +317,12 @@ class TestIsRetryableError:
         assert is_retryable_error(httpx.ReadError("")) is True
         assert is_retryable_error(httpx.ConnectError("connection refused")) is True
         assert is_retryable_error(httpx.ConnectTimeout("timed out")) is True
+
+    def test_httpx2_transport_errors_are_retryable(self):
+        """anthropic>=1.0 and openai>=3.0 raise httpx2 errors, not httpx ones."""
+        assert is_retryable_error(httpx2.ReadError("")) is True
+        assert is_retryable_error(httpx2.ConnectError("connection refused")) is True
+        assert is_retryable_error(httpx2.ConnectTimeout("timed out")) is True
 
     def test_plain_application_errors_are_not_retryable(self):
         """Application-level errors must fail fast."""

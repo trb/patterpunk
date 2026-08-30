@@ -107,6 +107,26 @@ def _build_diagnostics_kwargs(response) -> dict:
     }
 
 
+_SDK_REMOVED_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+
+def _to_sdk_kwargs(api_params: dict) -> dict:
+    """Move sampling params into extra_body before handing the request to the SDK."""
+    # anthropic>=1.0 removed temperature/top_p/top_k from the messages.create/stream
+    # signatures and raises TypeError for them, but the API still honours the fields
+    # for Claude <= 4.6. extra_body merges them into the request JSON unchanged.
+    sampling = {
+        key: api_params[key]
+        for key in _SDK_REMOVED_SAMPLING_PARAMS
+        if key in api_params
+    }
+    if not sampling:
+        return api_params
+    kwargs = {k: v for k, v in api_params.items() if k not in sampling}
+    kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **sampling}
+    return kwargs
+
+
 class AnthropicModel(Model, ABC):
     def __init__(
         self,
@@ -229,7 +249,9 @@ Please extract the relevant information from this reasoning and format it exactl
         }
 
         try:
-            formatting_response = anthropic.messages.create(**haiku_params)
+            formatting_response = anthropic.messages.create(
+                **_to_sdk_kwargs(haiku_params)
+            )
 
             for block in formatting_response.content:
                 if (
@@ -825,7 +847,9 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
             try:
-                reasoning_response = client.messages.create(**api_params)
+                reasoning_response = client.messages.create(
+                    **_to_sdk_kwargs(api_params)
+                )
                 reasoning_diagnostics = _build_diagnostics_kwargs(reasoning_response)
                 thinking_blocks = self._extract_thinking_blocks(reasoning_response)
 
@@ -878,7 +902,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 )
 
                 api_params = self._configure_reasoning_tools_fallback(api_params, tools)
-                reasoning_response = client.messages.create(**api_params)
+                reasoning_response = client.messages.create(
+                    **_to_sdk_kwargs(api_params)
+                )
                 reasoning_diagnostics = _build_diagnostics_kwargs(reasoning_response)
                 thinking_blocks = self._extract_thinking_blocks(reasoning_response)
                 reasoning_content = self._extract_reasoning_content(reasoning_response)
@@ -895,7 +921,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 api_params, tools, structured_output
             )
 
-        response = client.messages.create(**api_params)
+        response = client.messages.create(**_to_sdk_kwargs(api_params))
 
         if response.stop_reason in [
             "end_turn",
@@ -1339,7 +1365,7 @@ Please extract the relevant information from this reasoning and format it exactl
     async def _stream_events(
         self, api_params: dict, client
     ) -> AsyncIterator["StreamChunk"]:
-        async with client.messages.stream(**api_params) as stream:
+        async with client.messages.stream(**_to_sdk_kwargs(api_params)) as stream:
             async for event in stream:
                 # Check for mid-stream error events (unique to Anthropic)
                 # These arrive as SSE events after HTTP 200 OK

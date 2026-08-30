@@ -17,11 +17,21 @@ try:
 except ImportError:
     httpx = None
 
+try:
+    import httpx2
+except ImportError:
+    httpx2 = None
+
 from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.logger import logger
 
-_TRANSPORT_ERROR_TYPES = (ConnectionError, TimeoutError, ssl.SSLError) + (
-    (httpx.TransportError,) if httpx is not None else ()
+# anthropic>=1.0 and openai>=3.0 raise httpx2 transport errors, while google-genai
+# and ollama still raise httpx ones. Both stacks coexist in one environment, so a
+# retry classifier that only knows one of them silently stops retrying the other.
+_TRANSPORT_ERROR_TYPES = (
+    (ConnectionError, TimeoutError, ssl.SSLError)
+    + ((httpx.TransportError,) if httpx is not None else ())
+    + ((httpx2.TransportError,) if httpx2 is not None else ())
 )
 
 
