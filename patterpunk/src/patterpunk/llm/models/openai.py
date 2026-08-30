@@ -105,6 +105,8 @@ class OpenAiReasoningEffort(enum.Enum):
     LOW = enum.auto()
     MEDIUM = enum.auto()
     HIGH = enum.auto()
+    XHIGH = enum.auto()
+    MAX = enum.auto()
 
 
 def _strip_reasoning_summary_if_unverified(
@@ -186,14 +188,11 @@ class OpenAiModel(Model, ABC):
         reasoning_effort = OpenAiReasoningEffort.LOW
         if thinking_config is not None:
             if thinking_config.effort is not None:
-                effort = thinking_config.effort
-                if effort not in {"low", "medium", "high"}:
-                    logger.warning(
-                        f"[OPENAI] effort='{effort}' is Anthropic-only (Opus 4.7+). "
-                        f"OpenAI supports only low/medium/high. Clamping to 'high'."
-                    )
-                    effort = "high"
-                reasoning_effort = OpenAiReasoningEffort[effort.upper()]
+                # GPT-5.6 accepts none/low/medium/high/xhigh/max. Older reasoning models
+                # reject the upper levels with a 400, which is preferable to silently
+                # downgrading the caller's request.
+                # https://developers.openai.com/api/docs/guides/reasoning
+                reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
             else:
                 if thinking_config.token_budget == 0:
                     reasoning_effort = OpenAiReasoningEffort.LOW
@@ -488,7 +487,9 @@ class OpenAiModel(Model, ABC):
         logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
 
     def _is_reasoning_model(self, model: str) -> bool:
-        return model.startswith("o")
+        # Every GPT-5.x id (5, 5.1, 5.4, 5.5, 5.6-sol/terra/luna, codex variants) uses
+        # reasoning.effort and rejects temperature/top_p with a 400.
+        return model.startswith("o") or model.startswith("gpt-5")
 
     def _setup_tools_parameter(
         self,
@@ -1054,20 +1055,7 @@ class OpenAiModel(Model, ABC):
             except APIError as error:
                 last_error = error
 
-                # Handle reasoning.summary error specially (retry with modified params)
-                # TODO: Same fallback bug as _execute_with_retry — see TODO there.
-                if (
-                    "reasoning.summary" in str(error)
-                    and "reasoning" in responses_parameters
-                ):
-                    logger.info(
-                        "Organization not verified for reasoning summaries, "
-                        "removing reasoning parameter and treating as regular model"
-                    )
-                    responses_parameters.pop("reasoning", None)
-                    responses_parameters["temperature"] = self.temperature
-                    responses_parameters["top_p"] = self.top_p
-                    # Continue to next attempt without incrementing backoff
+                if _strip_reasoning_summary_if_unverified(error, responses_parameters):
                     continue
 
                 # Don't retry 400 errors - these are parameter errors, not transient failures

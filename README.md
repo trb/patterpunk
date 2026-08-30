@@ -123,7 +123,7 @@ class WeatherReport(BaseModel):
 
 # Structured output with reasoning mode
 # Effort levels: "low" | "medium" | "high" | "xhigh" | "max"
-# (xhigh and max are Anthropic Claude Opus 4.7+ only; OpenAI/Google clamp to "high".)
+# (xhigh and max: Anthropic Claude 4.7+ and OpenAI GPT-5.x pass them through; Google clamps to "high".)
 model = AnthropicModel(
     model="claude-opus-4-7",
     thinking_config=ThinkingConfig(effort="xhigh")
