@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from abc import ABC
 from dataclasses import dataclass
@@ -304,8 +305,6 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
     def _parse_model_version(self) -> tuple[int, int]:
-        import re
-
         # Claude 3.x with minor version: claude-3-7-sonnet-20250219, claude-3-5-haiku-20241022
         claude3_minor_match = re.search(
             r"claude-3-(\d+)-(?:opus|sonnet|haiku)", self.model
@@ -323,7 +322,8 @@ Please extract the relevant information from this reasoning and format it exactl
         # Claude 4+ with date suffix: claude-opus-4-20250514, claude-sonnet-4-5-20250614
         # The 8-digit date anchor disambiguates the minor version from the date.
         claude4plus_dated = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$", self.model
+            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$",
+            self.model,
         )
         if claude4plus_dated:
             major = int(claude4plus_dated.group(1))
@@ -331,15 +331,25 @@ Please extract the relevant information from this reasoning and format it exactl
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
 
-        # Claude 4+ without date suffix: claude-opus-4-7 (Opus 4.7+ canonical form)
+        # Claude 4+ without date suffix: claude-opus-4-7, claude-fable-5 (canonical form)
         claude4plus_bare = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", self.model
+            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", self.model
         )
         if claude4plus_bare:
             major = int(claude4plus_bare.group(1))
             minor_str = claude4plus_bare.group(2)
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
+
+        if self.model.startswith("claude-"):
+            # An unrecognised Claude id used to fall through to the 3.x request shape,
+            # which the API tolerates while silently ignoring effort. Every current
+            # model uses the adaptive shape, so that is the safer guess.
+            logger.warning(
+                f"[ANTHROPIC] Unrecognised Claude model id '{self.model}'. "
+                f"Treating it as a Claude 5 model (adaptive thinking API)."
+            )
+            return (5, 0)
 
         return (0, 0)
 
@@ -354,7 +364,7 @@ Please extract the relevant information from this reasoning and format it exactl
         return False
 
     def _uses_adaptive_thinking_api(self) -> bool:
-        """Opus 4.7+ uses the adaptive-thinking API:
+        """Claude 4.7+ (including the 5 family) uses the adaptive-thinking API:
         - thinking={"type": "adaptive"} (no budget_tokens)
         - output_config={"effort": ...} sibling field
         - temperature/top_p/top_k removed
@@ -484,11 +494,6 @@ Please extract the relevant information from this reasoning and format it exactl
                     thinking_block["display"] = "summarized"
                 api_params["thinking"] = thinking_block
                 api_params["output_config"] = {"effort": self._resolve_effort()}
-            major, minor = self._parse_model_version()
-            if self.thinking_config is not None and major >= 4 and minor >= 5:
-                api_params["extra_headers"] = {
-                    "anthropic-beta": "interleaved-thinking-2025-05-14"
-                }
             return self._get_compatible_params(api_params)
 
         if self.thinking and self._is_reasoning_model():

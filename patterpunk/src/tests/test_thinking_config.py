@@ -42,7 +42,9 @@ def test_openai_model_thinking_config_integration():
 
 def test_anthropic_model_thinking_config_integration():
     thinking_config = ThinkingConfig(token_budget=10000)
-    model = AnthropicModel(model="claude-3.7-sonnet", thinking_config=thinking_config)
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219", thinking_config=thinking_config
+    )
     assert model.thinking_config == thinking_config
     assert model.thinking.budget_tokens == 10000
 

@@ -464,6 +464,10 @@ def test_reasoning_mode_version_parsing():
     assert model_unknown._parse_model_version() == (0, 0)
     assert model_unknown._is_reasoning_model() == False
 
+    model_fable = AnthropicModel(model="claude-fable-5")
+    assert model_fable._parse_model_version() == (5, 0)
+    assert model_fable._is_reasoning_model() == True
+
 
 def test_reasoning_mode_parameter_compatibility():
 
@@ -2015,3 +2019,58 @@ def test_legacy_model_sends_sampling_params_via_extra_body():
     kwargs = _to_sdk_kwargs(api_params)
     assert "temperature" not in kwargs
     assert kwargs["extra_body"]["temperature"] == 0.3
+
+
+# =============================================================================
+# Claude 5 family (fable / mythos / opus / sonnet) must take the adaptive path
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5-20260801",
+    ],
+)
+def test_claude_5_family_parses_as_adaptive(model_id):
+    model = AnthropicModel(model=model_id)
+    assert model._parse_model_version() == (5, 0)
+    assert model._is_reasoning_model() is True
+    assert model._uses_adaptive_thinking_api() is True
+
+
+def test_fable_5_request_shape():
+    """The request for claude-fable-5 must carry adaptive thinking + effort and
+    nothing from the legacy shape (sampling params, budget_tokens, beta header)."""
+    model = AnthropicModel(
+        model="claude-fable-5", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["thinking"] == {"type": "adaptive"}
+    assert api_params["output_config"] == {"effort": "high"}
+    assert not {"temperature", "top_p", "top_k", "extra_headers"} & api_params.keys()
+
+
+def test_adaptive_models_do_not_send_interleaved_thinking_header():
+    """Adaptive thinking enables interleaved thinking without the beta header."""
+    model = AnthropicModel(
+        model="claude-opus-4-7", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._apply_thinking_configuration({})
+    assert "extra_headers" not in api_params
+
+
+def test_unknown_claude_id_falls_back_to_adaptive_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(model="claude-unknown-model-9")
+        assert model._parse_model_version() == (5, 0)
+    assert any(
+        "Unrecognised Claude model id" in r.message and r.levelname == "WARNING"
+        for r in caplog.records
+    )
+    assert AnthropicModel(model="some-unknown-model")._parse_model_version() == (0, 0)
