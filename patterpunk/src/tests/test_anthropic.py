@@ -6,6 +6,7 @@ from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.thinking import ThinkingConfig
+from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
@@ -2257,3 +2258,44 @@ def test_legacy_thinking_budget_below_max_tokens_constructs():
 
     # Adaptive models have no budget, so the guard never applies to them.
     AnthropicModel(model="claude-fable-5", thinking_config=ThinkingConfig(effort="max"))
+
+
+# =============================================================================
+# Legacy tool path: provide_structured_response is a protocol, not a tool
+# =============================================================================
+
+
+class _FakeToolUseBlock:
+    type = "tool_use"
+    id = "toolu_1"
+    name = "provide_structured_response"
+
+    def __init__(self, input):
+        self.input = input
+
+
+def test_structured_output_tool_is_strict_with_transformed_schema():
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    tool = model._create_structured_output_tool(_Verdict)
+    assert tool["strict"] is True
+    assert tool["input_schema"]["additionalProperties"] is False
+    assert set(tool["input_schema"]["required"]) == {"answer", "confidence", "tags"}
+
+
+def test_invalid_structured_tool_input_becomes_assistant_text_not_tool_call():
+    from patterpunk.llm.messages.exceptions import StructuredOutputFailedToParseError
+
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    block = _FakeToolUseBlock({"answer": "x", "confidence": 5.0})  # invalid, no tags
+    message = model._parse_structured_output_from_tool_call(block, _Verdict)
+    assert isinstance(message, AssistantMessage)
+    assert '"answer": "x"' in message.content
+    with pytest.raises(StructuredOutputFailedToParseError):
+        message.parsed_output
+
+
+def test_valid_structured_tool_input_is_parsed():
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    block = _FakeToolUseBlock({"answer": "x", "confidence": 0.5, "tags": ["t"]})
+    message = model._parse_structured_output_from_tool_call(block, _Verdict)
+    assert message.parsed_output.tags == ["t"]

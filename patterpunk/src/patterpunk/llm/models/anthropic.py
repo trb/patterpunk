@@ -231,11 +231,15 @@ class AnthropicModel(Model, ABC):
                 "structured_output must be a Pydantic model with schema support"
             )
 
-        schema = get_model_schema(structured_output)
+        # strict tool use is constrained decoding: the model cannot drop a required
+        # field or drift out of JSON mid-input. It requires the same strict-compatible
+        # schema shape as native structured outputs, hence transform_schema.
+        schema = transform_schema(get_model_schema(structured_output))
 
         return {
             "name": "provide_structured_response",
             "description": "Provide the response in the exact structured format specified by the schema.",
+            "strict": True,
             "input_schema": schema,
         }
 
@@ -424,6 +428,9 @@ Please extract the relevant information from this reasoning and format it exactl
             "type": "json_schema",
             "schema": schema,
         }
+        logger.info(
+            f"[ANTHROPIC] Using native structured output (output_config.format) for {self.model}"
+        )
         return api_params
 
     def _get_compatible_params(self, api_params: dict) -> dict:
@@ -799,24 +806,28 @@ Please extract the relevant information from this reasoning and format it exactl
         thinking_blocks: Optional[List[dict]] = None,
         diagnostics_kwargs: Optional[dict] = None,
     ) -> Optional[AssistantMessage]:
-        if block.name == "provide_structured_response" and structured_output:
-            if hasattr(block, "input") and block.input:
-                try:
-                    parsed_output = structured_output.model_validate(block.input)
-                    structured_response_content = json.dumps(block.input, indent=2)
+        if block.name != "provide_structured_response" or not structured_output:
+            return None
 
-                    return AssistantMessage(
-                        structured_response_content,
-                        structured_output=structured_output,
-                        parsed_output=parsed_output,
-                        thinking_blocks=thinking_blocks,
-                        **(diagnostics_kwargs or {}),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to parse structured output from tool call: {e}"
-                    )
-        return None
+        raw_input = getattr(block, "input", None) or {}
+        structured_response_content = json.dumps(raw_input, indent=2)
+        parsed_output = None
+        try:
+            parsed_output = structured_output.model_validate(raw_input)
+        except Exception as e:
+            # provide_structured_response is a protocol, not a tool: returning the raw
+            # JSON as assistant text (instead of a ToolCallMessage) keeps Chat from
+            # trying to execute it, and lets parsed_output raise so the chat layer
+            # re-prompts with a non-empty assistant turn.
+            logger.warning(f"Failed to parse structured output from tool call: {e}")
+
+        return AssistantMessage(
+            structured_response_content,
+            structured_output=structured_output,
+            parsed_output=parsed_output,
+            thinking_blocks=thinking_blocks,
+            **(diagnostics_kwargs or {}),
+        )
 
     def _convert_tool_call_block(self, block) -> ToolCall:
         arguments = "{}"
