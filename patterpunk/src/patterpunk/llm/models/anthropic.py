@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import tempfile
 import time
 from abc import ABC
 from dataclasses import dataclass
@@ -55,8 +57,18 @@ from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.llm.streaming import StreamChunk, StreamEventType
 from patterpunk.logger import logger
 
-if anthropic:
+# These symbols import whenever the anthropic package is installed, not only
+# when PP_ANTHROPIC_API_KEY is set. Gating them on the client global broke the
+# Vertex and Foundry subclasses: "except APIError" raised NameError.
+try:
     from anthropic import APIError, transform_schema
+except ImportError:
+    pass
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 
 @dataclass
@@ -212,6 +224,22 @@ class AnthropicModel(Model, ABC):
             effort = "high"
         return ThinkingConfig(type="enabled", budget_tokens=effort_to_tokens[effort])
 
+    # Subclasses (Vertex, Foundry) override the client hooks to swap the
+    # transport while inheriting request building. Clients must stay
+    # config-module state, never instance attributes. Tests monkeypatch the
+    # module globals, and instance clients would break deepcopy of models.
+    def _get_sync_client(self):
+        return anthropic
+
+    def _get_async_client(self):
+        return anthropic_async
+
+    def _capability_model_id(self) -> str:
+        return self.model
+
+    def _structured_output_formatter_model_id(self) -> str:
+        return "claude-haiku-4-5"
+
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         anthropic_tools = []
         for tool in tools:
@@ -252,12 +280,13 @@ class AnthropicModel(Model, ABC):
         diagnostics_kwargs: Optional[dict] = None,
     ) -> AssistantMessage:
         """
-        Legacy path for models below Claude 4.5, which lack native structured output.
-        Reasoning models can't use forced tool_choice, so a second, non-thinking Haiku
-        call formats the reasoning text into the schema via a forced tool call.
+        Models below Claude 4.5 lack native structured output. Anthropic rejects
+        forced tool_choice while thinking is enabled. A separate non-thinking
+        Haiku call formats the reasoning text into the schema.
         """
+        formatter_model = self._structured_output_formatter_model_id()
         logger.info(
-            "[ANTHROPIC] Formatting reasoning output to structured JSON using Claude Haiku 4.5"
+            f"[ANTHROPIC] Formatting reasoning output to structured JSON using {formatter_model}"
         )
 
         diagnostics_kwargs = diagnostics_kwargs or {}
@@ -279,7 +308,7 @@ Reasoning and analysis from Claude:
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
         haiku_params = {
-            "model": "claude-haiku-4-5",
+            "model": formatter_model,
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
             "temperature": 0.1,
@@ -288,7 +317,7 @@ Please extract the relevant information from this reasoning and format it exactl
         }
 
         try:
-            formatting_response = anthropic.messages.create(
+            formatting_response = self._get_sync_client().messages.create(
                 **_to_sdk_kwargs(haiku_params)
             )
 
@@ -343,16 +372,16 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
     def _parse_model_version(self) -> tuple[int, int]:
-        # Claude 3.x with minor version: claude-3-7-sonnet-20250219, claude-3-5-haiku-20241022
+        model_id = self._capability_model_id()
+
         claude3_minor_match = re.search(
-            r"claude-3-(\d+)-(?:opus|sonnet|haiku)", self.model
+            r"claude-3-(\d+)-(?:opus|sonnet|haiku)", model_id
         )
         if claude3_minor_match:
             return (3, int(claude3_minor_match.group(1)))
 
-        # Claude 3.0 base format: claude-3-haiku-20240307, claude-3-opus-20240229
         claude3_base_match = re.search(
-            r"claude-3-(?:opus|sonnet|haiku)-\d{8}", self.model
+            r"claude-3-(?:opus|sonnet|haiku)-\d{8}", model_id
         )
         if claude3_base_match:
             return (3, 0)
@@ -361,7 +390,7 @@ Please extract the relevant information from this reasoning and format it exactl
         # The 8-digit date anchor disambiguates the minor version from the date.
         claude4plus_dated = re.search(
             r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$",
-            self.model,
+            model_id,
         )
         if claude4plus_dated:
             major = int(claude4plus_dated.group(1))
@@ -371,7 +400,7 @@ Please extract the relevant information from this reasoning and format it exactl
 
         # Claude 4+ without date suffix: claude-opus-4-7, claude-fable-5 (canonical form)
         claude4plus_bare = re.search(
-            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", self.model
+            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", model_id
         )
         if claude4plus_bare:
             major = int(claude4plus_bare.group(1))
@@ -379,12 +408,9 @@ Please extract the relevant information from this reasoning and format it exactl
             minor = int(minor_str) if minor_str else 0
             return (major, minor)
 
-        if self.model.startswith("claude-"):
-            # An unrecognised Claude id used to fall through to the 3.x request shape,
-            # which the API tolerates while silently ignoring effort. Every current
-            # model uses the adaptive shape, so that is the safer guess.
+        if model_id.startswith("claude-"):
             logger.warning(
-                f"[ANTHROPIC] Unrecognised Claude model id '{self.model}'. "
+                f"[ANTHROPIC] Unrecognised Claude model id '{model_id}'. "
                 f"Treating it as a Claude 5 model (adaptive thinking API)."
             )
             return (5, 0)
@@ -874,7 +900,7 @@ Please extract the relevant information from this reasoning and format it exactl
         system_prompt = self._prepare_system_prompt(messages)
 
         if self.retry_config is not None:
-            client = anthropic.with_options(max_retries=0)
+            client = self._get_sync_client().with_options(max_retries=0)
             return run_with_retry_config(
                 self.retry_config,
                 lambda: self._attempt_completion(
@@ -888,7 +914,11 @@ Please extract the relevant information from this reasoning and format it exactl
         while True:
             try:
                 return self._attempt_completion(
-                    messages, tools, structured_output, system_prompt, anthropic
+                    messages,
+                    tools,
+                    structured_output,
+                    system_prompt,
+                    self._get_sync_client(),
                 )
             except APIError as e:
                 should_retry, retry_count = self._handle_api_error(e, retry_count)
@@ -1065,14 +1095,11 @@ Please extract the relevant information from this reasoning and format it exactl
 
                 if chunk.source_type == "url":
                     if session is None:
-                        try:
-                            import requests
-
-                            session = requests.Session()
-                        except ImportError:
+                        if requests is None:
                             raise ImportError(
                                 "requests library required for URL support with Anthropic"
                             )
+                        session = requests.Session()
 
                     chunk = chunk.download(session)
 
@@ -1103,13 +1130,6 @@ Please extract the relevant information from this reasoning and format it exactl
 
     def upload_file_to_anthropic(self, chunk: MultimodalChunk) -> str:
         try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=anthropic.api_key)
-
-            import tempfile
-            import os
-
             with tempfile.NamedTemporaryFile(
                 suffix=f".{chunk.media_type.split('/')[-1] if chunk.media_type else 'bin'}",
                 delete=False,
@@ -1119,7 +1139,9 @@ Please extract the relevant information from this reasoning and format it exactl
 
             try:
                 with open(tmp_file_path, "rb") as f:
-                    file_response = client.files.create(file=f, purpose="vision")
+                    file_response = self._get_sync_client().files.create(
+                        file=f, purpose="vision"
+                    )
 
                 return file_response.id
             finally:
@@ -1313,25 +1335,9 @@ Please extract the relevant information from this reasoning and format it exactl
         return params
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
-        """
-        Count tokens using Anthropic's API.
-
-        This makes an API call to Anthropic's count_tokens endpoint, which accurately
-        counts all content types including images and PDFs. For batch counting of
-        multiple messages, a single API call is made.
-
-        Args:
-            content: A string, single Message, or list of Messages
-
-        Returns:
-            Number of tokens
-
-        Raises:
-            TokenCountingError: If counting fails
-        """
         try:
             params = self._prepare_count_tokens_params(content)
-            response = anthropic.messages.count_tokens(**params)
+            response = self._get_sync_client().messages.count_tokens(**params)
             return response.input_tokens
         except APIError as e:
             raise TokenCountingError(f"Anthropic API error: {e}")
@@ -1341,23 +1347,9 @@ Please extract the relevant information from this reasoning and format it exactl
     async def count_tokens_async(
         self, content: Union[str, Message, List[Message]]
     ) -> int:
-        """
-        Count tokens using Anthropic's async API.
-
-        Native async version using Anthropic's async client for better concurrency.
-
-        Args:
-            content: A string, single Message, or list of Messages
-
-        Returns:
-            Number of tokens
-
-        Raises:
-            TokenCountingError: If counting fails
-        """
         try:
             params = self._prepare_count_tokens_params(content)
-            response = await anthropic_async.messages.count_tokens(**params)
+            response = await self._get_async_client().messages.count_tokens(**params)
             return response.input_tokens
         except APIError as e:
             raise TokenCountingError(f"Anthropic API error: {e}")
@@ -1403,9 +1395,6 @@ Please extract the relevant information from this reasoning and format it exactl
                 "[ANTHROPIC] disable_safety_filters has no effect — Anthropic does "
                 "not expose API parameters that weaken intrinsic safety."
             )
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
-        # Build API parameters (same as sync, but we'll use async client)
         system_prompt = self._prepare_system_prompt(messages)
         api_params = self._build_base_api_parameters(messages, system_prompt)
         api_params = self._apply_thinking_configuration(api_params)
@@ -1417,7 +1406,7 @@ Please extract the relevant information from this reasoning and format it exactl
         api_params.pop("timeout", None)
 
         if self.retry_config is not None:
-            client = anthropic_async.with_options(max_retries=0)
+            client = self._get_async_client().with_options(max_retries=0)
 
             async def acquire_stream():
                 return self._stream_events(api_params, client)
@@ -1428,9 +1417,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 yield chunk
             return
 
-        # Configure SDK retry to match sync path's MAX_RETRIES
-        # The SDK uses exponential backoff and handles 429, 5xx, connection errors
-        client_with_retry = anthropic_async.with_options(max_retries=MAX_RETRIES)
+        client_with_retry = self._get_async_client().with_options(
+            max_retries=MAX_RETRIES
+        )
 
         async for chunk in self._stream_events(api_params, client_with_retry):
             yield chunk
@@ -1467,13 +1456,6 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
     def _convert_stream_event_to_chunk(self, event) -> Optional["StreamChunk"]:
-        """
-        Convert an Anthropic streaming event to a StreamChunk.
-
-        Returns None for events we don't need to expose.
-        """
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
         event_type = getattr(event, "type", None)
 
         if event_type == "content_block_start":
