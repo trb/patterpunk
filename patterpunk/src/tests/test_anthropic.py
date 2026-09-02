@@ -2299,3 +2299,63 @@ def test_valid_structured_tool_input_is_parsed():
     block = _FakeToolUseBlock({"answer": "x", "confidence": 0.5, "tags": ["t"]})
     message = model._parse_structured_output_from_tool_call(block, _Verdict)
     assert message.parsed_output.tags == ["t"]
+
+
+# =============================================================================
+# Sampling-parameter drop/coercion warnings (shared claude_capabilities rules)
+# =============================================================================
+
+
+def test_claude_4_custom_top_k_drop_warns(caplog):
+    model = AnthropicModel(model="claude-sonnet-4-5-20250929", top_k=40)
+    api_params = {
+        "model": "claude-sonnet-4-5-20250929",
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "top_k": 40,
+        "max_tokens": 1000,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert "top_k" not in filtered
+    assert filtered["temperature"] == 0.7
+    assert any("Dropping user-set top_k=40" in r.message for r in caplog.records)
+
+
+def test_thinking_mode_custom_temperature_coercion_warns(caplog):
+    model = AnthropicModel(
+        model="claude-sonnet-4-5-20250929",
+        thinking_config=ThinkingConfig(token_budget=2000),
+        temperature=0.3,
+    )
+    api_params = {
+        "temperature": 0.3,
+        "top_p": 1.0,
+        "top_k": 200,
+        "max_tokens": 8192,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert filtered["temperature"] == 1.0
+    assert any(
+        "Coercing user-set temperature=0.3 to 1.0" in r.message for r in caplog.records
+    )
+
+
+def test_thinking_mode_default_params_coerce_silently(caplog):
+    model = AnthropicModel(
+        model="claude-sonnet-4-5-20250929",
+        thinking_config=ThinkingConfig(token_budget=2000),
+    )
+    api_params = {
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "top_k": 200,
+        "max_tokens": 8192,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert filtered["temperature"] == 1.0
+    assert "top_p" not in filtered
+    assert "top_k" not in filtered
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []

@@ -215,9 +215,7 @@ def test_resolver_claude4_keeps_temperature_drops_top_p_and_top_k():
     assert resolution.top_p is None
     assert resolution.top_k is None
     assert any("Dropping top_p=0.5" in warning for warning in resolution.warnings)
-    assert any(
-        "keeping temperature=0.2" in warning for warning in resolution.warnings
-    )
+    assert any("keeping temperature=0.2" in warning for warning in resolution.warnings)
     assert any("top_k=40" in warning for warning in resolution.warnings)
 
 

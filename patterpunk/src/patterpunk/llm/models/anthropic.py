@@ -48,6 +48,12 @@ from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
+from patterpunk.llm.models.claude_capabilities import (
+    ClaudeVersion,
+    SamplingParams,
+    parse_claude_version,
+    resolve_claude_sampling,
+)
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
@@ -373,49 +379,15 @@ Please extract the relevant information from this reasoning and format it exactl
 
     def _parse_model_version(self) -> tuple[int, int]:
         model_id = self._capability_model_id()
-
-        claude3_minor_match = re.search(
-            r"claude-3-(\d+)-(?:opus|sonnet|haiku)", model_id
-        )
-        if claude3_minor_match:
-            return (3, int(claude3_minor_match.group(1)))
-
-        claude3_base_match = re.search(
-            r"claude-3-(?:opus|sonnet|haiku)-\d{8}", model_id
-        )
-        if claude3_base_match:
-            return (3, 0)
-
-        # Claude 4+ with date suffix: claude-opus-4-20250514, claude-sonnet-4-5-20250614
-        # The 8-digit date anchor disambiguates the minor version from the date.
-        claude4plus_dated = re.search(
-            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$",
-            model_id,
-        )
-        if claude4plus_dated:
-            major = int(claude4plus_dated.group(1))
-            minor_str = claude4plus_dated.group(2)
-            minor = int(minor_str) if minor_str else 0
-            return (major, minor)
-
-        # Claude 4+ without date suffix: claude-opus-4-7, claude-fable-5 (canonical form)
-        claude4plus_bare = re.search(
-            r"claude-(?:fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", model_id
-        )
-        if claude4plus_bare:
-            major = int(claude4plus_bare.group(1))
-            minor_str = claude4plus_bare.group(2)
-            minor = int(minor_str) if minor_str else 0
-            return (major, minor)
-
-        if model_id.startswith("claude-"):
+        version = parse_claude_version(model_id)
+        if version is None:
+            return (0, 0)
+        if not version.recognized:
             logger.warning(
                 f"[ANTHROPIC] Unrecognised Claude model id '{model_id}'. "
                 f"Treating it as a Claude 5 model (adaptive thinking API)."
             )
-            return (5, 0)
-
-        return (0, 0)
+        return (version.major, version.minor)
 
     def _is_reasoning_model(self) -> bool:
         major, minor = self._parse_model_version()
@@ -460,55 +432,38 @@ Please extract the relevant information from this reasoning and format it exactl
         return api_params
 
     def _get_compatible_params(self, api_params: dict) -> dict:
-        major, minor = self._parse_model_version()
-
-        # Opus 4.7+: sampling params were already stripped at build time, nothing to reconcile
         if self._uses_adaptive_thinking_api():
             return api_params
 
-        # Claude 4+ models with thinking mode: remove top_p/top_k, force temperature=1.0
-        if major >= 4 and self.thinking:
-            compatible_params = api_params.copy()
-            if "top_p" in compatible_params:
-                del compatible_params["top_p"]
-            if "top_k" in compatible_params:
-                del compatible_params["top_k"]
-            compatible_params["temperature"] = 1.0
-            return compatible_params
+        major, minor = self._parse_model_version()
+        resolution = resolve_claude_sampling(
+            ClaudeVersion(major, minor),
+            thinking_enabled=bool(self.thinking),
+            requested=SamplingParams(
+                temperature=api_params.get("temperature"),
+                top_p=api_params.get("top_p"),
+                top_k=api_params.get("top_k"),
+            ),
+            defaults=SamplingParams(
+                temperature=ANTHROPIC_DEFAULT_TEMPERATURE,
+                top_p=ANTHROPIC_DEFAULT_TOP_P,
+                top_k=ANTHROPIC_DEFAULT_TOP_K,
+            ),
+        )
+        for warning in resolution.warnings:
+            logger.warning(f"[ANTHROPIC] {warning}")
 
-        # Claude 4+ models without thinking: temperature and top_p cannot both be specified
-        if major >= 4:
-            has_temp = "temperature" in api_params
-            has_top_p = "top_p" in api_params
-
-            if has_temp and has_top_p:
-                top_p_value = api_params.get("top_p")
-                temp_value = api_params.get("temperature")
-                compatible_params = api_params.copy()
-                # Drop top_p (Anthropic recommends keeping temperature). If the user
-                # explicitly set a non-default top_p, surface that we're discarding it.
-                if top_p_value != 1.0:
-                    logger.warning(
-                        f"[ANTHROPIC] Claude 4+ rejects both 'temperature' and 'top_p' simultaneously. "
-                        f"Dropping top_p={top_p_value} (keeping temperature={temp_value}). "
-                        f"Anthropic recommends using 'temperature' for most use cases."
-                    )
-                del compatible_params["top_p"]
-                if "top_k" in compatible_params:
-                    del compatible_params["top_k"]
-                return compatible_params
-
-        # For Claude 3.x with thinking mode (existing behavior)
-        if self.thinking:
-            compatible_params = api_params.copy()
-            if "top_p" in compatible_params:
-                del compatible_params["top_p"]
-            if "top_k" in compatible_params:
-                del compatible_params["top_k"]
-            compatible_params["temperature"] = 1.0
-            return compatible_params
-
-        return api_params
+        compatible_params = api_params.copy()
+        for name, value in (
+            ("temperature", resolution.temperature),
+            ("top_p", resolution.top_p),
+            ("top_k", resolution.top_k),
+        ):
+            if value is None:
+                compatible_params.pop(name, None)
+            else:
+                compatible_params[name] = value
+        return compatible_params
 
     def _prepare_system_prompt(
         self, messages: List[Message]
