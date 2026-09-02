@@ -651,3 +651,125 @@ def test_diagnostics_and_safety_filter_integration():
     assert len(response.content.strip()) > 0
     assert response.finish_reason == FinishReason.STOP
     assert response._provider.raw_finish_reason == "end_turn"
+
+
+# =============================================================================
+# Claude sampling-parameter filtering (shared claude_capabilities rules)
+# =============================================================================
+
+
+def test_claude_45_drops_top_p_with_warning(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.4}
+    assert any(
+        "[BEDROCK]" in r.message and "Dropping top_p=0.9" in r.message
+        for r in caplog.records
+    )
+
+
+def test_claude_45_without_top_p_is_silent(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.4}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_5_omits_sampling_with_warning_for_custom_values(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-opus-5-20260120-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=2000,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"maxTokens": 2000}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("temperature=0.4" in m and "top_p=0.9" in m for m in warning_messages)
+
+
+def test_claude_5_at_defaults_is_silent_and_omits_inference_config(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-opus-5-20260120-v1:0")
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+        converse_params = bedrock._build_converse_params([])
+    assert config == {}
+    assert "inferenceConfig" not in converse_params
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_3_sampling_passes_through(caplog):
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.1,
+        top_p=0.98,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.1, "topP": 0.98}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_45_thinking_budget_forces_temperature_and_max_tokens():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=1.0,
+        max_tokens=2000,
+        thinking_config=ThinkingConfig(token_budget=3000),
+    )
+    config = bedrock._build_inference_config()
+    assert config["temperature"] == 1.0
+    assert "topP" not in config
+    assert config["maxTokens"] == 5000
+
+
+def test_claude_45_thinking_effort_also_strips_sampling(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+        thinking_config=ThinkingConfig(effort="high"),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 1.0}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "Coercing user-set temperature=0.4 to 1.0" in m for m in warning_messages
+    )
+    assert any("Dropping user-set top_p=0.9" in m for m in warning_messages)
+
+
+def test_non_claude_models_keep_sampling_untouched(caplog):
+    bedrock = BedrockModel(
+        model_id="mistral.mistral-large-2402-v1:0",
+        temperature=0.3,
+        top_p=0.9,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.3, "topP": 0.9}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_unknown_claude_id_gets_newest_family_rules_with_warning(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-futuristic-99",
+        temperature=0.2,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Unrecognised Claude model id" in m for m in warning_messages)
+    assert any("temperature=0.2" in m for m in warning_messages)

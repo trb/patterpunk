@@ -38,6 +38,12 @@ from patterpunk.config.providers.bedrock import (
     BEDROCK_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
+from patterpunk.llm.models.claude_capabilities import (
+    ClaudeVersion,
+    SamplingParams,
+    parse_claude_version,
+    resolve_claude_sampling,
+)
 
 if boto3:
     from botocore.exceptions import ClientError
@@ -442,18 +448,43 @@ class BedrockModel(Model, ABC):
 
         return conversation, system_content if system_content else None
 
+    def _build_claude_sampling_config(self, version: ClaudeVersion) -> dict:
+        if not version.recognized:
+            logger.warning(
+                f"[BEDROCK] Unrecognised Claude model id '{self.model_id}'. "
+                f"Treating it as a Claude 5 model."
+            )
+
+        resolution = resolve_claude_sampling(
+            version,
+            thinking_enabled=bool(self._get_thinking_params()),
+            requested=SamplingParams(temperature=self.temperature, top_p=self.top_p),
+            defaults=SamplingParams(temperature=DEFAULT_TEMPERATURE),
+        )
+        for warning in resolution.warnings:
+            logger.warning(f"[BEDROCK] {warning}")
+
+        sampling_config = {}
+        if resolution.temperature is not None:
+            sampling_config["temperature"] = resolution.temperature
+        if resolution.top_p is not None:
+            sampling_config["topP"] = resolution.top_p
+        return sampling_config
+
     def _build_inference_config(
         self, structured_output: Optional[object] = None
     ) -> dict:
-        inference_config = {
-            "temperature": self.temperature,
-        }
+        # Anthropic enforces its sampling rules through Bedrock unchanged, so
+        # Claude ids go through the shared resolver. Other model families
+        # (Llama, Mistral, Nova, Titan, DeepSeek) accept temperature and topP.
+        claude_version = parse_claude_version(self.model_id)
+        if claude_version is not None:
+            inference_config = self._build_claude_sampling_config(claude_version)
+        else:
+            inference_config = {"temperature": self.temperature}
+            if self.top_p is not None:
+                inference_config["topP"] = self.top_p
 
-        # Only add topP if explicitly specified (some models like Claude 4.5 don't allow both)
-        if self.top_p is not None:
-            inference_config["topP"] = self.top_p
-
-        # Add max_tokens if specified
         if self.max_tokens:
             inference_config["maxTokens"] = self.max_tokens
 
@@ -490,8 +521,9 @@ class BedrockModel(Model, ABC):
         converse_params = {
             "modelId": self.model_id,
             "messages": conversation,
-            "inferenceConfig": inference_config,
         }
+        if inference_config:
+            converse_params["inferenceConfig"] = inference_config
 
         if system_content:
             converse_params["system"] = system_content
