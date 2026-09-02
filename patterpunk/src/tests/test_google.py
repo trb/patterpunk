@@ -458,3 +458,65 @@ def test_diagnostics_and_safety_filter_integration():
     assert len(response.content) > 0
     assert response.finish_reason == FinishReason.STOP
     assert response._provider.raw_finish_reason == "STOP"
+
+
+# =============================================================================
+# Gemini 3.5+ sampling-parameter deprecation gate
+# =============================================================================
+
+
+def make_stub_model(**kwargs):
+    return GoogleModel(client=object(), **kwargs)
+
+
+def test_gemini_25_keeps_sampling_params(caplog):
+    model = make_stub_model(
+        model="gemini-2.5-pro", temperature=0.3, top_p=0.8, top_k=20
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = model._build_generation_config(None, None, None, None)
+    assert config.temperature == 0.3
+    assert config.top_p == 0.8
+    assert config.top_k == 20
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_gemini_36_omits_sampling_with_warning(caplog):
+    model = make_stub_model(
+        model="gemini-3.6-pro", temperature=0.3, top_p=0.8, top_k=20
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = model._build_generation_config(None, None, None, None)
+    assert config.temperature is None
+    assert config.top_p is None
+    assert config.top_k is None
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "[GOOGLE]" in m
+        and "temperature=0.3" in m
+        and "top_p=0.8" in m
+        and "top_k=20" in m
+        for m in warning_messages
+    )
+
+
+def test_gemini_35_boundary_omits_sampling():
+    model = make_stub_model(model="gemini-3.5-flash", temperature=0.3)
+    config = model._build_generation_config(None, None, None, None)
+    assert config.temperature is None
+
+
+def test_gemini_36_at_defaults_is_silent(caplog):
+    model = make_stub_model(model="gemini-3.6-flash")
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = model._build_generation_config(None, None, None, None)
+    assert config.temperature is None
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_unknown_gemini_id_gets_newest_family_rules(caplog):
+    model = make_stub_model(model="gemini-next", temperature=0.3)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = model._build_generation_config(None, None, None, None)
+    assert config.temperature is None
+    assert any("temperature=0.3" in r.message for r in caplog.records)

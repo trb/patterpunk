@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from abc import ABC
@@ -100,6 +101,9 @@ def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
     if raw is None:
         return None
     return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+_GEMINI_VERSION_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
 
 
 def _build_all_safety_off() -> Optional[List["types.SafetySetting"]]:
@@ -709,6 +713,33 @@ class GoogleModel(Model, ABC):
 
         return "\n\n".join(system_parts)
 
+    def _sampling_params_are_ignored(self) -> bool:
+        # Google deprecated temperature/top_p/top_k on Gemini 3.5+: the API
+        # accepts them without error but silently ignores them. Omitting them
+        # with a warning is the only way to surface that to the user. Unknown
+        # model ids get the newest family's rules.
+        match = _GEMINI_VERSION_RE.search(self.model)
+        if match is None:
+            return True
+        major = int(match.group(1))
+        minor = int(match.group(2) or 0)
+        return (major, minor) >= (3, 5)
+
+    def _warn_ignored_sampling_params(self) -> None:
+        ignored = []
+        if self.temperature != GOOGLE_DEFAULT_TEMPERATURE:
+            ignored.append(f"temperature={self.temperature}")
+        if self.top_p != GOOGLE_DEFAULT_TOP_P:
+            ignored.append(f"top_p={self.top_p}")
+        if self.top_k != GOOGLE_DEFAULT_TOP_K:
+            ignored.append(f"top_k={self.top_k}")
+        if ignored:
+            logger.warning(
+                f"[GOOGLE] Gemini 3.5+ deprecates and ignores sampling parameters. "
+                f"Omitting user-set value(s) for model '{self.model}': "
+                f"{', '.join(ignored)}."
+            )
+
     def _build_generation_config(
         self,
         tools: Optional[ToolDefinition],
@@ -717,12 +748,16 @@ class GoogleModel(Model, ABC):
         system_instruction: Optional[str],
         disable_safety_filters: bool = False,
     ) -> types.GenerateContentConfig:
-        config = types.GenerateContentConfig(
-            max_output_tokens=self.max_tokens,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-        )
+        if self._sampling_params_are_ignored():
+            self._warn_ignored_sampling_params()
+            config = types.GenerateContentConfig(max_output_tokens=self.max_tokens)
+        else:
+            config = types.GenerateContentConfig(
+                max_output_tokens=self.max_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
+            )
 
         response_modalities = self._translate_output_types_to_google_modalities(
             output_types
