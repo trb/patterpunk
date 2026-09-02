@@ -1,16 +1,16 @@
 """
-Isolated tests for Azure OpenAI that require environment manipulation.
-
-These tests modify environment variables and reload Python modules, which
-corrupts module state for other tests. They MUST be run in isolation:
+The credential and endpoint tests here call importlib.reload on the Azure
+config and model modules. Reloading rebinds AzureOpenAiModel. A test that
+imported the old class earlier then asserts against a dead reference.
+Run this file alone:
 
     pytest tests/test_azure_openai_isolated.py
-
-Do NOT run these alongside other tests in the same pytest invocation.
 """
 
 import os
 import pytest
+
+from patterpunk.llm.models.azure_openai import AzureOpenAiModel
 
 
 def test_azure_model_requires_credentials():
@@ -293,3 +293,20 @@ def test_azure_openai_works_without_openai_api_key():
         importlib.reload(azure_config)
         importlib.reload(openai_model)
         importlib.reload(azure_model)
+
+
+def test_azure_reasoning_model_classification():
+    cases = [
+        ("o1-deploy", True),
+        ("o3-mini", True),
+        ("gpt-5.2", True),
+        ("gpt-5.2-chat-latest", False),
+        ("GPT-5-Chat", False),
+        ("gpt-4o", False),
+        ("gpt-4.1-mini", False),
+        ("my-custom-deployment", False),
+    ]
+    for deployment_name, expected in cases:
+        assert (
+            AzureOpenAiModel._is_reasoning_model(None, deployment_name) is expected
+        ), deployment_name

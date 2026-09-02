@@ -197,8 +197,12 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         return []
 
     def _is_reasoning_model(self, model: str) -> bool:
-        """Check if this is a reasoning model that uses thinking tokens."""
         model_lower = model.lower()
+
+        # "-chat" variants (gpt-5.2-chat-latest) are non-reasoning Instant models
+        # that accept sampling params and reject the reasoning parameter.
+        if "-chat" in model_lower:
+            return False
 
         if model_lower.startswith(("o1", "o3")):
             return True

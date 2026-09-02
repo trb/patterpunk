@@ -487,9 +487,12 @@ class OpenAiModel(Model, ABC):
         logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
 
     def _is_reasoning_model(self, model: str) -> bool:
-        # Every GPT-5.x id (5, 5.1, 5.4, 5.5, 5.6-sol/terra/luna, codex variants) uses
-        # reasoning.effort and rejects temperature/top_p with a 400.
-        return model.startswith("o") or model.startswith("gpt-5")
+        # GPT-5.x ids (5, 5.1, 5.4, 5.5, 5.6-sol/terra/luna, codex variants) use
+        # reasoning.effort and reject temperature/top_p with a 400. The exception:
+        # "-chat" variants (gpt-5.2-chat-latest) are non-reasoning Instant models
+        # that accept sampling params and reject the reasoning parameter.
+        is_reasoning_family = model.startswith("o") or model.startswith("gpt-5")
+        return is_reasoning_family and "-chat" not in model
 
     def _setup_tools_parameter(
         self,
@@ -548,6 +551,35 @@ class OpenAiModel(Model, ABC):
             }
         return None
 
+    def _warn_dropped_sampling_params(
+        self,
+        model: str,
+        temperature: float,
+        top_p: float,
+        frequency_penalty: float,
+        presence_penalty: float,
+        logit_bias: dict,
+    ) -> None:
+        # Values matching the framework defaults were supplied by patterpunk,
+        # not the user, and drop silently. Only user-customized values warn.
+        dropped = []
+        if temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={temperature}")
+        if top_p != 1.0:
+            dropped.append(f"top_p={top_p}")
+        if frequency_penalty != 0.0:
+            dropped.append(f"frequency_penalty={frequency_penalty}")
+        if presence_penalty != 0.0:
+            dropped.append(f"presence_penalty={presence_penalty}")
+        if logit_bias:
+            dropped.append(f"logit_bias={logit_bias}")
+        if dropped:
+            logger.warning(
+                f"[{self.get_name().upper()}] Reasoning model '{model}' rejects "
+                f"sampling parameters. Dropping user-set value(s): {', '.join(dropped)}. "
+                f"Use ThinkingConfig(effort=...) to control output instead."
+            )
+
     def _setup_model_parameters(
         self,
         model: str,
@@ -561,11 +593,19 @@ class OpenAiModel(Model, ABC):
         model_params = {}
 
         if self._is_reasoning_model(model):
+            self._warn_dropped_sampling_params(
+                model, temperature, top_p, frequency_penalty, presence_penalty, logit_bias
+            )
             model_params["reasoning"] = {
                 "effort": reasoning_effort.name.lower(),
-                "summary": "auto",  # Enable streaming reasoning summaries
+                "summary": "auto",
             }
         else:
+            if self.thinking_config is not None:
+                logger.warning(
+                    f"[{self.get_name().upper()}] Model '{model}' is not a reasoning "
+                    f"model; ignoring thinking_config."
+                )
             model_params["temperature"] = temperature
             model_params["top_p"] = top_p
             if frequency_penalty != 0.0:
