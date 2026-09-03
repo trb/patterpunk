@@ -542,8 +542,12 @@ class ChatStreamFactory:
             accumulator.usage.get("thinking_tokens") if accumulator.usage else None
         )
 
+        structured_output = getattr(
+            self._current_chat.latest_message, "structured_output", None
+        )
         message = AssistantMessage(
             content=accumulator.content_text,
+            structured_output=structured_output,
             thinking_blocks=(
                 accumulator.thinking_blocks if accumulator.thinking_blocks else None
             ),
@@ -554,6 +558,7 @@ class ChatStreamFactory:
         if accumulator.thinking_text and not accumulator.thinking_blocks:
             message = AssistantMessage(
                 content=accumulator.content_text,
+                structured_output=structured_output,
                 thinking_blocks=[
                     {"type": "thinking", "thinking": accumulator.thinking_text}
                 ],

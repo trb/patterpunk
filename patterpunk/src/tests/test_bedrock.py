@@ -415,52 +415,34 @@ def test_thinking_mode_with_reasoning_models(model_id, region, thinking_config):
         ("anthropic.claude-3-haiku-20240307-v1:0", ThinkingConfig(effort="low")),
     ],
 )
-def test_thinking_mode_unsupported_models_fail(model_id, thinking_config):
-    """Verify that using ThinkingConfig with models that don't support thinking fails with a clear error."""
+def test_thinking_mode_unsupported_models_adapts(model_id, thinking_config, caplog):
+    """A ThinkingConfig on models without reasoning support is dropped with a
+    WARNING and the request completes instead of raising ValidationException."""
 
-    bedrock = BedrockModel(
-        model_id=model_id, temperature=0.1, top_p=0.98, thinking_config=thinking_config
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id=model_id,
+            temperature=0.1,
+            top_p=0.98,
+            thinking_config=thinking_config,
+        )
+    assert any(
+        "does not accept reasoning parameters" in r.message for r in caplog.records
     )
+    assert "additionalModelRequestFields" not in bedrock._build_converse_params([])
 
     chat = Chat(model=bedrock)
-
-    # Should raise ValidationException when trying to use thinking mode with unsupported model
-    with pytest.raises(ClientError) as exc_info:
-        chat.add_message(
-            UserMessage("What is 17 * 23? Please show your work.")
-        ).complete()
-
-    # Verify it's a validation error with a clear message
-    error = exc_info.value
-    assert (
-        error.response["Error"]["Code"] == "ValidationException"
-    ), f"Expected ValidationException but got {error.response['Error']['Code']}"
-
-    # Check that the error message mentions the problematic field
-    error_msg = str(error)
-
-    # The error should mention which field caused the problem
-    if thinking_config.token_budget is not None:
-        assert (
-            "reasoning_config" in error_msg
-        ), f"Error should mention 'reasoning_config' for token_budget parameter. Got: {error_msg}"
-    elif thinking_config.effort is not None:
-        # With effort="low", Bedrock sends reasoning_effort which also causes validation error
-        assert (
-            "reasoning_effort" in error_msg or "reasoning_config" in error_msg
-        ), f"Error should mention 'reasoning_effort' or 'reasoning_config' for effort parameter. Got: {error_msg}"
-
-    # Verify the error message is clear about the issue
-    assert (
-        "not permitted" in error_msg or "Malformed" in error_msg
-    ), f"Error message should clearly indicate the parameter is not permitted. Got: {error_msg}"
+    response = chat.add_message(
+        UserMessage("What is 17 * 23? Reply with just the number.")
+    ).complete()
+    assert "391" in response.latest_message.content
 
 
 def test_thinking_mode_parameters():
 
     thinking_config_effort = ThinkingConfig(effort="high")
     bedrock_effort = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         thinking_config=thinking_config_effort,
     )
 
@@ -470,7 +452,7 @@ def test_thinking_mode_parameters():
 
     thinking_config_budget = ThinkingConfig(token_budget=3000)
     bedrock_budget = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         thinking_config=thinking_config_budget,
     )
 
@@ -481,14 +463,14 @@ def test_thinking_mode_parameters():
 
     thinking_config_min = ThinkingConfig(token_budget=500)
     bedrock_min = BedrockModel(
-        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         thinking_config=thinking_config_min,
     )
 
     thinking_params = bedrock_min._get_thinking_params()
     assert thinking_params["reasoning_config"]["budget_tokens"] == 1024
 
-    bedrock_none = BedrockModel(model_id="anthropic.claude-3-sonnet-20240229-v1:0")
+    bedrock_none = BedrockModel(model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0")
     thinking_params = bedrock_none._get_thinking_params()
     assert thinking_params == {}
 
@@ -651,3 +633,267 @@ def test_diagnostics_and_safety_filter_integration():
     assert len(response.content.strip()) > 0
     assert response.finish_reason == FinishReason.STOP
     assert response._provider.raw_finish_reason == "end_turn"
+
+
+# =============================================================================
+# Claude sampling-parameter filtering (shared claude_capabilities rules)
+# =============================================================================
+
+
+def test_claude_45_drops_top_p_with_warning(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.4}
+    assert any(
+        "[BEDROCK]" in r.message and "Dropping top_p=0.9" in r.message
+        for r in caplog.records
+    )
+
+
+def test_claude_45_without_top_p_is_silent(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.4}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_5_omits_sampling_with_warning_for_custom_values(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-opus-5-20260120-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+        max_tokens=2000,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"maxTokens": 2000}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("temperature=0.4" in m and "top_p=0.9" in m for m in warning_messages)
+
+
+def test_claude_5_at_defaults_is_silent_and_omits_inference_config(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-opus-5-20260120-v1:0")
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+        converse_params = bedrock._build_converse_params([])
+    assert config == {}
+    assert "inferenceConfig" not in converse_params
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_3_sampling_passes_through(caplog):
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        temperature=0.1,
+        top_p=0.98,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.1, "topP": 0.98}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_claude_45_thinking_budget_forces_temperature_and_max_tokens():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=1.0,
+        max_tokens=2000,
+        thinking_config=ThinkingConfig(token_budget=3000),
+    )
+    config = bedrock._build_inference_config()
+    assert config["temperature"] == 1.0
+    assert "topP" not in config
+    assert config["maxTokens"] == 5000
+
+
+def test_claude_45_thinking_effort_also_strips_sampling(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        temperature=0.4,
+        top_p=0.9,
+        thinking_config=ThinkingConfig(effort="high"),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 1.0}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "Coercing user-set temperature=0.4 to 1.0" in m for m in warning_messages
+    )
+    assert any("Dropping user-set top_p=0.9" in m for m in warning_messages)
+
+
+def test_non_claude_models_keep_sampling_untouched(caplog):
+    bedrock = BedrockModel(
+        model_id="mistral.mistral-large-2402-v1:0",
+        temperature=0.3,
+        top_p=0.9,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.3, "topP": 0.9}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_unknown_claude_id_gets_newest_family_rules_with_warning(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-futuristic-99",
+        temperature=0.2,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {}
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Unrecognised Claude model id" in m for m in warning_messages)
+    assert any("temperature=0.2" in m for m in warning_messages)
+
+
+def test_thinking_config_ignored_on_non_reasoning_bedrock_models(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="meta.llama3-70b-instruct-v1:0",
+            thinking_config=ThinkingConfig(effort="high"),
+        )
+    assert bedrock._get_thinking_params() == {}
+    assert "additionalModelRequestFields" not in bedrock._build_converse_params([])
+    assert any(
+        "does not accept reasoning parameters" in r.message for r in caplog.records
+    )
+
+
+def test_thinking_config_ignored_below_claude_3_7(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            thinking_config=ThinkingConfig(token_budget=4000),
+        )
+    assert bedrock._get_thinking_params() == {}
+    assert any(
+        "does not accept reasoning parameters" in r.message for r in caplog.records
+    )
+
+
+def test_thinking_config_kept_on_claude_3_7(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            thinking_config=ThinkingConfig(token_budget=4000),
+        )
+    params = bedrock._get_thinking_params()
+    assert params["reasoning_config"] == {"type": "enabled", "budget_tokens": 4000}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_thinking_config_silent_on_deepseek(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.deepseek.r1-v1:0",
+            thinking_config=ThinkingConfig(effort="high"),
+        )
+    assert bedrock._get_thinking_params() == {}
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_thinking_budget_zero_disables_reasoning():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        thinking_config=ThinkingConfig(token_budget=0),
+    )
+    assert bedrock._get_thinking_params() == {}
+
+
+def test_thinking_budget_below_minimum_warns_and_clamps(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            thinking_config=ThinkingConfig(token_budget=500),
+        )
+    params = bedrock._get_thinking_params()
+    assert params["reasoning_config"]["budget_tokens"] == 1024
+    assert any("Raising token_budget=500 to 1024" in r.message for r in caplog.records)
+
+
+def test_claude_3_max_tokens_capped_to_output_limit(caplog):
+    bedrock = BedrockModel(
+        model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+        max_tokens=8192,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == 4096
+    assert any(
+        "exceeds the 4096-token output limit" in r.message for r in caplog.records
+    )
+
+
+def test_claude_3_7_max_tokens_not_capped(caplog):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        max_tokens=100000,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == 100000
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_cache_point_is_a_separate_block_with_type_field():
+    bedrock = BedrockModel(model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+    content = bedrock._convert_content_to_bedrock_format(
+        [CacheChunk("big document", cacheable=True)]
+    )
+    assert content == [
+        {"text": "big document"},
+        {"cachePoint": {"type": "default"}},
+    ]
+
+
+def test_cache_points_stripped_on_unsupported_models(caplog):
+    bedrock = BedrockModel(model_id="anthropic.claude-3-5-sonnet-20241022-v2:0")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    assert content == [{"text": "big document"}]
+    assert any(
+        "does not support prompt caching on Bedrock" in r.message
+        for r in caplog.records
+    )
+
+
+def test_cache_points_kept_on_claude_3_5_haiku(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-3-5-haiku-20241022-v1:0")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    assert {"cachePoint": {"type": "default"}} in content
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_cache_points_trimmed_to_bedrock_limit_of_four(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    messages = [
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(6)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    cache_points = [b for b in content if "cachePoint" in b]
+    assert len(cache_points) == 4
+    assert content[1] == {"text": "section 1"}
+    assert "cachePoint" in content[5]
+    assert any("at most 4 cache checkpoints" in r.message for r in caplog.records)

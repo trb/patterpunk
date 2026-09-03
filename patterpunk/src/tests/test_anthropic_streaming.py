@@ -253,8 +253,10 @@ async def test_stream_delta_iterators():
         )
     )
 
+    # A reply this long always arrives as several text_delta events; a five-line
+    # count fit in a single delta and made the assertion below flaky.
     chat = chat.add_message(SystemMessage("You are a helpful assistant.")).add_message(
-        UserMessage("Count from 1 to 5, one number per line.")
+        UserMessage("Count from 1 to 40, one number per line.")
     )
 
     deltas = []
@@ -269,3 +271,36 @@ async def test_stream_delta_iterators():
     full_content = "".join(deltas)
     final_chat = await stream.chat
     assert full_content == final_chat.latest_message.content
+
+
+@pytest.mark.asyncio
+async def test_stream_structured_output_native():
+    """Native structured output streams the JSON as text; the final message parses."""
+    from typing import List
+
+    from pydantic import BaseModel, Field
+
+    class Summary(BaseModel):
+        topic: str
+        points: List[str] = Field(min_length=1)
+
+    chat = Chat(
+        model=AnthropicModel(model="claude-haiku-4-5-20251001", max_tokens=1024)
+    ).add_message(
+        UserMessage(
+            "Summarize why the sky is blue in two points.",
+            structured_output=Summary,
+        )
+    )
+
+    accumulated = ""
+    async with chat.complete_stream() as stream:
+        async for content in stream.content:
+            accumulated = content
+
+    final_chat = await stream.chat
+    parsed = final_chat.parsed_output
+    assert isinstance(parsed, Summary)
+    assert parsed.topic
+    assert len(parsed.points) >= 1
+    assert accumulated.strip().startswith("{")

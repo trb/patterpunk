@@ -279,7 +279,7 @@ class TestGoogleTokenCounting:
         """Verify Google API counting returns valid results."""
         from patterpunk.llm.models.google import GoogleModel
 
-        model = GoogleModel(model="gemini-2.0-flash")
+        model = GoogleModel(model="gemini-2.5-flash")
         test_message = UserMessage("What is the capital of France?")
 
         count = model.count_tokens(test_message)
@@ -290,7 +290,7 @@ class TestGoogleTokenCounting:
         """Test counting multiple messages."""
         from patterpunk.llm.models.google import GoogleModel
 
-        model = GoogleModel(model="gemini-2.0-flash")
+        model = GoogleModel(model="gemini-2.5-flash")
         messages = [
             UserMessage("Hello"),
             AssistantMessage("Hi there!"),
@@ -304,7 +304,7 @@ class TestGoogleTokenCounting:
         """Test counting a plain string."""
         from patterpunk.llm.models.google import GoogleModel
 
-        model = GoogleModel(model="gemini-2.0-flash")
+        model = GoogleModel(model="gemini-2.5-flash")
         count = model.count_tokens("Hello, world!")
         assert count > 0
 
@@ -485,7 +485,7 @@ class TestAsyncTokenCounting:
         """Test Google async token counting works."""
         from patterpunk.llm.models.google import GoogleModel
 
-        model = GoogleModel(model="gemini-2.0-flash")
+        model = GoogleModel(model="gemini-2.5-flash")
         test_message = UserMessage("Hello, world!")
 
         sync_count = model.count_tokens(test_message)

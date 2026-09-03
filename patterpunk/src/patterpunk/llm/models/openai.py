@@ -2,6 +2,7 @@ import asyncio
 import base64
 import enum
 import math
+import re
 import time
 from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Union
@@ -105,6 +106,12 @@ class OpenAiReasoningEffort(enum.Enum):
     LOW = enum.auto()
     MEDIUM = enum.auto()
     HIGH = enum.auto()
+    XHIGH = enum.auto()
+    MAX = enum.auto()
+
+
+_EXTENDED_EFFORT_LEVELS = {OpenAiReasoningEffort.XHIGH, OpenAiReasoningEffort.MAX}
+_GPT_VERSION_RE = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
 
 
 def _strip_reasoning_summary_if_unverified(
@@ -186,14 +193,7 @@ class OpenAiModel(Model, ABC):
         reasoning_effort = OpenAiReasoningEffort.LOW
         if thinking_config is not None:
             if thinking_config.effort is not None:
-                effort = thinking_config.effort
-                if effort not in {"low", "medium", "high"}:
-                    logger.warning(
-                        f"[OPENAI] effort='{effort}' is Anthropic-only (Opus 4.7+). "
-                        f"OpenAI supports only low/medium/high. Clamping to 'high'."
-                    )
-                    effort = "high"
-                reasoning_effort = OpenAiReasoningEffort[effort.upper()]
+                reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
             else:
                 if thinking_config.token_budget == 0:
                     reasoning_effort = OpenAiReasoningEffort.LOW
@@ -488,7 +488,12 @@ class OpenAiModel(Model, ABC):
         logger_llm.info(f"OpenAi Responses API params: {', '.join(param_strings)}")
 
     def _is_reasoning_model(self, model: str) -> bool:
-        return model.startswith("o")
+        # GPT-5.x ids (5, 5.1, 5.4, 5.5, 5.6-sol/terra/luna, codex variants) use
+        # reasoning.effort and reject temperature/top_p with a 400. The exception:
+        # "-chat" variants (gpt-5.2-chat-latest) are non-reasoning Instant models
+        # that accept sampling params and reject the reasoning parameter.
+        is_reasoning_family = model.startswith("o") or model.startswith("gpt-5")
+        return is_reasoning_family and "-chat" not in model
 
     def _setup_tools_parameter(
         self,
@@ -547,6 +552,63 @@ class OpenAiModel(Model, ABC):
             }
         return None
 
+    def _warn_dropped_sampling_params(
+        self,
+        model: str,
+        temperature: float,
+        top_p: float,
+        frequency_penalty: float,
+        presence_penalty: float,
+        logit_bias: dict,
+    ) -> None:
+        # Values matching the framework defaults were supplied by patterpunk,
+        # not the user, and drop silently. Only user-customized values warn.
+        dropped = []
+        if temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={temperature}")
+        if top_p != 1.0:
+            dropped.append(f"top_p={top_p}")
+        if frequency_penalty != 0.0:
+            dropped.append(f"frequency_penalty={frequency_penalty}")
+        if presence_penalty != 0.0:
+            dropped.append(f"presence_penalty={presence_penalty}")
+        if logit_bias:
+            dropped.append(f"logit_bias={logit_bias}")
+        if dropped:
+            logger.warning(
+                f"[{self.get_name().upper()}] Reasoning model '{model}' rejects "
+                f"sampling parameters. Dropping user-set value(s): {', '.join(dropped)}. "
+                f"Use ThinkingConfig(effort=...) to control output instead."
+            )
+
+    def _supports_extended_reasoning_effort(self, model: str) -> bool:
+        match = _GPT_VERSION_RE.match(model.lower())
+        if not match:
+            return False
+        major = int(match.group(1))
+        minor = int(match.group(2) or 0)
+        return (major, minor) >= (5, 6)
+
+    def _clamp_reasoning_effort(
+        self, model: str, reasoning_effort: OpenAiReasoningEffort
+    ) -> str:
+        # GPT-5.6+ accepts none/low/medium/high/xhigh/max; older reasoning
+        # models reject the upper two levels with a 400. Clamping with a
+        # warning keeps transparent model switching from failing requests.
+        # https://developers.openai.com/api/docs/guides/reasoning
+        needs_clamp = (
+            reasoning_effort in _EXTENDED_EFFORT_LEVELS
+            and not self._supports_extended_reasoning_effort(model)
+        )
+        if needs_clamp:
+            logger.warning(
+                f"[{self.get_name().upper()}] effort='{reasoning_effort.name.lower()}' "
+                f"requires GPT-5.6+; '{model}' accepts only low/medium/high. "
+                f"Clamping to 'high'."
+            )
+            return OpenAiReasoningEffort.HIGH.name.lower()
+        return reasoning_effort.name.lower()
+
     def _setup_model_parameters(
         self,
         model: str,
@@ -560,11 +622,24 @@ class OpenAiModel(Model, ABC):
         model_params = {}
 
         if self._is_reasoning_model(model):
+            self._warn_dropped_sampling_params(
+                model,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
+                logit_bias,
+            )
             model_params["reasoning"] = {
-                "effort": reasoning_effort.name.lower(),
-                "summary": "auto",  # Enable streaming reasoning summaries
+                "effort": self._clamp_reasoning_effort(model, reasoning_effort),
+                "summary": "auto",
             }
         else:
+            if self.thinking_config is not None:
+                logger.warning(
+                    f"[{self.get_name().upper()}] Model '{model}' is not a reasoning "
+                    f"model; ignoring thinking_config."
+                )
             model_params["temperature"] = temperature
             model_params["top_p"] = top_p
             if frequency_penalty != 0.0:
@@ -1054,20 +1129,7 @@ class OpenAiModel(Model, ABC):
             except APIError as error:
                 last_error = error
 
-                # Handle reasoning.summary error specially (retry with modified params)
-                # TODO: Same fallback bug as _execute_with_retry — see TODO there.
-                if (
-                    "reasoning.summary" in str(error)
-                    and "reasoning" in responses_parameters
-                ):
-                    logger.info(
-                        "Organization not verified for reasoning summaries, "
-                        "removing reasoning parameter and treating as regular model"
-                    )
-                    responses_parameters.pop("reasoning", None)
-                    responses_parameters["temperature"] = self.temperature
-                    responses_parameters["top_p"] = self.top_p
-                    # Continue to next attempt without incrementing backoff
+                if _strip_reasoning_summary_if_unverified(error, responses_parameters):
                     continue
 
                 # Don't retry 400 errors - these are parameter errors, not transient failures

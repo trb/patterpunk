@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 from pathlib import Path
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 current_dir = Path(__file__).parent
 requirements_path = current_dir / "requirements.txt"
@@ -19,6 +19,7 @@ setup(
     author_email="thomas.rubbert@yahoo.de",
     license="MPL-2.0",
     include_package_data=True,
+    python_requires=">=3.10",
     install_requires=[line.strip() for line in open(requirements_path, "r")],
     extras_require={
         "mcp": ["requests>=2.25.0"],

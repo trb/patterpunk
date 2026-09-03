@@ -1,16 +1,16 @@
 """
-Isolated tests for Azure OpenAI that require environment manipulation.
-
-These tests modify environment variables and reload Python modules, which
-corrupts module state for other tests. They MUST be run in isolation:
+The credential and endpoint tests here call importlib.reload on the Azure
+config and model modules. Reloading rebinds AzureOpenAiModel. A test that
+imported the old class earlier then asserts against a dead reference.
+Run this file alone:
 
     pytest tests/test_azure_openai_isolated.py
-
-Do NOT run these alongside other tests in the same pytest invocation.
 """
 
 import os
 import pytest
+
+from patterpunk.llm.models.azure_openai import AzureOpenAiModel
 
 
 def test_azure_model_requires_credentials():
@@ -39,7 +39,7 @@ def test_azure_model_requires_credentials():
 
         # Verify client was NOT created
         assert (
-            azure_config.azure_openai is None
+            azure_config.get_azure_openai_client() is None
         ), "Azure OpenAI client should be None without credentials"
 
         # Verify model raises error
@@ -114,7 +114,7 @@ def test_azure_endpoint_url_formatting():
             # Reset module to force re-initialization
             importlib.reload(azure_openai)
 
-            client = azure_openai.azure_openai
+            client = azure_openai.get_azure_openai_client()
             assert (
                 client is not None
             ), f"Client should be created for endpoint: {input_endpoint}"
@@ -167,7 +167,7 @@ def test_azure_client_not_created_without_credentials():
         importlib.reload(azure_openai)
 
         assert (
-            azure_openai.azure_openai is None
+            azure_openai.get_azure_openai_client() is None
         ), "Client should be None without credentials"
         assert (
             not azure_openai.is_azure_openai_available()
@@ -239,12 +239,12 @@ def test_azure_openai_works_without_openai_api_key():
 
         # Verify Azure client was created
         assert (
-            azure_config.azure_openai is not None
+            azure_config.get_azure_openai_client() is not None
         ), "Azure OpenAI client should be created with Azure credentials"
 
         # Verify OpenAI client was NOT created (no PP_OPENAI_API_KEY)
         assert (
-            openai_config.openai is None
+            openai_config.get_openai_client() is None
         ), "OpenAI client should be None without PP_OPENAI_API_KEY"
 
         # This is the key assertion: Azure model should work without OpenAI API key
@@ -293,3 +293,70 @@ def test_azure_openai_works_without_openai_api_key():
         importlib.reload(azure_config)
         importlib.reload(openai_model)
         importlib.reload(azure_model)
+
+
+def test_azure_reasoning_model_classification():
+    cases = [
+        ("o1-deploy", True),
+        ("o3-mini", True),
+        ("gpt-5.2", True),
+        ("gpt-5.2-chat-latest", False),
+        ("GPT-5-Chat", False),
+        ("gpt-4o", False),
+        ("gpt-4.1-mini", False),
+        ("my-custom-deployment", False),
+    ]
+    for deployment_name, expected in cases:
+        assert (
+            AzureOpenAiModel._is_reasoning_model(None, deployment_name) is expected
+        ), deployment_name
+
+
+def test_azure_reasoning_summary_fallback_keeps_reasoning_effort():
+    """The org-not-verified retry must not re-add temperature/top_p: reasoning
+    models reject sampling params with a 400, which is never retried."""
+    import httpx
+    from openai import APIError
+
+    model = object.__new__(AzureOpenAiModel)
+    model.model = "o3-mini"
+    model.retry_config = None
+    model.temperature = 0.7
+    model.top_p = 0.9
+
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    error = APIError(
+        "Organization must be verified to use reasoning.summary",
+        request,
+        body=None,
+    )
+
+    class StubResponses:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **params):
+            self.calls.append(dict(params))
+            if len(self.calls) == 1:
+                raise error
+            return "ok"
+
+    class StubClient:
+        def __init__(self):
+            self.responses = StubResponses()
+
+    stub = StubClient()
+    model._azure_reasoning_client = stub
+
+    params = {
+        "model": "o3-mini",
+        "input": [],
+        "reasoning": {"effort": "high", "summary": "auto"},
+    }
+    result = model._execute_with_retry(params)
+
+    assert result == "ok"
+    second_call = stub.responses.calls[1]
+    assert second_call["reasoning"] == {"effort": "high"}
+    assert "temperature" not in second_call
+    assert "top_p" not in second_call

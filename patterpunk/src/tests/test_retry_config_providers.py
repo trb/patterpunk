@@ -12,7 +12,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import httpx
+import httpx2
 import pytest
 from openai import APIError
 
@@ -22,7 +22,8 @@ from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.models.azure_openai import AzureOpenAiModel
 from patterpunk.llm.models.bedrock import BedrockModel
 from patterpunk.llm.models.ollama import OllamaModel
-from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
+from patterpunk.llm.models import openai as openai_module
+from patterpunk.llm.models.openai import OpenAiModel
 from patterpunk.llm.retry_config import RetryConfig
 
 TWO_ATTEMPT_CONFIG = RetryConfig(delays_s=(10.0,))
@@ -74,11 +75,13 @@ def test_openai_legacy_exhaustion_still_wraps():
     OPENAI_MAX_RETRIES and exhaustion wraps into OpenAiApiError."""
     model = _make_openai_model()
     api_error = APIError(
-        "simulated 500", httpx.Request("POST", "http://test"), body=None
+        "simulated 500", httpx2.Request("POST", "http://test"), body=None
     )
     model._client.responses.create = Mock(side_effect=api_error)
+    # Looked up at call time: the Azure isolation tests importlib.reload() the
+    # openai model module, which rebinds OpenAiApiError to a new class object.
     with patch("time.sleep"):
-        with pytest.raises(OpenAiApiError):
+        with pytest.raises(openai_module.OpenAiApiError):
             model._execute_with_retry({"model": "gpt-4.1"})
 
 

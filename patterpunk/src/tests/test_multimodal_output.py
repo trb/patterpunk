@@ -15,7 +15,12 @@ class MockModel(Model):
         self.mock_response = mock_response
 
     def generate_assistant_message(
-        self, messages, tools=None, structured_output=None, output_types=None
+        self,
+        messages,
+        tools=None,
+        structured_output=None,
+        output_types=None,
+        disable_safety_filters=False,
     ):
         return AssistantMessage(self.mock_response)
 

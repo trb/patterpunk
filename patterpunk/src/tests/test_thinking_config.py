@@ -42,7 +42,11 @@ def test_openai_model_thinking_config_integration():
 
 def test_anthropic_model_thinking_config_integration():
     thinking_config = ThinkingConfig(token_budget=10000)
-    model = AnthropicModel(model="claude-3.7-sonnet", thinking_config=thinking_config)
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=thinking_config,
+        max_tokens=20000,
+    )
     assert model.thinking_config == thinking_config
     assert model.thinking.budget_tokens == 10000
 
@@ -89,27 +93,20 @@ def test_anthropic_opus_4_7_accepts_max():
     assert api_params["output_config"] == {"effort": "max"}
 
 
-def test_openai_clamps_xhigh_to_high_with_warning(caplog):
-    """OpenAI doesn't support xhigh — clamp to high with a WARN, don't raise."""
+def test_openai_passes_xhigh_through(caplog):
     config = ThinkingConfig(effort="xhigh")
     with caplog.at_level("WARNING", logger="patterpunk"):
-        model = OpenAiModel(model="o3-mini", thinking_config=config)
-    assert model.reasoning_effort.name == "HIGH"
-    assert any(
-        "Anthropic-only" in r.message and r.levelname == "WARNING"
-        for r in caplog.records
-    )
+        model = OpenAiModel(model="gpt-5.6-terra", thinking_config=config)
+    assert model.reasoning_effort.name == "XHIGH"
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
 
 
-def test_openai_clamps_max_to_high_with_warning(caplog):
+def test_openai_passes_max_through(caplog):
     config = ThinkingConfig(effort="max")
     with caplog.at_level("WARNING", logger="patterpunk"):
-        model = OpenAiModel(model="o3-mini", thinking_config=config)
-    assert model.reasoning_effort.name == "HIGH"
-    assert any(
-        "Anthropic-only" in r.message and r.levelname == "WARNING"
-        for r in caplog.records
-    )
+        model = OpenAiModel(model="gpt-5.6-terra", thinking_config=config)
+    assert model.reasoning_effort.name == "MAX"
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
 
 
 def test_google_clamps_xhigh_to_high_with_warning(caplog):
@@ -133,10 +130,36 @@ def test_legacy_anthropic_clamps_xhigh_to_high_with_warning(caplog):
     """Pre-Opus-4.7 Anthropic models clamp xhigh/max to high in __init__."""
     config = ThinkingConfig(effort="xhigh")
     with caplog.at_level("WARNING", logger="patterpunk"):
-        model = AnthropicModel(model="claude-sonnet-4-20250514", thinking_config=config)
+        model = AnthropicModel(
+            model="claude-sonnet-4-20250514", thinking_config=config, max_tokens=30000
+        )
     # 'high' maps to 24000 in Anthropic's legacy effort_to_tokens
     assert model.thinking.budget_tokens == 24000
     assert any(
         "only supported on Claude Opus 4.7+" in r.message and r.levelname == "WARNING"
         for r in caplog.records
     )
+
+
+def test_openai_gpt5_is_reasoning_model_and_drops_sampling_params():
+    """GPT-5.x rejects temperature/top_p with a 400; the request must carry
+    reasoning.effort instead. o-series keeps working, gpt-4o keeps sampling params."""
+    model = OpenAiModel(
+        model="gpt-5.6-terra", thinking_config=ThinkingConfig(effort="medium")
+    )
+    params = model._prepare_request_parameters(
+        [UserMessage("Reply with the single word OK.")], None, None, None
+    )
+    assert params["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert "temperature" not in params
+    assert "top_p" not in params
+
+    assert OpenAiModel(model="gpt-5")._is_reasoning_model("gpt-5") is True
+    assert OpenAiModel(model="o3-mini")._is_reasoning_model("o3-mini") is True
+
+    legacy = OpenAiModel(model="gpt-4o", temperature=0.1)
+    legacy_params = legacy._prepare_request_parameters(
+        [UserMessage("hi")], None, None, None
+    )
+    assert legacy_params["temperature"] == 0.1
+    assert "reasoning" not in legacy_params

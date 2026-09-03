@@ -6,6 +6,7 @@ retry logic and error recovery mechanisms.
 """
 
 from patterpunk.llm.messages.exceptions import StructuredOutputFailedToParseError
+from patterpunk.llm.messages.roles import ROLE_USER
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.logger import logger
 from .exceptions import StructuredOutputParsingError
@@ -23,7 +24,15 @@ def get_parsed_output_with_retry(chat_instance):
     :raises StructuredOutputParsingError: If parsing fails after all retry attempts
     """
     if not getattr(chat_instance.latest_message, "structured_output", None):
-        return None
+        if _requested_structured_output(chat_instance) is None:
+            return None
+        # A silent None here turns into AttributeErrors far away from the cause,
+        # e.g. when the model answered a structured request with a real tool call.
+        raise StructuredOutputParsingError(
+            f"[CHAT] A structured output was requested but the latest message "
+            f"({type(chat_instance.latest_message).__name__}) carries none, "
+            f"latest message:\n{chat_instance.latest_message.content}"
+        )
 
     retry = 0
     max_retries = 2
@@ -50,3 +59,10 @@ def get_parsed_output_with_retry(chat_instance):
     raise StructuredOutputParsingError(
         f"[CHAT] Failed to parse structured_output from latest message, latest message:\n{chat_instance.latest_message.content}"
     )
+
+
+def _requested_structured_output(chat_instance):
+    for message in reversed(chat_instance.messages):
+        if message.role == ROLE_USER:
+            return getattr(message, "structured_output", None)
+    return None

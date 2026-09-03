@@ -1,11 +1,22 @@
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Dict, Any, List, Optional, Set, Union, TYPE_CHECKING
+from typing import (
+    AsyncIterator,
+    Dict,
+    Any,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    TYPE_CHECKING,
+)
 
 if TYPE_CHECKING:
     from patterpunk.llm.streaming import StreamChunk
@@ -100,6 +111,69 @@ def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
     if raw is None:
         return None
     return _FINISH_REASON_MAP.get(raw, FinishReason.OTHER)
+
+
+_GEMINI_VERSION_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
+
+_EFFORT_TO_BUDGET = {"low": 1500, "medium": 4000, "high": 12000}
+
+
+def _parse_gemini_version(model: str) -> Optional[Tuple[int, int]]:
+    match = _GEMINI_VERSION_RE.search(model)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2) or 0))
+
+
+def _clamp_effort_to_gemini_levels(effort: str) -> str:
+    if effort in ("low", "medium", "high"):
+        return effort
+    logger.warning(
+        f"[GOOGLE] effort='{effort}' is Anthropic-only (Opus 4.7+). "
+        f"Gemini supports only low/medium/high. Clamping to 'high'."
+    )
+    return "high"
+
+
+def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> int:
+    if thinking_config.token_budget is None:
+        return _EFFORT_TO_BUDGET[_clamp_effort_to_gemini_levels(thinking_config.effort)]
+
+    budget = min(thinking_config.token_budget, 24576)
+    if "flash-lite" in model and 0 < budget < 512:
+        logger.warning(
+            f"[GOOGLE] Gemini 2.5 Flash Lite accepts thinking budgets of 0 or "
+            f"512-24576. Raising token_budget={budget} to 512."
+        )
+        return 512
+    if "pro" in model and budget < 128:
+        logger.warning(
+            f"[GOOGLE] Gemini 2.5 Pro cannot disable thinking and needs a "
+            f"budget of at least 128. Raising token_budget={budget} to 128."
+        )
+        return 128
+    return budget
+
+
+def _resolve_gemini_3_level(thinking_config: "ThinkingConfig") -> str:
+    # Gemini 3 replaced numeric thinking budgets with thinking_level; a
+    # thinking_budget in the request is rejected on 3.x models.
+    if thinking_config.effort is not None:
+        return _clamp_effort_to_gemini_levels(thinking_config.effort)
+
+    budget = thinking_config.token_budget
+    if budget <= _EFFORT_TO_BUDGET["low"]:
+        level = "low"
+    elif budget <= _EFFORT_TO_BUDGET["medium"]:
+        level = "medium"
+    else:
+        level = "high"
+    logger.warning(
+        f"[GOOGLE] Gemini 3+ replaced numeric thinking budgets with "
+        f"thinking_level. Coercing token_budget={budget} to "
+        f"thinking_level='{level}'."
+    )
+    return level
 
 
 def _build_all_safety_off() -> Optional[List["types.SafetySetting"]]:
@@ -217,21 +291,21 @@ class GoogleModel(Model, ABC):
             )
 
         thinking_budget = None
+        thinking_level = None
         include_thoughts = False
         if thinking_config is not None:
-            if thinking_config.token_budget is not None:
-                thinking_budget = min(thinking_config.token_budget, 24576)
-            else:
-                effort_to_tokens = {"low": 1500, "medium": 4000, "high": 12000}
-                effort = thinking_config.effort
-                if effort not in effort_to_tokens:
-                    logger.warning(
-                        f"[GOOGLE] effort='{effort}' is Anthropic-only (Opus 4.7+). "
-                        f"Gemini supports only low/medium/high. Clamping to 'high'."
-                    )
-                    effort = "high"
-                thinking_budget = effort_to_tokens[effort]
             include_thoughts = thinking_config.include_thoughts
+            version = _parse_gemini_version(model)
+            if version is not None and version < (2, 5):
+                logger.warning(
+                    f"[GOOGLE] Model '{model}' does not support thinking "
+                    f"(Gemini 2.5 introduced it). Ignoring thinking_config."
+                )
+                include_thoughts = False
+            elif version is not None and version < (3, 0):
+                thinking_budget = _resolve_gemini_25_budget(model, thinking_config)
+            else:
+                thinking_level = _resolve_gemini_3_level(thinking_config)
 
         if client:
             self.client = client
@@ -248,6 +322,7 @@ class GoogleModel(Model, ABC):
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.thinking_budget = thinking_budget
+        self.thinking_level = thinking_level
         self.include_thoughts = include_thoughts
         self.thinking_config = thinking_config
         self.safety_settings = safety_settings
@@ -326,6 +401,8 @@ class GoogleModel(Model, ABC):
 
         if self.thinking_budget is not None:
             parts.append(f"thinking={self.thinking_budget}")
+        if self.thinking_level is not None:
+            parts.append(f"thinking={self.thinking_level}")
 
         logger_llm.debug(f"[params] {', '.join(parts)}")
 
@@ -709,6 +786,31 @@ class GoogleModel(Model, ABC):
 
         return "\n\n".join(system_parts)
 
+    def _sampling_params_are_ignored(self) -> bool:
+        # Google deprecated temperature/top_p/top_k on Gemini 3.5+: the API
+        # accepts them without error but silently ignores them. Omitting them
+        # with a warning is the only way to surface that to the user. Unknown
+        # model ids get the newest family's rules.
+        version = _parse_gemini_version(self.model)
+        if version is None:
+            return True
+        return version >= (3, 5)
+
+    def _warn_ignored_sampling_params(self) -> None:
+        ignored = []
+        if self.temperature != GOOGLE_DEFAULT_TEMPERATURE:
+            ignored.append(f"temperature={self.temperature}")
+        if self.top_p != GOOGLE_DEFAULT_TOP_P:
+            ignored.append(f"top_p={self.top_p}")
+        if self.top_k != GOOGLE_DEFAULT_TOP_K:
+            ignored.append(f"top_k={self.top_k}")
+        if ignored:
+            logger.warning(
+                f"[GOOGLE] Gemini 3.5+ deprecates and ignores sampling parameters. "
+                f"Omitting user-set value(s) for model '{self.model}': "
+                f"{', '.join(ignored)}."
+            )
+
     def _build_generation_config(
         self,
         tools: Optional[ToolDefinition],
@@ -717,12 +819,16 @@ class GoogleModel(Model, ABC):
         system_instruction: Optional[str],
         disable_safety_filters: bool = False,
     ) -> types.GenerateContentConfig:
-        config = types.GenerateContentConfig(
-            max_output_tokens=self.max_tokens,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-        )
+        if self._sampling_params_are_ignored():
+            self._warn_ignored_sampling_params()
+            config = types.GenerateContentConfig(max_output_tokens=self.max_tokens)
+        else:
+            config = types.GenerateContentConfig(
+                max_output_tokens=self.max_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
+            )
 
         response_modalities = self._translate_output_types_to_google_modalities(
             output_types
@@ -730,10 +836,16 @@ class GoogleModel(Model, ABC):
         if response_modalities:
             config.response_modalities = response_modalities
 
-        if self.thinking_budget is not None or self.include_thoughts:
+        if (
+            self.thinking_budget is not None
+            or self.thinking_level is not None
+            or self.include_thoughts
+        ):
             thinking_config_kwargs = {}
             if self.thinking_budget is not None:
                 thinking_config_kwargs["thinking_budget"] = self.thinking_budget
+            if self.thinking_level is not None:
+                thinking_config_kwargs["thinking_level"] = self.thinking_level
             if self.include_thoughts:
                 thinking_config_kwargs["include_thoughts"] = self.include_thoughts
             config.thinking_config = types.ThinkingConfig(**thinking_config_kwargs)

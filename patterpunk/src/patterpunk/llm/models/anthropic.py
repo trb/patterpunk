@@ -1,7 +1,11 @@
 import json
+import os
+import re
+import tempfile
 import time
 from abc import ABC
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import (
     AsyncIterator,
     List,
@@ -44,6 +48,14 @@ from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
+from patterpunk.llm.models.claude_capabilities import (
+    ClaudeVersion,
+    SamplingParams,
+    normalize_claude_model_id,
+    parse_claude_version,
+    resolve_claude_sampling,
+    resolve_max_output_tokens,
+)
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
@@ -53,8 +65,18 @@ from patterpunk.lib.structured_output import has_model_schema, get_model_schema
 from patterpunk.llm.streaming import StreamChunk, StreamEventType
 from patterpunk.logger import logger
 
-if anthropic:
-    from anthropic import APIError
+# These symbols import whenever the anthropic package is installed, not only
+# when PP_ANTHROPIC_API_KEY is set. Gating them on the client global broke the
+# Vertex and Foundry subclasses: "except APIError" raised NameError.
+try:
+    from anthropic import APIError, transform_schema
+except ImportError:
+    pass
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 
 @dataclass
@@ -107,6 +129,45 @@ def _build_diagnostics_kwargs(response) -> dict:
     }
 
 
+_SDK_REMOVED_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+
+def _to_sdk_kwargs(api_params: dict) -> dict:
+    """Move sampling params into extra_body before handing the request to the SDK."""
+    # anthropic>=1.0 removed temperature/top_p/top_k from the messages.create/stream
+    # signatures and raises TypeError for them, but the API still honours the fields
+    # for Claude <= 4.6. extra_body merges them into the request JSON unchanged.
+    sampling = {
+        key: api_params[key]
+        for key in _SDK_REMOVED_SAMPLING_PARAMS
+        if key in api_params
+    }
+    if not sampling:
+        return api_params
+    kwargs = {k: v for k, v in api_params.items() if k not in sampling}
+    kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **sampling}
+    return kwargs
+
+
+_FIVE_MINUTES = timedelta(minutes=5)
+_ONE_HOUR = timedelta(hours=1)
+
+
+def _build_cache_control(chunk: CacheChunk) -> dict:
+    # The API accepts only the strings "5m" (default, omitted here) and "1h"; an
+    # integer ttl is rejected. Within one request every 1h breakpoint has to
+    # precede the 5m ones; _enforce_cache_breakpoint_order repairs violations.
+    # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    if chunk.ttl is None or chunk.ttl <= _FIVE_MINUTES:
+        return {"type": "ephemeral"}
+    if chunk.ttl != _ONE_HOUR:
+        logger.warning(
+            f"[ANTHROPIC] Cache ttl {chunk.ttl} is not supported; Anthropic offers only "
+            f"5-minute and 1-hour caches. Using the 1-hour cache."
+        )
+    return {"type": "ephemeral", "ttl": "1h"}
+
+
 class AnthropicModel(Model, ABC):
     def __init__(
         self,
@@ -129,22 +190,32 @@ class AnthropicModel(Model, ABC):
         self.thinking_config = thinking_config
         self.retry_config = retry_config
 
-        # self.thinking is the legacy {type, budget_tokens} payload sent to pre-Opus-4.7
-        # models. None means "not applicable" — either because the user didn't enable
-        # thinking, or because the model uses the adaptive API (Opus 4.7+) which reads
-        # self.thinking_config directly via _resolve_effort().
         self.thinking = None
         if thinking_config is not None and not self._uses_adaptive_thinking_api():
-            self.thinking = self._build_legacy_thinking(thinking_config)
+            if self._is_reasoning_model():
+                self.thinking = self._build_legacy_thinking(thinking_config)
+            else:
+                logger.warning(
+                    f"[ANTHROPIC] Model '{self.model}' predates extended thinking "
+                    f"(introduced with Claude 3.7). Ignoring thinking_config."
+                )
 
     def _build_legacy_thinking(
         self, thinking_config: UnifiedThinkingConfig
-    ) -> "ThinkingConfig":
-        """Convert a unified ThinkingConfig into the legacy budget-tokens payload."""
+    ) -> Optional["ThinkingConfig"]:
         if thinking_config.token_budget is not None:
+            budget = thinking_config.token_budget
+            if budget == 0:
+                return None
+            if budget < 1024:
+                logger.warning(
+                    f"[ANTHROPIC] The API requires a thinking budget of at least "
+                    f"1024 tokens. Raising token_budget={budget} to 1024."
+                )
+                budget = 1024
             return ThinkingConfig(
                 type="enabled",
-                budget_tokens=min(thinking_config.token_budget, 128000),
+                budget_tokens=min(budget, 128000),
             )
 
         effort_to_tokens = {"low": 2000, "medium": 8000, "high": 24000}
@@ -156,6 +227,19 @@ class AnthropicModel(Model, ABC):
             )
             effort = "high"
         return ThinkingConfig(type="enabled", budget_tokens=effort_to_tokens[effort])
+
+    # Subclasses (Vertex, Foundry) override the client hooks to swap the
+    # transport while inheriting request building. Clients must stay
+    # config-module state, never instance attributes. Tests monkeypatch the
+    # module globals, and instance clients would break deepcopy of models.
+    def _get_sync_client(self):
+        return anthropic
+
+    def _get_async_client(self):
+        return anthropic_async
+
+    def _capability_model_id(self) -> str:
+        return self.model
 
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         anthropic_tools = []
@@ -176,11 +260,15 @@ class AnthropicModel(Model, ABC):
                 "structured_output must be a Pydantic model with schema support"
             )
 
-        schema = get_model_schema(structured_output)
+        # strict tool use is constrained decoding: the model cannot drop a required
+        # field or drift out of JSON mid-input. It requires the same strict-compatible
+        # schema shape as native structured outputs, hence transform_schema.
+        schema = transform_schema(get_model_schema(structured_output))
 
         return {
             "name": "provide_structured_response",
             "description": "Provide the response in the exact structured format specified by the schema.",
+            "strict": True,
             "input_schema": schema,
         }
 
@@ -193,12 +281,14 @@ class AnthropicModel(Model, ABC):
         diagnostics_kwargs: Optional[dict] = None,
     ) -> AssistantMessage:
         """
-        Reasoning models can't use tool_choice constraints, so we use a two-model approach:
-        first the reasoning model generates analysis, then Haiku formats it to structured JSON.
-        We use Haiku because it's fast, cheap, and reliable for formatting tasks.
+        Models below Claude 4.5 lack native structured output. Anthropic
+        rejects forced tool_choice while thinking is enabled. A second call
+        without thinking formats the reasoning text into the schema. The call
+        reuses the caller's model. A hardcoded formatter id is not guaranteed
+        to exist in every region, platform, or data-residency boundary.
         """
         logger.info(
-            "[ANTHROPIC] Formatting reasoning output to structured JSON using Claude 3.5 Haiku"
+            f"[ANTHROPIC] Formatting reasoning output to structured JSON using {self.model}"
         )
 
         diagnostics_kwargs = diagnostics_kwargs or {}
@@ -219,8 +309,8 @@ Reasoning and analysis from Claude:
 
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
-        haiku_params = {
-            "model": "claude-3-5-haiku-20241022",
+        formatter_params = {
+            "model": self.model,
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
             "temperature": 0.1,
@@ -229,7 +319,9 @@ Please extract the relevant information from this reasoning and format it exactl
         }
 
         try:
-            formatting_response = anthropic.messages.create(**haiku_params)
+            formatting_response = self._get_sync_client().messages.create(
+                **_to_sdk_kwargs(formatter_params)
+            )
 
             for block in formatting_response.content:
                 if (
@@ -257,11 +349,11 @@ Please extract the relevant information from this reasoning and format it exactl
                             )
                         except Exception as e:
                             logger.error(
-                                f"[ANTHROPIC] Failed to parse structured output from Haiku formatting: {e}"
+                                f"[ANTHROPIC] Failed to parse structured output from formatter call: {e}"
                             )
 
             logger.warning(
-                "[ANTHROPIC] Haiku formatting failed, falling back to reasoning content"
+                "[ANTHROPIC] Formatter call failed, falling back to reasoning content"
             )
             return AssistantMessage(
                 reasoning_content,
@@ -282,44 +374,16 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
     def _parse_model_version(self) -> tuple[int, int]:
-        import re
-
-        # Claude 3.x with minor version: claude-3-7-sonnet-20250219, claude-3-5-haiku-20241022
-        claude3_minor_match = re.search(
-            r"claude-3-(\d+)-(?:opus|sonnet|haiku)", self.model
-        )
-        if claude3_minor_match:
-            return (3, int(claude3_minor_match.group(1)))
-
-        # Claude 3.0 base format: claude-3-haiku-20240307, claude-3-opus-20240229
-        claude3_base_match = re.search(
-            r"claude-3-(?:opus|sonnet|haiku)-\d{8}", self.model
-        )
-        if claude3_base_match:
-            return (3, 0)
-
-        # Claude 4+ with date suffix: claude-opus-4-20250514, claude-sonnet-4-5-20250614
-        # The 8-digit date anchor disambiguates the minor version from the date.
-        claude4plus_dated = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?-(\d{8})$", self.model
-        )
-        if claude4plus_dated:
-            major = int(claude4plus_dated.group(1))
-            minor_str = claude4plus_dated.group(2)
-            minor = int(minor_str) if minor_str else 0
-            return (major, minor)
-
-        # Claude 4+ without date suffix: claude-opus-4-7 (Opus 4.7+ canonical form)
-        claude4plus_bare = re.search(
-            r"claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d+))?$", self.model
-        )
-        if claude4plus_bare:
-            major = int(claude4plus_bare.group(1))
-            minor_str = claude4plus_bare.group(2)
-            minor = int(minor_str) if minor_str else 0
-            return (major, minor)
-
-        return (0, 0)
+        model_id = self._capability_model_id()
+        version = parse_claude_version(model_id)
+        if version is None:
+            return (0, 0)
+        if not version.recognized:
+            logger.warning(
+                f"[ANTHROPIC] Unrecognised Claude model id '{model_id}'. "
+                f"Treating it as a Claude 5 model (adaptive thinking API)."
+            )
+        return (version.major, version.minor)
 
     def _is_reasoning_model(self) -> bool:
         major, minor = self._parse_model_version()
@@ -332,7 +396,7 @@ Please extract the relevant information from this reasoning and format it exactl
         return False
 
     def _uses_adaptive_thinking_api(self) -> bool:
-        """Opus 4.7+ uses the adaptive-thinking API:
+        """Claude 4.7+ (including the 5 family) uses the adaptive-thinking API:
         - thinking={"type": "adaptive"} (no budget_tokens)
         - output_config={"effort": ...} sibling field
         - temperature/top_p/top_k removed
@@ -340,56 +404,62 @@ Please extract the relevant information from this reasoning and format it exactl
         major, minor = self._parse_model_version()
         return (major, minor) >= (4, 7)
 
-    def _get_compatible_params(self, api_params: dict) -> dict:
-        major, minor = self._parse_model_version()
+    def _supports_native_structured_output(self) -> bool:
+        """Claude 4.5+ (Opus/Sonnet/Haiku 4.5, 4.6-4.8 and the 5 family) accept
+        output_config.format; older models need the tool-based fallback."""
+        return self._parse_model_version() >= (4, 5)
 
-        # Opus 4.7+: sampling params were already stripped at build time, nothing to reconcile
+    def _apply_native_structured_output(
+        self, api_params: dict, structured_output: object
+    ) -> dict:
+        # transform_schema sets additionalProperties=false on every object and moves
+        # constraints the API rejects (minimum/maximum, minLength, ...) into the
+        # description. Pydantic still enforces them client-side when parsing.
+        # _apply_thinking_configuration may already have put {"effort": ...} into
+        # output_config, so the format entry is merged rather than assigned.
+        schema = transform_schema(get_model_schema(structured_output))
+        api_params.setdefault("output_config", {})["format"] = {
+            "type": "json_schema",
+            "schema": schema,
+        }
+        logger.info(
+            f"[ANTHROPIC] Using native structured output (output_config.format) for {self.model}"
+        )
+        return api_params
+
+    def _get_compatible_params(self, api_params: dict) -> dict:
         if self._uses_adaptive_thinking_api():
             return api_params
 
-        # Claude 4+ models with thinking mode: remove top_p/top_k, force temperature=1.0
-        if major >= 4 and self.thinking:
-            compatible_params = api_params.copy()
-            if "top_p" in compatible_params:
-                del compatible_params["top_p"]
-            if "top_k" in compatible_params:
-                del compatible_params["top_k"]
-            compatible_params["temperature"] = 1.0
-            return compatible_params
+        major, minor = self._parse_model_version()
+        resolution = resolve_claude_sampling(
+            ClaudeVersion(major, minor),
+            thinking_enabled=bool(self.thinking),
+            requested=SamplingParams(
+                temperature=api_params.get("temperature"),
+                top_p=api_params.get("top_p"),
+                top_k=api_params.get("top_k"),
+            ),
+            defaults=SamplingParams(
+                temperature=ANTHROPIC_DEFAULT_TEMPERATURE,
+                top_p=ANTHROPIC_DEFAULT_TOP_P,
+                top_k=ANTHROPIC_DEFAULT_TOP_K,
+            ),
+        )
+        for warning in resolution.warnings:
+            logger.warning(f"[ANTHROPIC] {warning}")
 
-        # Claude 4+ models without thinking: temperature and top_p cannot both be specified
-        if major >= 4:
-            has_temp = "temperature" in api_params
-            has_top_p = "top_p" in api_params
-
-            if has_temp and has_top_p:
-                top_p_value = api_params.get("top_p")
-                temp_value = api_params.get("temperature")
-                compatible_params = api_params.copy()
-                # Drop top_p (Anthropic recommends keeping temperature). If the user
-                # explicitly set a non-default top_p, surface that we're discarding it.
-                if top_p_value != 1.0:
-                    logger.warning(
-                        f"[ANTHROPIC] Claude 4+ rejects both 'temperature' and 'top_p' simultaneously. "
-                        f"Dropping top_p={top_p_value} (keeping temperature={temp_value}). "
-                        f"Anthropic recommends using 'temperature' for most use cases."
-                    )
-                del compatible_params["top_p"]
-                if "top_k" in compatible_params:
-                    del compatible_params["top_k"]
-                return compatible_params
-
-        # For Claude 3.x with thinking mode (existing behavior)
-        if self.thinking:
-            compatible_params = api_params.copy()
-            if "top_p" in compatible_params:
-                del compatible_params["top_p"]
-            if "top_k" in compatible_params:
-                del compatible_params["top_k"]
-            compatible_params["temperature"] = 1.0
-            return compatible_params
-
-        return api_params
+        compatible_params = api_params.copy()
+        for name, value in (
+            ("temperature", resolution.temperature),
+            ("top_p", resolution.top_p),
+            ("top_k", resolution.top_k),
+        ):
+            if value is None:
+                compatible_params.pop(name, None)
+            else:
+                compatible_params[name] = value
+        return compatible_params
 
     def _prepare_system_prompt(
         self, messages: List[Message]
@@ -433,6 +503,94 @@ Please extract the relevant information from this reasoning and format it exactl
         if system_prompt is not None:
             api_params["system"] = system_prompt
 
+        return self._enforce_cache_constraints(api_params)
+
+    def _supports_prompt_caching(self) -> bool:
+        # Claude 3 Sonnet never got prompt caching, unlike 3 Opus and 3 Haiku.
+        # Unsupported models reject cache_control blocks with a 400.
+        model_id = self._capability_model_id()
+        version = parse_claude_version(model_id)
+        if version is None or (version.major, version.minor) < (3, 0):
+            return False
+        if (version.major, version.minor) == (3, 0) and "sonnet" in (
+            normalize_claude_model_id(model_id)
+        ):
+            return False
+        return True
+
+    def _enforce_cache_constraints(self, api_params: dict) -> dict:
+        cache_blocks = self._collect_cache_breakpoints(api_params)
+        if not cache_blocks:
+            return api_params
+
+        if not self._supports_prompt_caching():
+            for block in cache_blocks:
+                del block["cache_control"]
+            logger.warning(
+                f"[ANTHROPIC] Model '{self.model}' does not support prompt "
+                f"caching. Removed {len(cache_blocks)} cache breakpoint(s); "
+                f"the content is sent uncached."
+            )
+            return api_params
+
+        if len(cache_blocks) > 4:
+            removed_count = len(cache_blocks) - 4
+            for block in cache_blocks[:-4]:
+                del block["cache_control"]
+            logger.warning(
+                f"[ANTHROPIC] The API allows at most 4 cache breakpoints per "
+                f"request. Removed the first {removed_count}; each remaining "
+                f"breakpoint still caches all content before it."
+            )
+
+        return self._enforce_cache_breakpoint_order(api_params)
+
+    def _collect_cache_breakpoints(self, api_params: dict) -> List[dict]:
+        cache_blocks = []
+        system = api_params.get("system")
+        if isinstance(system, list):
+            cache_blocks.extend(
+                block
+                for block in system
+                if isinstance(block, dict) and "cache_control" in block
+            )
+        for message in api_params.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, list):
+                cache_blocks.extend(
+                    block
+                    for block in content
+                    if isinstance(block, dict) and "cache_control" in block
+                )
+        return cache_blocks
+
+    def _enforce_cache_breakpoint_order(self, api_params: dict) -> dict:
+        # The API rejects any 1-hour cache breakpoint that follows a 5-minute
+        # one in request order. Content cannot be reordered without changing
+        # the prompt, so earlier 5-minute breakpoints are upgraded to 1 hour.
+        # Upgrading costs the 1-hour cache-write premium on those breakpoints.
+        # Downgrading instead would silently expire an explicitly requested
+        # 1-hour cache after 5 minutes.
+        cache_blocks = self._collect_cache_breakpoints(api_params)
+        one_hour_indices = [
+            index
+            for index, block in enumerate(cache_blocks)
+            if block["cache_control"].get("ttl") == "1h"
+        ]
+        if not one_hour_indices:
+            return api_params
+
+        upgraded_count = 0
+        for block in cache_blocks[: one_hour_indices[-1]]:
+            if block["cache_control"].get("ttl") != "1h":
+                block["cache_control"]["ttl"] = "1h"
+                upgraded_count += 1
+        if upgraded_count:
+            logger.warning(
+                f"[ANTHROPIC] The API requires 1-hour cache breakpoints to come "
+                f"before 5-minute ones. Upgraded {upgraded_count} earlier "
+                f"5-minute breakpoint(s) to 1 hour to keep the request valid."
+            )
         return api_params
 
     def _warn_dropped_sampling_params(self) -> None:
@@ -462,12 +620,8 @@ Please extract the relevant information from this reasoning and format it exactl
                     thinking_block["display"] = "summarized"
                 api_params["thinking"] = thinking_block
                 api_params["output_config"] = {"effort": self._resolve_effort()}
-            major, minor = self._parse_model_version()
-            if self.thinking_config is not None and major >= 4 and minor >= 5:
-                api_params["extra_headers"] = {
-                    "anthropic-beta": "interleaved-thinking-2025-05-14"
-                }
-            return self._get_compatible_params(api_params)
+            api_params = self._get_compatible_params(api_params)
+            return self._adapt_output_token_limits(api_params)
 
         if self.thinking and self._is_reasoning_model():
             api_params["thinking"] = {
@@ -481,9 +635,44 @@ Please extract the relevant information from this reasoning and format it exactl
                 api_params["extra_headers"] = {
                     "anthropic-beta": "interleaved-thinking-2025-05-14"
                 }
-        # Always apply parameter compatibility checks for Claude 4+ models
-        # to handle temperature/top_p conflicts and thinking mode requirements
         api_params = self._get_compatible_params(api_params)
+        return self._adapt_output_token_limits(api_params)
+
+    def _adapt_output_token_limits(self, api_params: dict) -> dict:
+        model_id = self._capability_model_id()
+        version = parse_claude_version(model_id)
+        cap = None if version is None else resolve_max_output_tokens(version, model_id)
+
+        max_tokens = api_params.get("max_tokens")
+        if max_tokens is None:
+            return api_params
+        if cap is not None and max_tokens > cap:
+            logger.warning(
+                f"[ANTHROPIC] max_tokens={max_tokens} exceeds the {cap}-token "
+                f"output limit of '{self.model}'. Lowering max_tokens to {cap}."
+            )
+            max_tokens = cap
+
+        thinking = api_params.get("thinking") or {}
+        budget = thinking.get("budget_tokens")
+        if budget is not None and budget >= max_tokens:
+            if cap is not None and budget + 2000 > cap:
+                budget = cap - 2000
+                thinking["budget_tokens"] = budget
+                max_tokens = cap
+                logger.warning(
+                    f"[ANTHROPIC] The thinking budget must stay below max_tokens, "
+                    f"and '{self.model}' caps output at {cap} tokens. Lowering "
+                    f"the thinking budget to {budget}."
+                )
+            else:
+                max_tokens = budget + 2000
+                logger.warning(
+                    f"[ANTHROPIC] The API requires max_tokens above the thinking "
+                    f"budget ({budget}). Raising max_tokens to {max_tokens}."
+                )
+
+        api_params["max_tokens"] = max_tokens
         return api_params
 
     def _resolve_effort(self) -> str:
@@ -658,6 +847,11 @@ Please extract the relevant information from this reasoning and format it exactl
         structured_output: Optional[object],
     ) -> dict:
         if structured_output and has_model_schema(structured_output):
+            if self._supports_native_structured_output():
+                api_params = self._configure_regular_tools(api_params, tools)
+                return self._apply_native_structured_output(
+                    api_params, structured_output
+                )
             if self.thinking_config is not None and self._is_reasoning_model():
                 return self._configure_reasoning_structured_output_auto(
                     api_params, tools, structured_output
@@ -713,24 +907,28 @@ Please extract the relevant information from this reasoning and format it exactl
         thinking_blocks: Optional[List[dict]] = None,
         diagnostics_kwargs: Optional[dict] = None,
     ) -> Optional[AssistantMessage]:
-        if block.name == "provide_structured_response" and structured_output:
-            if hasattr(block, "input") and block.input:
-                try:
-                    parsed_output = structured_output.model_validate(block.input)
-                    structured_response_content = json.dumps(block.input, indent=2)
+        if block.name != "provide_structured_response" or not structured_output:
+            return None
 
-                    return AssistantMessage(
-                        structured_response_content,
-                        structured_output=structured_output,
-                        parsed_output=parsed_output,
-                        thinking_blocks=thinking_blocks,
-                        **(diagnostics_kwargs or {}),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to parse structured output from tool call: {e}"
-                    )
-        return None
+        raw_input = getattr(block, "input", None) or {}
+        structured_response_content = json.dumps(raw_input, indent=2)
+        parsed_output = None
+        try:
+            parsed_output = structured_output.model_validate(raw_input)
+        except Exception as e:
+            # provide_structured_response is a protocol, not a tool: returning the raw
+            # JSON as assistant text (instead of a ToolCallMessage) keeps Chat from
+            # trying to execute it, and lets parsed_output raise so the chat layer
+            # re-prompts with a non-empty assistant turn.
+            logger.warning(f"Failed to parse structured output from tool call: {e}")
+
+        return AssistantMessage(
+            structured_response_content,
+            structured_output=structured_output,
+            parsed_output=parsed_output,
+            thinking_blocks=thinking_blocks,
+            **(diagnostics_kwargs or {}),
+        )
 
     def _convert_tool_call_block(self, block) -> ToolCall:
         arguments = "{}"
@@ -777,7 +975,7 @@ Please extract the relevant information from this reasoning and format it exactl
         system_prompt = self._prepare_system_prompt(messages)
 
         if self.retry_config is not None:
-            client = anthropic.with_options(max_retries=0)
+            client = self._get_sync_client().with_options(max_retries=0)
             return run_with_retry_config(
                 self.retry_config,
                 lambda: self._attempt_completion(
@@ -791,7 +989,11 @@ Please extract the relevant information from this reasoning and format it exactl
         while True:
             try:
                 return self._attempt_completion(
-                    messages, tools, structured_output, system_prompt, anthropic
+                    messages,
+                    tools,
+                    structured_output,
+                    system_prompt,
+                    self._get_sync_client(),
                 )
             except APIError as e:
                 should_retry, retry_count = self._handle_api_error(e, retry_count)
@@ -813,6 +1015,7 @@ Please extract the relevant information from this reasoning and format it exactl
         if (
             structured_output
             and has_model_schema(structured_output)
+            and not self._supports_native_structured_output()
             and self.thinking_config is not None
             and self._is_reasoning_model()
         ):
@@ -825,7 +1028,9 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
             try:
-                reasoning_response = client.messages.create(**api_params)
+                reasoning_response = client.messages.create(
+                    **_to_sdk_kwargs(api_params)
+                )
                 reasoning_diagnostics = _build_diagnostics_kwargs(reasoning_response)
                 thinking_blocks = self._extract_thinking_blocks(reasoning_response)
 
@@ -878,7 +1083,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 )
 
                 api_params = self._configure_reasoning_tools_fallback(api_params, tools)
-                reasoning_response = client.messages.create(**api_params)
+                reasoning_response = client.messages.create(
+                    **_to_sdk_kwargs(api_params)
+                )
                 reasoning_diagnostics = _build_diagnostics_kwargs(reasoning_response)
                 thinking_blocks = self._extract_thinking_blocks(reasoning_response)
                 reasoning_content = self._extract_reasoning_content(reasoning_response)
@@ -895,7 +1102,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 api_params, tools, structured_output
             )
 
-        response = client.messages.create(**api_params)
+        response = client.messages.create(**_to_sdk_kwargs(api_params))
 
         if response.stop_reason in [
             "end_turn",
@@ -948,10 +1155,7 @@ Please extract the relevant information from this reasoning and format it exactl
                 content_block = {"type": "text", "text": chunk.content}
 
                 if chunk.cacheable:
-                    cache_control = {"type": "ephemeral"}
-                    if chunk.ttl:
-                        cache_control["ttl"] = int(chunk.ttl.total_seconds())
-                    content_block["cache_control"] = cache_control
+                    content_block["cache_control"] = _build_cache_control(chunk)
 
                 anthropic_content.append(content_block)
 
@@ -966,14 +1170,11 @@ Please extract the relevant information from this reasoning and format it exactl
 
                 if chunk.source_type == "url":
                     if session is None:
-                        try:
-                            import requests
-
-                            session = requests.Session()
-                        except ImportError:
+                        if requests is None:
                             raise ImportError(
                                 "requests library required for URL support with Anthropic"
                             )
+                        session = requests.Session()
 
                     chunk = chunk.download(session)
 
@@ -1004,13 +1205,6 @@ Please extract the relevant information from this reasoning and format it exactl
 
     def upload_file_to_anthropic(self, chunk: MultimodalChunk) -> str:
         try:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=anthropic.api_key)
-
-            import tempfile
-            import os
-
             with tempfile.NamedTemporaryFile(
                 suffix=f".{chunk.media_type.split('/')[-1] if chunk.media_type else 'bin'}",
                 delete=False,
@@ -1020,7 +1214,9 @@ Please extract the relevant information from this reasoning and format it exactl
 
             try:
                 with open(tmp_file_path, "rb") as f:
-                    file_response = client.files.create(file=f, purpose="vision")
+                    file_response = self._get_sync_client().files.create(
+                        file=f, purpose="vision"
+                    )
 
                 return file_response.id
             finally:
@@ -1211,28 +1407,12 @@ Please extract the relevant information from this reasoning and format it exactl
         if system_prompt:
             params["system"] = system_prompt
 
-        return params
+        return self._enforce_cache_constraints(params)
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
-        """
-        Count tokens using Anthropic's API.
-
-        This makes an API call to Anthropic's count_tokens endpoint, which accurately
-        counts all content types including images and PDFs. For batch counting of
-        multiple messages, a single API call is made.
-
-        Args:
-            content: A string, single Message, or list of Messages
-
-        Returns:
-            Number of tokens
-
-        Raises:
-            TokenCountingError: If counting fails
-        """
         try:
             params = self._prepare_count_tokens_params(content)
-            response = anthropic.messages.count_tokens(**params)
+            response = self._get_sync_client().messages.count_tokens(**params)
             return response.input_tokens
         except APIError as e:
             raise TokenCountingError(f"Anthropic API error: {e}")
@@ -1242,23 +1422,9 @@ Please extract the relevant information from this reasoning and format it exactl
     async def count_tokens_async(
         self, content: Union[str, Message, List[Message]]
     ) -> int:
-        """
-        Count tokens using Anthropic's async API.
-
-        Native async version using Anthropic's async client for better concurrency.
-
-        Args:
-            content: A string, single Message, or list of Messages
-
-        Returns:
-            Number of tokens
-
-        Raises:
-            TokenCountingError: If counting fails
-        """
         try:
             params = self._prepare_count_tokens_params(content)
-            response = await anthropic_async.messages.count_tokens(**params)
+            response = await self._get_async_client().messages.count_tokens(**params)
             return response.input_tokens
         except APIError as e:
             raise TokenCountingError(f"Anthropic API error: {e}")
@@ -1304,9 +1470,6 @@ Please extract the relevant information from this reasoning and format it exactl
                 "[ANTHROPIC] disable_safety_filters has no effect — Anthropic does "
                 "not expose API parameters that weaken intrinsic safety."
             )
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
-        # Build API parameters (same as sync, but we'll use async client)
         system_prompt = self._prepare_system_prompt(messages)
         api_params = self._build_base_api_parameters(messages, system_prompt)
         api_params = self._apply_thinking_configuration(api_params)
@@ -1318,7 +1481,7 @@ Please extract the relevant information from this reasoning and format it exactl
         api_params.pop("timeout", None)
 
         if self.retry_config is not None:
-            client = anthropic_async.with_options(max_retries=0)
+            client = self._get_async_client().with_options(max_retries=0)
 
             async def acquire_stream():
                 return self._stream_events(api_params, client)
@@ -1329,9 +1492,9 @@ Please extract the relevant information from this reasoning and format it exactl
                 yield chunk
             return
 
-        # Configure SDK retry to match sync path's MAX_RETRIES
-        # The SDK uses exponential backoff and handles 429, 5xx, connection errors
-        client_with_retry = anthropic_async.with_options(max_retries=MAX_RETRIES)
+        client_with_retry = self._get_async_client().with_options(
+            max_retries=MAX_RETRIES
+        )
 
         async for chunk in self._stream_events(api_params, client_with_retry):
             yield chunk
@@ -1339,7 +1502,7 @@ Please extract the relevant information from this reasoning and format it exactl
     async def _stream_events(
         self, api_params: dict, client
     ) -> AsyncIterator["StreamChunk"]:
-        async with client.messages.stream(**api_params) as stream:
+        async with client.messages.stream(**_to_sdk_kwargs(api_params)) as stream:
             async for event in stream:
                 # Check for mid-stream error events (unique to Anthropic)
                 # These arrive as SSE events after HTTP 200 OK
@@ -1368,13 +1531,6 @@ Please extract the relevant information from this reasoning and format it exactl
             )
 
     def _convert_stream_event_to_chunk(self, event) -> Optional["StreamChunk"]:
-        """
-        Convert an Anthropic streaming event to a StreamChunk.
-
-        Returns None for events we don't need to expose.
-        """
-        from patterpunk.llm.streaming import StreamChunk, StreamEventType
-
         event_type = getattr(event, "type", None)
 
         if event_type == "content_block_start":

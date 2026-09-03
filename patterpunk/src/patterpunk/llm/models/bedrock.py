@@ -38,6 +38,14 @@ from patterpunk.config.providers.bedrock import (
     BEDROCK_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.structured_output import get_model_schema, has_model_schema
+from patterpunk.llm.models.claude_capabilities import (
+    ClaudeVersion,
+    SamplingParams,
+    normalize_claude_model_id,
+    parse_claude_version,
+    resolve_claude_sampling,
+    resolve_max_output_tokens,
+)
 
 if boto3:
     from botocore.exceptions import ClientError
@@ -120,11 +128,12 @@ class BedrockModel(Model, ABC):
     ):
         self.model_id = model_id
         self.temperature = temperature
-        self.top_p = top_p  # None means don't specify (some models don't allow both temp and top_p)
+        self.top_p = top_p
         self.max_tokens = max_tokens
         self.thinking_config = thinking_config
         self.timeout = timeout
         self.retry_config = retry_config
+        self._warn_unusable_thinking_config()
 
         # When a RetryConfig governs retries, botocore's own retry layer must
         # not stack additional attempts underneath the configured schedule.
@@ -154,6 +163,29 @@ class BedrockModel(Model, ABC):
 
         return {"tools": bedrock_tools}
 
+    def _supports_reasoning_fields(self) -> bool:
+        version = parse_claude_version(self.model_id)
+        return version is not None and version.at_least(3, 7)
+
+    def _warn_unusable_thinking_config(self) -> None:
+        # DeepSeek reasons by default and takes no reasoning fields, so a
+        # thinking_config is harmless there and stays silent.
+        if self.thinking_config is None or "deepseek" in self.model_id.lower():
+            return
+        if not self._supports_reasoning_fields():
+            logger.warning(
+                f"[BEDROCK] Model '{self.model_id}' does not accept reasoning "
+                f"parameters. Ignoring thinking_config."
+            )
+            return
+        budget = self.thinking_config.token_budget
+        if budget is not None and 0 < budget < MIN_THINKING_BUDGET_TOKENS:
+            logger.warning(
+                f"[BEDROCK] The API requires a thinking budget of at least "
+                f"{MIN_THINKING_BUDGET_TOKENS} tokens. Raising "
+                f"token_budget={budget} to {MIN_THINKING_BUDGET_TOKENS}."
+            )
+
     def _get_thinking_params(self) -> dict:
         if not self.thinking_config:
             return {}
@@ -161,6 +193,12 @@ class BedrockModel(Model, ABC):
         additional_fields = {}
 
         if "deepseek" in self.model_id.lower():
+            return {}
+
+        if not self._supports_reasoning_fields():
+            return {}
+
+        if self.thinking_config.token_budget == 0:
             return {}
 
         if self.thinking_config.effort is not None:
@@ -199,10 +237,12 @@ class BedrockModel(Model, ABC):
                 bedrock_content.append({"text": chunk.content})
 
             elif isinstance(chunk, CacheChunk):
-                content_block = {"text": chunk.content}
+                # Converse requires cachePoint as its own content block with a
+                # "type" field. Embedding it in the text block is rejected
+                # with "ValidationException: ... type: Field required".
+                bedrock_content.append({"text": chunk.content})
                 if chunk.cacheable:
-                    content_block["cachePoint"] = {}
-                bedrock_content.append(content_block)
+                    bedrock_content.append({"cachePoint": {"type": "default"}})
 
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "url":
@@ -442,20 +482,45 @@ class BedrockModel(Model, ABC):
 
         return conversation, system_content if system_content else None
 
+    def _build_claude_sampling_config(self, version: ClaudeVersion) -> dict:
+        if not version.recognized:
+            logger.warning(
+                f"[BEDROCK] Unrecognised Claude model id '{self.model_id}'. "
+                f"Treating it as a Claude 5 model."
+            )
+
+        resolution = resolve_claude_sampling(
+            version,
+            thinking_enabled=bool(self._get_thinking_params()),
+            requested=SamplingParams(temperature=self.temperature, top_p=self.top_p),
+            defaults=SamplingParams(temperature=DEFAULT_TEMPERATURE),
+        )
+        for warning in resolution.warnings:
+            logger.warning(f"[BEDROCK] {warning}")
+
+        sampling_config = {}
+        if resolution.temperature is not None:
+            sampling_config["temperature"] = resolution.temperature
+        if resolution.top_p is not None:
+            sampling_config["topP"] = resolution.top_p
+        return sampling_config
+
     def _build_inference_config(
         self, structured_output: Optional[object] = None
     ) -> dict:
-        inference_config = {
-            "temperature": self.temperature,
-        }
+        # Anthropic enforces its sampling rules through Bedrock unchanged, so
+        # Claude ids go through the shared resolver. Other model families
+        # (Llama, Mistral, Nova, Titan, DeepSeek) accept temperature and topP.
+        claude_version = parse_claude_version(self.model_id)
+        if claude_version is not None:
+            inference_config = self._build_claude_sampling_config(claude_version)
+        else:
+            inference_config = {"temperature": self.temperature}
+            if self.top_p is not None:
+                inference_config["topP"] = self.top_p
 
-        # Only add topP if explicitly specified (some models like Claude 4.5 don't allow both)
-        if self.top_p is not None:
-            inference_config["topP"] = self.top_p
-
-        # Add max_tokens if specified
         if self.max_tokens:
-            inference_config["maxTokens"] = self.max_tokens
+            inference_config["maxTokens"] = self._capped_max_tokens(claude_version)
 
         thinking_params = self._get_thinking_params()
         if thinking_params.get("reasoning_config"):
@@ -468,6 +533,20 @@ class BedrockModel(Model, ABC):
                 inference_config["maxTokens"] = budget + 2000
 
         return inference_config
+
+    def _capped_max_tokens(self, version: Optional[ClaudeVersion]) -> int:
+        # Bedrock allows Claude 3.7+ up to 131072 on-demand output tokens.
+        # The direct Messages API caps those same models lower.
+        if version is None or version.at_least(3, 7):
+            return self.max_tokens
+        cap = resolve_max_output_tokens(version, self.model_id)
+        if cap is None or self.max_tokens <= cap:
+            return self.max_tokens
+        logger.warning(
+            f"[BEDROCK] max_tokens={self.max_tokens} exceeds the {cap}-token "
+            f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+        )
+        return cap
 
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
@@ -490,8 +569,9 @@ class BedrockModel(Model, ABC):
         converse_params = {
             "modelId": self.model_id,
             "messages": conversation,
-            "inferenceConfig": inference_config,
         }
+        if inference_config:
+            converse_params["inferenceConfig"] = inference_config
 
         if system_content:
             converse_params["system"] = system_content
@@ -504,6 +584,72 @@ class BedrockModel(Model, ABC):
         if tool_config:
             converse_params["toolConfig"] = tool_config
 
+        return self._enforce_cache_point_rules(converse_params)
+
+    def _supports_cache_points(self) -> bool:
+        # Bedrock's prompt-caching allowlist is narrower than Anthropic's own
+        # API: Claude 3.7+, Claude 3.5 Haiku, and the Amazon Nova family.
+        # Claude 3.5 Sonnet stayed preview-only and never reached GA.
+        # Unsupported models reject cachePoint blocks with ValidationException.
+        model_lower = self.model_id.lower()
+        if "amazon.nova" in model_lower:
+            return True
+        version = parse_claude_version(self.model_id)
+        if version is None:
+            return False
+        if version.at_least(3, 7):
+            return True
+        return (version.major, version.minor) == (3, 5) and "haiku" in (
+            normalize_claude_model_id(self.model_id)
+        )
+
+    def _collect_cache_points(self, converse_params: dict) -> List[tuple]:
+        containers = []
+        system = converse_params.get("system")
+        if isinstance(system, list):
+            containers.append(system)
+        for message in converse_params.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, list):
+                containers.append(content)
+
+        return [
+            (container, block)
+            for container in containers
+            for block in container
+            if isinstance(block, dict) and "cachePoint" in block
+        ]
+
+    def _enforce_cache_point_rules(self, converse_params: dict) -> dict:
+        def remove_block(container, block):
+            for index, candidate in enumerate(container):
+                if candidate is block:
+                    del container[index]
+                    return
+
+        cache_points = self._collect_cache_points(converse_params)
+        if not cache_points:
+            return converse_params
+
+        if not self._supports_cache_points():
+            for container, block in cache_points:
+                remove_block(container, block)
+            logger.warning(
+                f"[BEDROCK] Model '{self.model_id}' does not support prompt "
+                f"caching on Bedrock. Removed {len(cache_points)} cache "
+                f"checkpoint(s); the content is sent uncached."
+            )
+            return converse_params
+
+        if len(cache_points) > 4:
+            removed_count = len(cache_points) - 4
+            for container, block in cache_points[:-4]:
+                remove_block(container, block)
+            logger.warning(
+                f"[BEDROCK] Bedrock allows at most 4 cache checkpoints per "
+                f"request. Removed the first {removed_count}; each remaining "
+                f"checkpoint still caches all content before it."
+            )
         return converse_params
 
     def _process_converse_response(

@@ -1,10 +1,12 @@
 import pytest
 from pydantic import BaseModel, Field
+from datetime import timedelta
 from typing import List, Optional
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.models.anthropic import AnthropicModel
 from patterpunk.llm.thinking import ThinkingConfig
+from patterpunk.llm.messages.assistant import AssistantMessage
 from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
@@ -464,6 +466,10 @@ def test_reasoning_mode_version_parsing():
     assert model_unknown._parse_model_version() == (0, 0)
     assert model_unknown._is_reasoning_model() == False
 
+    model_fable = AnthropicModel(model="claude-fable-5")
+    assert model_fable._parse_model_version() == (5, 0)
+    assert model_fable._is_reasoning_model() == True
+
 
 def test_reasoning_mode_parameter_compatibility():
 
@@ -505,7 +511,7 @@ def test_reasoning_mode_initialization():
         model="claude-sonnet-4-20250514",
         thinking_config=thinking_config,
         temperature=0.5,
-        max_tokens=2000,
+        max_tokens=20000,
     )
 
     assert model.thinking_config == thinking_config
@@ -513,7 +519,7 @@ def test_reasoning_mode_initialization():
     assert model.thinking.budget_tokens == 8000
     assert model.model == "claude-sonnet-4-20250514"
     assert model.temperature == 0.5
-    assert model.max_tokens == 2000
+    assert model.max_tokens == 20000
     assert model._is_reasoning_model() == True
 
 
@@ -525,7 +531,7 @@ def test_reasoning_mode_default_type():
         model="claude-opus-4-20250514",
         thinking_config=thinking_config,
         temperature=0.3,
-        max_tokens=1500,
+        max_tokens=15000,
     )
 
     assert model.thinking.type == "enabled"
@@ -559,7 +565,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
             temperature=0.7,
             top_p=0.9,
             top_k=40,
-            max_tokens=2000,
+            max_tokens=8000,
         )
     )
 
@@ -572,7 +578,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
         "temperature": 0.7,
         "top_p": 0.9,
         "top_k": 40,
-        "max_tokens": 2000,
+        "max_tokens": 8000,
         "system": "You are a helpful assistant.",
         "messages": [],
     }
@@ -584,7 +590,7 @@ def test_reasoning_mode_with_claude_sonnet_4():
     assert "top_k" not in filtered_params
     assert "temperature" in filtered_params
     assert filtered_params["temperature"] == 1.0
-    assert filtered_params["max_tokens"] == 2000
+    assert filtered_params["max_tokens"] == 8000
 
     chat_37 = Chat(
         model=AnthropicModel(
@@ -1659,6 +1665,7 @@ def test_xhigh_clamped_to_high_on_legacy_anthropic_with_warning(caplog):
         model = AnthropicModel(
             model="claude-sonnet-4-5-20250614",
             thinking_config=ThinkingConfig(effort="xhigh"),
+            max_tokens=30000,
         )
     # Legacy budget mapping for "high" is 24_000
     assert model.thinking.budget_tokens == 24_000
@@ -1970,3 +1977,588 @@ def test_diagnostics_and_safety_filter_integration():
     assert len(response.content) > 0
     assert response.finish_reason == FinishReason.STOP
     assert response._provider.raw_finish_reason == "end_turn"
+
+
+# =============================================================================
+# anthropic>=1.0 removed temperature/top_p/top_k from the SDK signatures.
+# The API still accepts them for Claude <= 4.6, so they travel via extra_body.
+# =============================================================================
+
+
+def test_to_sdk_kwargs_moves_sampling_params_into_extra_body():
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    api_params = {
+        "model": "claude-sonnet-4-5-20250614",
+        "max_tokens": 100,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "top_k": 40,
+    }
+    kwargs = _to_sdk_kwargs(api_params)
+    assert kwargs["extra_body"] == {"temperature": 0.2, "top_p": 0.9, "top_k": 40}
+    assert not {"temperature", "top_p", "top_k"} & kwargs.keys()
+    assert kwargs["model"] == "claude-sonnet-4-5-20250614"
+    assert kwargs["max_tokens"] == 100
+    # The internal dict is left untouched so the normalization helpers keep working.
+    assert api_params["temperature"] == 0.2
+
+
+def test_to_sdk_kwargs_is_identity_without_sampling_params():
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    api_params = {"model": "claude-opus-4-7", "max_tokens": 100}
+    assert _to_sdk_kwargs(api_params) is api_params
+
+
+def test_legacy_model_sends_sampling_params_via_extra_body():
+    """End-to-end on the parameter builders: a pre-4.7 model still reaches the SDK
+    with temperature/top_p/top_k, but only inside extra_body."""
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001", temperature=0.3)
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    kwargs = _to_sdk_kwargs(api_params)
+    assert "temperature" not in kwargs
+    assert kwargs["extra_body"]["temperature"] == 0.3
+
+
+# =============================================================================
+# Claude 5 family (fable / mythos / opus / sonnet) must take the adaptive path
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-fable-5-20260801",
+    ],
+)
+def test_claude_5_family_parses_as_adaptive(model_id):
+    model = AnthropicModel(model=model_id)
+    assert model._parse_model_version() == (5, 0)
+    assert model._is_reasoning_model() is True
+    assert model._uses_adaptive_thinking_api() is True
+
+
+def test_fable_5_request_shape():
+    """The request for claude-fable-5 must carry adaptive thinking + effort and
+    nothing from the legacy shape (sampling params, budget_tokens, beta header)."""
+    model = AnthropicModel(
+        model="claude-fable-5", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._build_base_api_parameters([], None)
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["thinking"] == {"type": "adaptive"}
+    assert api_params["output_config"] == {"effort": "high"}
+    assert not {"temperature", "top_p", "top_k", "extra_headers"} & api_params.keys()
+
+
+def test_adaptive_models_do_not_send_interleaved_thinking_header():
+    """Adaptive thinking enables interleaved thinking without the beta header."""
+    model = AnthropicModel(
+        model="claude-opus-4-7", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._apply_thinking_configuration({})
+    assert "extra_headers" not in api_params
+
+
+def test_unknown_claude_id_falls_back_to_adaptive_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(model="claude-unknown-model-9")
+        assert model._parse_model_version() == (5, 0)
+    assert any(
+        "Unrecognised Claude model id" in r.message and r.levelname == "WARNING"
+        for r in caplog.records
+    )
+    assert AnthropicModel(model="some-unknown-model")._parse_model_version() == (0, 0)
+
+
+# =============================================================================
+# Native structured outputs (output_config.format) on Claude 4.5+
+# =============================================================================
+
+
+class _Verdict(BaseModel):
+    answer: str = Field(description="The answer")
+    confidence: float = Field(ge=0.0, le=1.0)
+    tags: List[str] = Field(min_length=1)
+
+
+def lookup_weather(city: str) -> str:
+    """Look up the weather for a city.
+
+    :param city: City name
+    """
+    return "sunny"
+
+
+def test_native_structured_output_merges_into_output_config_with_effort():
+    model = AnthropicModel(
+        model="claude-fable-5", thinking_config=ThinkingConfig(effort="high")
+    )
+    api_params = model._apply_thinking_configuration(
+        model._build_base_api_parameters([], None)
+    )
+    api_params = model._configure_tools_and_structured_output(
+        api_params, None, _Verdict
+    )
+    assert api_params["output_config"]["effort"] == "high"
+    fmt = api_params["output_config"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"]["additionalProperties"] is False
+    assert "tools" not in api_params
+    assert "tool_choice" not in api_params
+
+
+def test_native_structured_output_keeps_real_tools_only():
+    from patterpunk.lib.function_to_tool.converter import function_to_tool
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    api_params = model._configure_tools_and_structured_output(
+        {}, [function_to_tool(lookup_weather)], _Verdict
+    )
+    assert [tool["name"] for tool in api_params["tools"]] == ["lookup_weather"]
+    assert "tool_choice" not in api_params
+    assert api_params["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_pre_4_5_models_keep_tool_based_structured_output():
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=ThinkingConfig(token_budget=2000),
+        max_tokens=4000,
+    )
+    api_params = model._configure_tools_and_structured_output({}, None, _Verdict)
+    assert "output_config" not in api_params
+    assert api_params["tools"][0]["name"] == "provide_structured_response"
+    assert api_params["tool_choice"] == {"type": "auto"}
+
+    plain = AnthropicModel(model="claude-3-haiku-20240307")
+    api_params = plain._configure_tools_and_structured_output({}, None, _Verdict)
+    assert api_params["tool_choice"] == {
+        "type": "tool",
+        "name": "provide_structured_response",
+    }
+
+
+def test_fable_5_structured_output_live():
+    """Live: Fable 5 with adaptive thinking returns schema-conforming JSON text."""
+    import json
+
+    chat = Chat(
+        model=AnthropicModel(
+            model="claude-fable-5",
+            thinking_config=ThinkingConfig(effort="low"),
+            max_tokens=4000,
+        )
+    )
+    chat = chat.add_message(
+        UserMessage(
+            "What is the capital of France? Tag the answer with at least one topic.",
+            structured_output=_Verdict,
+        )
+    ).complete()
+
+    parsed = chat.parsed_output
+    assert isinstance(parsed, _Verdict)
+    assert "paris" in parsed.answer.lower()
+    assert 0.0 <= parsed.confidence <= 1.0
+    assert json.loads(chat.latest_message.content)["answer"] == parsed.answer
+
+
+# =============================================================================
+# Cache TTL: Anthropic accepts only "5m" (default) and "1h", never integer seconds
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "ttl, expected_ttl, warns",
+    [
+        (None, None, False),
+        (timedelta(minutes=5), None, False),
+        (timedelta(hours=1), "1h", False),
+        (timedelta(minutes=30), "1h", True),
+        (timedelta(hours=2), "1h", True),
+    ],
+)
+def test_cache_control_ttl_mapping(caplog, ttl, expected_ttl, warns):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    chunk = CacheChunk("x" * 10, cacheable=True, ttl=ttl)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        blocks = model._convert_content_to_anthropic_format([chunk])
+    cache_control = blocks[0]["cache_control"]
+    assert cache_control["type"] == "ephemeral"
+    assert cache_control.get("ttl") == expected_ttl
+    assert not any(isinstance(v, int) for v in cache_control.values())
+    warned = any("Cache ttl" in r.message for r in caplog.records)
+    assert warned is warns
+
+
+def test_one_hour_cache_ttl_live():
+    """Live: a 1h cache_control is accepted and the second call reads the cache."""
+    from patterpunk.config.providers.anthropic import anthropic
+    from patterpunk.llm.models.anthropic import _to_sdk_kwargs
+
+    model = AnthropicModel(model="claude-haiku-4-5-20251001", max_tokens=50)
+    filler = " ".join(
+        f"Fact number {i}: the sky is blue on day {i}." for i in range(400)
+    )
+    messages = [
+        SystemMessage([CacheChunk(filler, cacheable=True, ttl=timedelta(hours=1))]),
+        UserMessage("Reply with the single word OK."),
+    ]
+    api_params = model._build_base_api_parameters(
+        messages, model._prepare_system_prompt(messages)
+    )
+    api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["system"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+    }
+    first = anthropic.messages.create(**_to_sdk_kwargs(api_params))
+    second = anthropic.messages.create(**_to_sdk_kwargs(api_params))
+    assert first.usage.cache_creation_input_tokens > 0 or (
+        first.usage.cache_read_input_tokens > 0
+    )
+    assert second.usage.cache_read_input_tokens > 0
+
+
+# =============================================================================
+# Output-token limits adapt instead of erroring (max_tokens caps, budgets)
+# =============================================================================
+
+
+def _build_request_params(model):
+    messages = [UserMessage("Reply with the single word OK.")]
+    api_params = model._build_base_api_parameters(
+        messages, model._prepare_system_prompt(messages)
+    )
+    return model._apply_thinking_configuration(api_params)
+
+
+def test_thinking_budget_above_max_tokens_raises_max_tokens(caplog):
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(effort="high"),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["thinking"]["budget_tokens"] == 24000
+    assert params["max_tokens"] == 26000
+    assert any("Raising max_tokens to 26000" in r.message for r in caplog.records)
+
+
+def test_thinking_budget_lowered_to_fit_model_output_cap(caplog):
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=ThinkingConfig(token_budget=128000),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 64000
+    assert params["thinking"]["budget_tokens"] == 62000
+    assert any(
+        "Lowering the thinking budget to 62000" in r.message for r in caplog.records
+    )
+
+
+def test_max_tokens_capped_to_model_output_limit(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229")
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 4096
+    assert any(
+        "exceeds the 4096-token output limit" in r.message for r in caplog.records
+    )
+
+
+def test_max_tokens_within_limit_untouched(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229", max_tokens=2000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 2000
+    assert not any("output limit" in r.message for r in caplog.records)
+
+
+def test_thinking_config_ignored_below_claude_3_7(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-3-sonnet-20240229",
+            thinking_config=ThinkingConfig(effort="high"),
+        )
+    assert model.thinking is None
+    assert any("predates extended thinking" in r.message for r in caplog.records)
+    assert "thinking" not in _build_request_params(model)
+
+
+def test_token_budget_zero_disables_thinking():
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(token_budget=0),
+    )
+    assert model.thinking is None
+    assert "thinking" not in _build_request_params(model)
+
+
+def test_token_budget_below_api_minimum_raised_to_1024(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=500),
+        )
+    assert model.thinking.budget_tokens == 1024
+    assert any("Raising token_budget=500 to 1024" in r.message for r in caplog.records)
+
+
+def test_legacy_thinking_budget_below_max_tokens_untouched():
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(effort="high"),
+        max_tokens=30000,
+    )
+    assert model.thinking.budget_tokens == 24000
+    assert _build_request_params(model)["max_tokens"] == 30000
+
+    AnthropicModel(model="claude-fable-5", thinking_config=ThinkingConfig(effort="max"))
+
+
+# =============================================================================
+# Legacy tool path: provide_structured_response is a protocol, not a tool
+# =============================================================================
+
+
+class _FakeToolUseBlock:
+    type = "tool_use"
+    id = "toolu_1"
+    name = "provide_structured_response"
+
+    def __init__(self, input):
+        self.input = input
+
+
+def test_structured_output_tool_is_strict_with_transformed_schema():
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    tool = model._create_structured_output_tool(_Verdict)
+    assert tool["strict"] is True
+    assert tool["input_schema"]["additionalProperties"] is False
+    assert set(tool["input_schema"]["required"]) == {"answer", "confidence", "tags"}
+
+
+def test_invalid_structured_tool_input_becomes_assistant_text_not_tool_call():
+    from patterpunk.llm.messages.exceptions import StructuredOutputFailedToParseError
+
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    block = _FakeToolUseBlock({"answer": "x", "confidence": 5.0})  # invalid, no tags
+    message = model._parse_structured_output_from_tool_call(block, _Verdict)
+    assert isinstance(message, AssistantMessage)
+    assert '"answer": "x"' in message.content
+    with pytest.raises(StructuredOutputFailedToParseError):
+        message.parsed_output
+
+
+def test_valid_structured_tool_input_is_parsed():
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    block = _FakeToolUseBlock({"answer": "x", "confidence": 0.5, "tags": ["t"]})
+    message = model._parse_structured_output_from_tool_call(block, _Verdict)
+    assert message.parsed_output.tags == ["t"]
+
+
+# =============================================================================
+# Sampling-parameter drop/coercion warnings (shared claude_capabilities rules)
+# =============================================================================
+
+
+def test_claude_4_custom_top_k_drop_warns(caplog):
+    model = AnthropicModel(model="claude-sonnet-4-5-20250929", top_k=40)
+    api_params = {
+        "model": "claude-sonnet-4-5-20250929",
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "top_k": 40,
+        "max_tokens": 1000,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert "top_k" not in filtered
+    assert filtered["temperature"] == 0.7
+    assert any("Dropping user-set top_k=40" in r.message for r in caplog.records)
+
+
+def test_thinking_mode_custom_temperature_coercion_warns(caplog):
+    model = AnthropicModel(
+        model="claude-sonnet-4-5-20250929",
+        thinking_config=ThinkingConfig(token_budget=2000),
+        temperature=0.3,
+    )
+    api_params = {
+        "temperature": 0.3,
+        "top_p": 1.0,
+        "top_k": 200,
+        "max_tokens": 8192,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert filtered["temperature"] == 1.0
+    assert any(
+        "Coercing user-set temperature=0.3 to 1.0" in r.message for r in caplog.records
+    )
+
+
+def test_thinking_mode_default_params_coerce_silently(caplog):
+    model = AnthropicModel(
+        model="claude-sonnet-4-5-20250929",
+        thinking_config=ThinkingConfig(token_budget=2000),
+    )
+    api_params = {
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "top_k": 200,
+        "max_tokens": 8192,
+    }
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        filtered = model._get_compatible_params(api_params)
+    assert filtered["temperature"] == 1.0
+    assert "top_p" not in filtered
+    assert "top_k" not in filtered
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_structured_output_formatter_reuses_callers_model(monkeypatch):
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop after capturing the request")
+
+    class FakeClient:
+        messages = FakeMessages()
+
+    model = AnthropicModel(model="claude-3-7-sonnet-20250219")
+    monkeypatch.setattr(model, "_get_sync_client", lambda: FakeClient())
+    model._format_reasoning_to_structured_output("reasoning text", _Verdict, [])
+    assert captured["model"] == "claude-3-7-sonnet-20250219"
+
+
+# =============================================================================
+# Cache breakpoint ordering (1h must precede 5m; patterpunk auto-upgrades)
+# =============================================================================
+
+
+def test_cache_breakpoint_order_upgrades_earlier_5m_to_1h(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        SystemMessage([CacheChunk("stable part", cacheable=True)]),
+        UserMessage(
+            [CacheChunk("big document", cacheable=True, ttl=timedelta(hours=1))]
+        ),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    system_block = api_params["system"][0]
+    assert system_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    user_block = api_params["messages"][0]["content"][0]
+    assert user_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert any(
+        "Upgraded 1 earlier" in r.message and r.levelname == "WARNING"
+        for r in caplog.records
+    )
+
+
+def test_cache_breakpoint_valid_order_is_untouched(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        SystemMessage(
+            [CacheChunk("stable part", cacheable=True, ttl=timedelta(hours=1))]
+        ),
+        UserMessage([CacheChunk("session context", cacheable=True)]),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    assert api_params["system"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+    }
+    user_block = api_params["messages"][0]["content"][0]
+    assert user_block["cache_control"] == {"type": "ephemeral"}
+    assert not any("Upgraded" in r.message for r in caplog.records)
+
+
+def test_cache_breakpoint_upgrade_counts_all_earlier_breakpoints(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage(
+            [
+                CacheChunk("first", cacheable=True),
+                CacheChunk("second", cacheable=True),
+                CacheChunk("third", cacheable=True, ttl=timedelta(hours=1)),
+            ]
+        ),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    assert all(
+        block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        for block in content_blocks
+    )
+    assert any("Upgraded 2 earlier" in r.message for r in caplog.records)
+
+
+def test_cache_breakpoints_trimmed_to_api_limit_of_four(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(6)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    cached = [b for b in content_blocks if "cache_control" in b]
+    assert len(cached) == 4
+    assert [b["text"] for b in cached] == [f"section {i}" for i in range(2, 6)]
+    assert any("at most 4 cache breakpoints" in r.message for r in caplog.records)
+
+
+def test_cache_breakpoints_at_limit_untouched(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(4)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    assert all("cache_control" in b for b in content_blocks)
+    assert not any("at most 4" in r.message for r in caplog.records)
+
+
+def test_cache_stripped_on_models_without_prompt_caching(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229")
+    messages = [
+        SystemMessage([CacheChunk("stable part", cacheable=True)]),
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    assert "cache_control" not in api_params["system"][0]
+    assert "cache_control" not in api_params["messages"][0]["content"][0]
+    assert any("does not support prompt caching" in r.message for r in caplog.records)
+
+
+def test_cache_kept_on_claude_3_haiku(caplog):
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    assert "cache_control" in api_params["messages"][0]["content"][0]
+    assert not any("prompt caching" in r.message for r in caplog.records)

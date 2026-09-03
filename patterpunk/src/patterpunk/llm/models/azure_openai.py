@@ -17,7 +17,11 @@ from patterpunk.config.providers.azure_openai import (
     AZURE_OPENAI_DEFAULT_TIMEOUT,
 )
 from patterpunk.lib.retry import calculate_backoff_delay, extract_retry_after
-from patterpunk.llm.models.openai import OpenAiModel, OpenAiApiError
+from patterpunk.llm.models.openai import (
+    OpenAiModel,
+    OpenAiApiError,
+    _strip_reasoning_summary_if_unverified,
+)
 from patterpunk.llm.retry_config import RetryConfig
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.thinking import ThinkingConfig
@@ -123,17 +127,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                 logger.info("Azure OpenAI Responses API response received")
                 done = True
             except APIError as error:
-                if (
-                    "reasoning.summary" in str(error)
-                    and "reasoning" in responses_parameters
-                ):
-                    logger.info(
-                        "Organization not verified for reasoning summaries, removing reasoning parameter and treating as regular model"
-                    )
-                    responses_parameters.pop("reasoning", None)
-                    responses_parameters["temperature"] = self.temperature
-                    responses_parameters["top_p"] = self.top_p
-                    # Retry immediately for this specific error (no rate limit)
+                if _strip_reasoning_summary_if_unverified(error, responses_parameters):
                     retry_count += 1
                     continue
 
@@ -197,8 +191,12 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         return []
 
     def _is_reasoning_model(self, model: str) -> bool:
-        """Check if this is a reasoning model that uses thinking tokens."""
         model_lower = model.lower()
+
+        # "-chat" variants (gpt-5.2-chat-latest) are non-reasoning Instant models
+        # that accept sampling params and reject the reasoning parameter.
+        if "-chat" in model_lower:
+            return False
 
         if model_lower.startswith(("o1", "o3")):
             return True
@@ -251,6 +249,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         tools: Optional[ToolDefinition] = None,
         structured_output: Optional[object] = None,
         output_types: Optional[Union[List[OutputType], Set[OutputType]]] = None,
+        disable_safety_filters: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream the assistant message response from Azure OpenAI.
