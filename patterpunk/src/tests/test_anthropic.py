@@ -2376,3 +2376,70 @@ def test_structured_output_formatter_reuses_callers_model(monkeypatch):
     monkeypatch.setattr(model, "_get_sync_client", lambda: FakeClient())
     model._format_reasoning_to_structured_output("reasoning text", _Verdict, [])
     assert captured["model"] == "claude-3-7-sonnet-20250219"
+
+
+# =============================================================================
+# Cache breakpoint ordering (1h must precede 5m; patterpunk auto-upgrades)
+# =============================================================================
+
+
+def test_cache_breakpoint_order_upgrades_earlier_5m_to_1h(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        SystemMessage([CacheChunk("stable part", cacheable=True)]),
+        UserMessage(
+            [CacheChunk("big document", cacheable=True, ttl=timedelta(hours=1))]
+        ),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    system_block = api_params["system"][0]
+    assert system_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    user_block = api_params["messages"][0]["content"][0]
+    assert user_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert any(
+        "Upgraded 1 earlier" in r.message and r.levelname == "WARNING"
+        for r in caplog.records
+    )
+
+
+def test_cache_breakpoint_valid_order_is_untouched(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        SystemMessage(
+            [CacheChunk("stable part", cacheable=True, ttl=timedelta(hours=1))]
+        ),
+        UserMessage([CacheChunk("session context", cacheable=True)]),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    assert api_params["system"][0]["cache_control"] == {
+        "type": "ephemeral",
+        "ttl": "1h",
+    }
+    user_block = api_params["messages"][0]["content"][0]
+    assert user_block["cache_control"] == {"type": "ephemeral"}
+    assert not any("Upgraded" in r.message for r in caplog.records)
+
+
+def test_cache_breakpoint_upgrade_counts_all_earlier_breakpoints(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage(
+            [
+                CacheChunk("first", cacheable=True),
+                CacheChunk("second", cacheable=True),
+                CacheChunk("third", cacheable=True, ttl=timedelta(hours=1)),
+            ]
+        ),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    assert all(
+        block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        for block in content_blocks
+    )
+    assert any("Upgraded 2 earlier" in r.message for r in caplog.records)

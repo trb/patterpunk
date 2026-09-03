@@ -152,10 +152,9 @@ _ONE_HOUR = timedelta(hours=1)
 
 
 def _build_cache_control(chunk: CacheChunk) -> dict:
-    """Map a CacheChunk ttl onto the two cache lifetimes Anthropic offers."""
     # The API accepts only the strings "5m" (default, omitted here) and "1h"; an
     # integer ttl is rejected. Within one request every 1h breakpoint has to
-    # precede the 5m ones, and patterpunk sends chunks in caller order.
+    # precede the 5m ones; _enforce_cache_breakpoint_order repairs violations.
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     if chunk.ttl is None or chunk.ttl <= _FIVE_MINUTES:
         return {"type": "ephemeral"}
@@ -505,6 +504,54 @@ Please extract the relevant information from this reasoning and format it exactl
         if system_prompt is not None:
             api_params["system"] = system_prompt
 
+        return self._enforce_cache_breakpoint_order(api_params)
+
+    def _collect_cache_breakpoints(self, api_params: dict) -> List[dict]:
+        cache_blocks = []
+        system = api_params.get("system")
+        if isinstance(system, list):
+            cache_blocks.extend(
+                block
+                for block in system
+                if isinstance(block, dict) and "cache_control" in block
+            )
+        for message in api_params.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, list):
+                cache_blocks.extend(
+                    block
+                    for block in content
+                    if isinstance(block, dict) and "cache_control" in block
+                )
+        return cache_blocks
+
+    def _enforce_cache_breakpoint_order(self, api_params: dict) -> dict:
+        # The API rejects any 1-hour cache breakpoint that follows a 5-minute
+        # one in request order. Content cannot be reordered without changing
+        # the prompt, so earlier 5-minute breakpoints are upgraded to 1 hour.
+        # Upgrading costs the 1-hour cache-write premium on those breakpoints.
+        # Downgrading instead would silently expire an explicitly requested
+        # 1-hour cache after 5 minutes.
+        cache_blocks = self._collect_cache_breakpoints(api_params)
+        one_hour_indices = [
+            index
+            for index, block in enumerate(cache_blocks)
+            if block["cache_control"].get("ttl") == "1h"
+        ]
+        if not one_hour_indices:
+            return api_params
+
+        upgraded_count = 0
+        for block in cache_blocks[: one_hour_indices[-1]]:
+            if block["cache_control"].get("ttl") != "1h":
+                block["cache_control"]["ttl"] = "1h"
+                upgraded_count += 1
+        if upgraded_count:
+            logger.warning(
+                f"[ANTHROPIC] The API requires 1-hour cache breakpoints to come "
+                f"before 5-minute ones. Upgraded {upgraded_count} earlier "
+                f"5-minute breakpoint(s) to 1 hour to keep the request valid."
+            )
         return api_params
 
     def _warn_dropped_sampling_params(self) -> None:
@@ -1285,7 +1332,7 @@ Please extract the relevant information from this reasoning and format it exactl
         if system_prompt:
             params["system"] = system_prompt
 
-        return params
+        return self._enforce_cache_breakpoint_order(params)
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
         try:

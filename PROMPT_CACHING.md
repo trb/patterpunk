@@ -71,7 +71,7 @@ Anthropic offers exactly two cache lifetimes: 5 minutes (the default) and 1 hour
 | exactly `timedelta(hours=1)` | `"1h"` |
 | anything else | `"1h"`, with a warning that the value was mapped |
 
-Within one request, every 1-hour breakpoint has to come before any 5-minute breakpoint; the API rejects the reverse order. Patterpunk sends chunks in the order you give them and does not reorder, so place `timedelta(hours=1)` chunks first.
+Within one request, the API requires every 1-hour breakpoint to come before any 5-minute breakpoint. Patterpunk cannot reorder your content (that would change the prompt), so when a 1-hour breakpoint appears after a 5-minute one, it upgrades the earlier 5-minute breakpoints to 1 hour and logs a WARNING. The request always stays valid; the upgrade preserves your requested 1-hour lifetime at the cost of the 1-hour cache-write premium on the upgraded breakpoints. Placing `timedelta(hours=1)` chunks first avoids the upgrade entirely:
 
 ```python
 system = SystemMessage([
