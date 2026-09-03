@@ -41,6 +41,7 @@ from patterpunk.lib.structured_output import get_model_schema, has_model_schema
 from patterpunk.llm.models.claude_capabilities import (
     ClaudeVersion,
     SamplingParams,
+    normalize_claude_model_id,
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
@@ -236,10 +237,12 @@ class BedrockModel(Model, ABC):
                 bedrock_content.append({"text": chunk.content})
 
             elif isinstance(chunk, CacheChunk):
-                content_block = {"text": chunk.content}
+                # Converse requires cachePoint as its own content block with a
+                # "type" field. Embedding it in the text block is rejected
+                # with "ValidationException: ... type: Field required".
+                bedrock_content.append({"text": chunk.content})
                 if chunk.cacheable:
-                    content_block["cachePoint"] = {}
-                bedrock_content.append(content_block)
+                    bedrock_content.append({"cachePoint": {"type": "default"}})
 
             elif isinstance(chunk, MultimodalChunk):
                 if chunk.source_type == "url":
@@ -581,6 +584,72 @@ class BedrockModel(Model, ABC):
         if tool_config:
             converse_params["toolConfig"] = tool_config
 
+        return self._enforce_cache_point_rules(converse_params)
+
+    def _supports_cache_points(self) -> bool:
+        # Bedrock's prompt-caching allowlist is narrower than Anthropic's own
+        # API: Claude 3.7+, Claude 3.5 Haiku, and the Amazon Nova family.
+        # Claude 3.5 Sonnet stayed preview-only and never reached GA.
+        # Unsupported models reject cachePoint blocks with ValidationException.
+        model_lower = self.model_id.lower()
+        if "amazon.nova" in model_lower:
+            return True
+        version = parse_claude_version(self.model_id)
+        if version is None:
+            return False
+        if version.at_least(3, 7):
+            return True
+        return (version.major, version.minor) == (3, 5) and "haiku" in (
+            normalize_claude_model_id(self.model_id)
+        )
+
+    def _collect_cache_points(self, converse_params: dict) -> List[tuple]:
+        containers = []
+        system = converse_params.get("system")
+        if isinstance(system, list):
+            containers.append(system)
+        for message in converse_params.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, list):
+                containers.append(content)
+
+        return [
+            (container, block)
+            for container in containers
+            for block in container
+            if isinstance(block, dict) and "cachePoint" in block
+        ]
+
+    def _enforce_cache_point_rules(self, converse_params: dict) -> dict:
+        def remove_block(container, block):
+            for index, candidate in enumerate(container):
+                if candidate is block:
+                    del container[index]
+                    return
+
+        cache_points = self._collect_cache_points(converse_params)
+        if not cache_points:
+            return converse_params
+
+        if not self._supports_cache_points():
+            for container, block in cache_points:
+                remove_block(container, block)
+            logger.warning(
+                f"[BEDROCK] Model '{self.model_id}' does not support prompt "
+                f"caching on Bedrock. Removed {len(cache_points)} cache "
+                f"checkpoint(s); the content is sent uncached."
+            )
+            return converse_params
+
+        if len(cache_points) > 4:
+            removed_count = len(cache_points) - 4
+            for container, block in cache_points[:-4]:
+                remove_block(container, block)
+            logger.warning(
+                f"[BEDROCK] Bedrock allows at most 4 cache checkpoints per "
+                f"request. Removed the first {removed_count}; each remaining "
+                f"checkpoint still caches all content before it."
+            )
         return converse_params
 
     def _process_converse_response(

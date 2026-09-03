@@ -92,7 +92,7 @@ Automatically caches prompts but can make use of explicit caching for chunks >32
 
 ### Bedrock
 
-Needs no specific considerations
+`CacheChunk` content maps to Converse `cachePoint` blocks. Bedrock's supported-model list is narrower than Anthropic's own API: Claude 3.7+, Claude 3.5 Haiku, and the Amazon Nova family. On other models patterpunk strips the checkpoints with a WARNING and sends the content uncached. Bedrock also enforces the 4-checkpoint limit; extra checkpoints are trimmed the same way as on the Anthropic API.
 
 
 ## Content Integration Patterns

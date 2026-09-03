@@ -845,3 +845,55 @@ def test_claude_3_7_max_tokens_not_capped(caplog):
     assert config["maxTokens"] == 100000
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
+
+def test_cache_point_is_a_separate_block_with_type_field():
+    bedrock = BedrockModel(model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+    content = bedrock._convert_content_to_bedrock_format(
+        [CacheChunk("big document", cacheable=True)]
+    )
+    assert content == [
+        {"text": "big document"},
+        {"cachePoint": {"type": "default"}},
+    ]
+
+
+def test_cache_points_stripped_on_unsupported_models(caplog):
+    bedrock = BedrockModel(model_id="anthropic.claude-3-5-sonnet-20241022-v2:0")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    assert content == [{"text": "big document"}]
+    assert any(
+        "does not support prompt caching on Bedrock" in r.message
+        for r in caplog.records
+    )
+
+
+def test_cache_points_kept_on_claude_3_5_haiku(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-3-5-haiku-20241022-v1:0")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    assert {"cachePoint": {"type": "default"}} in content
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_cache_points_trimmed_to_bedrock_limit_of_four(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+    messages = [
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(6)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        converse_params = bedrock._build_converse_params(messages)
+    content = converse_params["messages"][0]["content"]
+    cache_points = [b for b in content if "cachePoint" in b]
+    assert len(cache_points) == 4
+    assert content[1] == {"text": "section 1"}
+    assert "cachePoint" in content[5]
+    assert any("at most 4 cache checkpoints" in r.message for r in caplog.records)
