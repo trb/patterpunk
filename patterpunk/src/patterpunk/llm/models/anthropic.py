@@ -243,9 +243,6 @@ class AnthropicModel(Model, ABC):
     def _capability_model_id(self) -> str:
         return self.model
 
-    def _structured_output_formatter_model_id(self) -> str:
-        return "claude-haiku-4-5"
-
     def _convert_tools_to_anthropic_format(self, tools: ToolDefinition) -> List[dict]:
         anthropic_tools = []
         for tool in tools:
@@ -286,13 +283,14 @@ class AnthropicModel(Model, ABC):
         diagnostics_kwargs: Optional[dict] = None,
     ) -> AssistantMessage:
         """
-        Models below Claude 4.5 lack native structured output. Anthropic rejects
-        forced tool_choice while thinking is enabled. A separate non-thinking
-        Haiku call formats the reasoning text into the schema.
+        Models below Claude 4.5 lack native structured output. Anthropic
+        rejects forced tool_choice while thinking is enabled. A second call
+        without thinking formats the reasoning text into the schema. The call
+        reuses the caller's model. A hardcoded formatter id is not guaranteed
+        to exist in every region, platform, or data-residency boundary.
         """
-        formatter_model = self._structured_output_formatter_model_id()
         logger.info(
-            f"[ANTHROPIC] Formatting reasoning output to structured JSON using {formatter_model}"
+            f"[ANTHROPIC] Formatting reasoning output to structured JSON using {self.model}"
         )
 
         diagnostics_kwargs = diagnostics_kwargs or {}
@@ -313,8 +311,8 @@ Reasoning and analysis from Claude:
 
 Please extract the relevant information from this reasoning and format it exactly according to the JSON schema provided in the tool. Do not add any additional text or explanation - just call the tool with the properly formatted data."""
 
-        haiku_params = {
-            "model": formatter_model,
+        formatter_params = {
+            "model": self.model,
             "messages": [{"role": "user", "content": formatting_prompt}],
             "max_tokens": 4096,
             "temperature": 0.1,
@@ -324,7 +322,7 @@ Please extract the relevant information from this reasoning and format it exactl
 
         try:
             formatting_response = self._get_sync_client().messages.create(
-                **_to_sdk_kwargs(haiku_params)
+                **_to_sdk_kwargs(formatter_params)
             )
 
             for block in formatting_response.content:
@@ -353,11 +351,11 @@ Please extract the relevant information from this reasoning and format it exactl
                             )
                         except Exception as e:
                             logger.error(
-                                f"[ANTHROPIC] Failed to parse structured output from Haiku formatting: {e}"
+                                f"[ANTHROPIC] Failed to parse structured output from formatter call: {e}"
                             )
 
             logger.warning(
-                "[ANTHROPIC] Haiku formatting failed, falling back to reasoning content"
+                "[ANTHROPIC] Formatter call failed, falling back to reasoning content"
             )
             return AssistantMessage(
                 reasoning_content,

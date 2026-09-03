@@ -35,11 +35,6 @@ def test_vertex_45_id_drops_top_p_keeping_temperature(caplog):
     assert any("Dropping top_p=0.5" in r.message for r in caplog.records)
 
 
-def test_vertex_structured_output_formatter_uses_vertex_haiku_id():
-    model = make_model("claude-opus-5")
-    assert model._structured_output_formatter_model_id() == "claude-haiku-4-5@20251001"
-
-
 def test_vertex_model_identity():
     model = make_model("claude-opus-5")
     assert AnthropicVertexModel.get_name() == "Anthropic Vertex"

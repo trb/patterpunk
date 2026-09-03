@@ -108,13 +108,6 @@ class AnthropicFoundryModel(AnthropicModel):
     def _capability_model_id(self) -> str:
         return self.model_id
 
-    def _structured_output_formatter_model_id(self) -> str:
-        # The inherited default is the Claude id "claude-haiku-4-5". A Foundry
-        # resource only routes to deployments created on it, and rejects any
-        # other model value. The caller's own deployment is the only id
-        # guaranteed to resolve, so the formatter call reuses it.
-        return self.model
-
     @staticmethod
     def get_name():
         return "Anthropic Foundry"

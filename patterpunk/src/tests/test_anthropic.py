@@ -2359,3 +2359,20 @@ def test_thinking_mode_default_params_coerce_silently(caplog):
     assert "top_p" not in filtered
     assert "top_k" not in filtered
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_structured_output_formatter_reuses_callers_model(monkeypatch):
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop after capturing the request")
+
+    class FakeClient:
+        messages = FakeMessages()
+
+    model = AnthropicModel(model="claude-3-7-sonnet-20250219")
+    monkeypatch.setattr(model, "_get_sync_client", lambda: FakeClient())
+    model._format_reasoning_to_structured_output("reasoning text", _Verdict, [])
+    assert captured["model"] == "claude-3-7-sonnet-20250219"

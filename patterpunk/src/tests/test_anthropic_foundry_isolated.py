@@ -127,12 +127,6 @@ def test_unparseable_deployment_name_gets_newest_family_rules(foundry_env, caplo
     assert any("Cannot detect a Claude version" in r.message for r in caplog.records)
 
 
-def test_structured_output_formatter_reuses_deployment(foundry_env):
-    configured(foundry_env)
-    model = foundry_model.AnthropicFoundryModel(deployment_name="my-claude-prod")
-    assert model._structured_output_formatter_model_id() == "my-claude-prod"
-
-
 def test_deepcopy_shares_token_provider(foundry_env):
     configured(foundry_env)
     provider = lambda: "entra-token"

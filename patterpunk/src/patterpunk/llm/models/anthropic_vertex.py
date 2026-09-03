@@ -68,9 +68,6 @@ class AnthropicVertexModel(AnthropicModel):
     def _get_async_client(self):
         return get_anthropic_vertex_async_client(self.project_id, self.region)
 
-    def _structured_output_formatter_model_id(self) -> str:
-        return "claude-haiku-4-5@20251001"
-
     @staticmethod
     def get_name():
         return "Anthropic Vertex"
