@@ -23,18 +23,24 @@ _vertex_clients = {}
 _vertex_async_clients = {}
 
 
-def _project_id_from_credentials_file() -> Optional[str]:
+def _load_credentials_info() -> Optional[dict]:
     if not GOOGLE_APPLICATION_CREDENTIALS:
         return None
-    try:
-        with open(GOOGLE_APPLICATION_CREDENTIALS) as credentials_file:
-            return json.load(credentials_file).get("project_id")
-    except (OSError, ValueError):
-        return None
+    raw = GOOGLE_APPLICATION_CREDENTIALS.strip()
+    if raw.startswith("{"):
+        return json.loads(raw)
+    with open(raw) as credentials_file:
+        return json.load(credentials_file)
 
 
 def get_anthropic_vertex_project() -> Optional[str]:
-    return ANTHROPIC_VERTEX_PROJECT or _project_id_from_credentials_file()
+    if ANTHROPIC_VERTEX_PROJECT:
+        return ANTHROPIC_VERTEX_PROJECT
+    try:
+        credentials_info = _load_credentials_info()
+    except (OSError, ValueError):
+        return None
+    return credentials_info.get("project_id") if credentials_info else None
 
 
 def _build_google_credentials():
@@ -42,10 +48,13 @@ def _build_google_credentials():
     # Credentials, which is the working setup inside GCP environments.
     # The SDK refreshes expired credentials per request, so clients cached
     # here stay valid indefinitely.
-    if not GOOGLE_APPLICATION_CREDENTIALS or service_account is None:
+    if service_account is None:
         return None
-    return service_account.Credentials.from_service_account_file(
-        GOOGLE_APPLICATION_CREDENTIALS,
+    credentials_info = _load_credentials_info()
+    if credentials_info is None:
+        return None
+    return service_account.Credentials.from_service_account_info(
+        credentials_info,
         scopes=["https://www.googleapis.com/auth/cloud-platform"],
     )
 

@@ -93,3 +93,10 @@ def test_clients_are_cached_by_project_and_region(vertex_env, monkeypatch):
     assert first.kwargs["project_id"] == "p1"
     assert first.kwargs["region"] == "us-east5"
     assert first.kwargs["credentials"] is None
+
+
+def test_project_resolves_from_inline_credentials_json(vertex_env):
+    inline_credentials = json.dumps({"project_id": "inline-project"})
+    vertex_env(PP_GOOGLE_APPLICATION_CREDENTIALS=inline_credentials)
+    assert vertex_config.get_anthropic_vertex_project() == "inline-project"
+    assert vertex_config.is_anthropic_vertex_available() is True
