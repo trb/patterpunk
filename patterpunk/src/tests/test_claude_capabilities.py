@@ -6,6 +6,7 @@ from patterpunk.llm.models.claude_capabilities import (
     normalize_claude_model_id,
     parse_claude_version,
     resolve_claude_sampling,
+    resolve_max_output_tokens,
 )
 
 
@@ -268,3 +269,78 @@ def test_resolver_bedrock_style_user_top_p_warns_even_at_one():
     )
     assert resolution.top_p is None
     assert any("Dropping top_p=1.0" in warning for warning in resolution.warnings)
+
+
+def test_resolver_clamps_out_of_range_temperature_on_claude3():
+    resolution = resolve_claude_sampling(
+        ClaudeVersion(3, 5),
+        thinking_enabled=False,
+        requested=SamplingParams(temperature=1.7, top_p=None, top_k=None),
+        defaults=BEDROCK_DEFAULTS,
+    )
+    assert resolution.temperature == 1.0
+    assert any("Clamping temperature=1.7 to 1.0" in w for w in resolution.warnings)
+
+
+def test_resolver_clamps_out_of_range_temperature_on_claude4():
+    resolution = resolve_claude_sampling(
+        ClaudeVersion(4, 5),
+        thinking_enabled=False,
+        requested=SamplingParams(temperature=2.0, top_p=None, top_k=None),
+        defaults=BEDROCK_DEFAULTS,
+    )
+    assert resolution.temperature == 1.0
+    assert any("Clamping temperature=2.0 to 1.0" in w for w in resolution.warnings)
+
+
+def test_resolver_clamps_negative_temperature_to_zero():
+    resolution = resolve_claude_sampling(
+        ClaudeVersion(3, 0),
+        thinking_enabled=False,
+        requested=SamplingParams(temperature=-0.5, top_p=None, top_k=None),
+        defaults=BEDROCK_DEFAULTS,
+    )
+    assert resolution.temperature == 0.0
+    assert any("Clamping temperature=-0.5 to 0.0" in w for w in resolution.warnings)
+
+
+def test_resolver_in_range_temperature_not_clamped():
+    resolution = resolve_claude_sampling(
+        ClaudeVersion(3, 0),
+        thinking_enabled=False,
+        requested=SamplingParams(temperature=1.0, top_p=None, top_k=None),
+        defaults=ANTHROPIC_DEFAULTS,
+    )
+    assert resolution.temperature == 1.0
+    assert resolution.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("claude-3-sonnet-20240229", 4096),
+        ("claude-3-opus-20240229", 4096),
+        ("claude-2.1", 4096),
+        ("claude-3-5-sonnet-20241022", 8192),
+        ("claude-3-5-haiku-20241022", 8192),
+        ("claude-3-7-sonnet-20250219", 64000),
+        ("claude-opus-4-20250514", 32000),
+        ("claude-opus-4-1-20250805", 32000),
+        ("claude-sonnet-4-20250514", 64000),
+        ("claude-sonnet-4-5-20250929", 64000),
+        ("claude-haiku-4-5", 64000),
+        ("claude-opus-4-5", 64000),
+        ("claude-opus-4-7", None),
+        ("claude-fable-5", None),
+        ("us.anthropic.claude-3-sonnet-20240229-v1:0", 4096),
+    ],
+)
+def test_resolve_max_output_tokens(model_id, expected):
+    version = parse_claude_version(model_id)
+    assert resolve_max_output_tokens(version, model_id) == expected
+
+
+def test_resolve_max_output_tokens_unrecognized_returns_none():
+    version = parse_claude_version("claude-turbo-max-ultra")
+    assert version is not None and not version.recognized
+    assert resolve_max_output_tokens(version, "claude-turbo-max-ultra") is None

@@ -106,6 +106,35 @@ def parse_claude_version(model_id: str) -> Optional[ClaudeVersion]:
     return None
 
 
+def resolve_max_output_tokens(version: ClaudeVersion, model_id: str) -> Optional[int]:
+    # The API rejects a max_tokens above the model's cap with a 400.
+    # The 3.7 cap rises to 128000 when the output-128k beta header is sent.
+    if not version.recognized:
+        return None
+    release = (version.major, version.minor)
+    if release >= (4, 6):
+        return None
+    if release >= (4, 5):
+        return 64000
+    if release >= (4, 0):
+        return 32000 if "opus" in normalize_claude_model_id(model_id) else 64000
+    if release >= (3, 7):
+        return 64000
+    if release >= (3, 5):
+        return 8192
+    return 4096
+
+
+def _clamp_temperature(value: Optional[float]) -> Tuple[Optional[float], Optional[str]]:
+    if value is None or 0.0 <= value <= 1.0:
+        return value, None
+    clamped = 1.0 if value > 1.0 else 0.0
+    return clamped, (
+        f"Claude accepts temperature between 0.0 and 1.0; other providers allow "
+        f"up to 2.0. Clamping temperature={value} to {clamped}."
+    )
+
+
 def resolve_claude_sampling(
     version: ClaudeVersion,
     thinking_enabled: bool,
@@ -153,13 +182,15 @@ def resolve_claude_sampling(
             )
         return SamplingResolution(1.0, None, None, tuple(warnings))
 
+    temperature, clamp_warning = _clamp_temperature(requested.temperature)
+
     if version.at_least(4, 0):
-        warnings = []
+        warnings = [clamp_warning] if clamp_warning else []
         top_p = user_set("top_p")
         if top_p is not None:
             warnings.append(
                 f"Claude 4+ rejects both 'temperature' and 'top_p' simultaneously. "
-                f"Dropping top_p={top_p} (keeping temperature={requested.temperature}). "
+                f"Dropping top_p={top_p} (keeping temperature={temperature}). "
                 f"Anthropic recommends using 'temperature' for most use cases."
             )
         top_k = user_set("top_k")
@@ -168,8 +199,11 @@ def resolve_claude_sampling(
                 f"Claude 4+ restricts sampling to 'temperature'. "
                 f"Dropping user-set top_k={top_k}."
             )
-        return SamplingResolution(requested.temperature, None, None, tuple(warnings))
+        return SamplingResolution(temperature, None, None, tuple(warnings))
 
     return SamplingResolution(
-        requested.temperature, requested.top_p, requested.top_k, ()
+        temperature,
+        requested.top_p,
+        requested.top_k,
+        (clamp_warning,) if clamp_warning else (),
     )
