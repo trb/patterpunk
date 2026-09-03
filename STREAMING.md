@@ -364,7 +364,10 @@ except ToolExecutionAbortError as e:
 | Anthropic (Claude 3.7 – 4.6) | Numeric budget | `ThinkingConfig(token_budget=N)` |
 | Anthropic (Claude Opus 4.7+) | Adaptive + effort | `ThinkingConfig(effort="xhigh")` |
 | OpenAI | End-only (o3-mini) | `ThinkingConfig(effort="medium")` |
-| AWS Bedrock | Full (Claude models) | `ThinkingConfig(token_budget=N)` |
+| AWS Bedrock (Claude 3.7 – 4.5) | Numeric budget | `ThinkingConfig(token_budget=N)` |
+| AWS Bedrock (Claude 4.6+) | Adaptive + effort | `ThinkingConfig(effort="low")` |
+| AWS Bedrock (OpenAI GPT-5.x) | Effort only, reasons by default | `ThinkingConfig(effort="low")` |
+| AWS Bedrock (Nova 2 Lite) | Effort only | `ThinkingConfig(effort="low")` |
 | Google | Best-effort | `ThinkingConfig(token_budget=N, include_thoughts=True)` |
 | Azure OpenAI | End-only | `ThinkingConfig(effort="medium")` |
 
@@ -377,6 +380,25 @@ Opus 4.7 replaced the fixed `budget_tokens` knob with **adaptive thinking** plus
 - `include_thoughts=True` maps to `thinking.display="summarized"` (Opus 4.7 hides reasoning by default — opt in to see it).
 - **Sampling params are silently dropped** for Opus 4.7+ (`temperature`, `top_p`, `top_k`). Use prompting to guide behavior. patterpunk warns when the user explicitly customized one of those.
 - Other providers (OpenAI / Google / Bedrock) clamp `xhigh`/`max` down to `high` with a WARNING — they keep working, just at the highest effort each platform supports.
+
+### AWS Bedrock — Thinking Fields per Model Family
+
+Bedrock's Converse API takes thinking settings through `additionalModelRequestFields`, and the accepted shape depends on the model family. patterpunk picks the shape from the model id and translates between effort levels and token budgets where a family only understands one of them. Budgets map to effort with `≤1500→low`, `≤4000→medium`, `>4000→high`; effort maps to budgets with the same table (`low=1500`, `medium=4000`, `high=12000`).
+
+| Model family | Wire format | `effort=` | `token_budget=N` | `token_budget=0` |
+|---|---|---|---|---|
+| Claude 3.7 – 4.5 | `reasoning_config={"type": "enabled", "budget_tokens": N}` | Translated to a budget; `xhigh`/`max` clamp to `high` | Sent as-is (min 1024) | Thinking off |
+| Claude 4.6+ | `reasoning_config={"type": "adaptive"}` + `output_config={"effort": ...}` | Sent as-is (4.6 clamps `xhigh` to `high`) | Coerced to an effort with a WARNING | Thinking off |
+| OpenAI GPT-5.x (`openai.gpt-5*`) | `reasoning={"effort": ...}` | Sent as-is | Coerced to an effort with a WARNING | `effort="none"` |
+| Nova 2 Lite | `reasoningConfig={"type": "enabled", "maxReasoningEffort": ...}` | Sent as-is; `xhigh`/`max` clamp to `high` | Coerced to an effort with a WARNING | Reasoning off |
+| DeepSeek | none | Ignored silently (reasons by default) | Ignored silently | Ignored silently |
+| Everything else | none | Ignored with a WARNING | Ignored with a WARNING | Ignored with a WARNING |
+
+Family-specific rules:
+
+- **Claude 4.6+** still accepts the enabled-with-budget shape on Sonnet 4.6, but Anthropic has deprecated it there and Sonnet 5 rejects it outright, so patterpunk sends adaptive thinking for the whole 4.6+ range. The old flat `reasoning_effort` key is rejected by every Claude model on Bedrock and is no longer emitted.
+- **OpenAI GPT-5.x** models reason by default: with no `thinking_config` the request carries no reasoning field and the model runs at its default effort (`medium`), spending reasoning tokens. Pass `ThinkingConfig(token_budget=0)` to send `effort="none"` and turn reasoning off. These models also reject `temperature` and `top_p`; patterpunk drops them with a WARNING when they were explicitly set. The open-weight `openai.gpt-oss*` ids are not part of this family and keep sampling.
+- **Nova 2 Lite** rejects `temperature`, `topP` and `maxTokens` at `maxReasoningEffort="high"`, so patterpunk drops them with a WARNING for that level only.
 
 ### Interleaved Thinking (Anthropic)
 

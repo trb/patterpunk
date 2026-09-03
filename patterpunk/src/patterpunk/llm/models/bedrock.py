@@ -3,7 +3,7 @@ import json
 import re
 import time
 from abc import ABC
-from typing import AsyncIterator, Dict, List, Optional, Set, Union
+from typing import AsyncIterator, Dict, List, Optional, Set, Tuple, Union
 
 # Optional dependency for URL downloads in multimodal content
 try:
@@ -57,7 +57,11 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model, TokenCountingError
-from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
+from patterpunk.llm.thinking import (
+    EFFORT_TO_BUDGET,
+    ThinkingConfig as UnifiedThinkingConfig,
+    effort_for_budget,
+)
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
@@ -107,6 +111,34 @@ def get_bedrock_conversation_content(message: Message):
     return content_str
 
 
+# A live Converse call to Claude 4.6 rejects "xhigh" with the error
+# "Input should be 'low', 'medium', 'high' or 'max'". Sonnet 5 accepts it.
+# Anthropic documents all five levels for 4.7+ and OpenAI for GPT-5.6+.
+# AWS documents low/medium/high only for Nova 2 Lite.
+_EFFORT_LEVELS_BASIC = ("low", "medium", "high")
+_EFFORT_LEVELS_CLAUDE_4_6 = ("low", "medium", "high", "max")
+_EFFORT_LEVELS_ALL = ("low", "medium", "high", "xhigh", "max")
+
+
+def _is_openai_gpt5_model(model_id: str) -> bool:
+    # normalize_claude_model_id strips the region prefix, ARN wrapper and ":0"
+    # suffix that Bedrock wraps around every vendor's id, not only Anthropic's.
+    # The gpt-oss ids stay outside this family: they are open-weight models
+    # that accept sampling parameters and no reasoning field.
+    return normalize_claude_model_id(model_id).startswith("openai.gpt-5")
+
+
+def _is_nova_2_lite_model(model_id: str) -> bool:
+    return "amazon.nova-2-lite" in model_id.lower()
+
+
+def _adaptive_thinking_fields(effort: str) -> dict:
+    return {
+        "reasoning_config": {"type": "adaptive"},
+        "output_config": {"effort": effort},
+    }
+
+
 class BedrockModel(Model, ABC):
     # Class-level tokenizer cache to avoid expensive reloads on each count_tokens() call
     # Loading HuggingFace tokenizers involves network calls and file parsing
@@ -133,7 +165,7 @@ class BedrockModel(Model, ABC):
         self.thinking_config = thinking_config
         self.timeout = timeout
         self.retry_config = retry_config
-        self._warn_unusable_thinking_config()
+        self._thinking_fields = self._resolve_thinking_fields()
 
         # When a RetryConfig governs retries, botocore's own retry layer must
         # not stack additional attempts underneath the configured schedule.
@@ -164,66 +196,94 @@ class BedrockModel(Model, ABC):
         return {"tools": bedrock_tools}
 
     def _supports_reasoning_fields(self) -> bool:
+        if _is_openai_gpt5_model(self.model_id) or _is_nova_2_lite_model(self.model_id):
+            return True
         version = parse_claude_version(self.model_id)
         return version is not None and version.at_least(3, 7)
 
-    def _warn_unusable_thinking_config(self) -> None:
+    def _resolve_thinking_fields(self) -> dict:
+        config = self.thinking_config
         # DeepSeek reasons by default and takes no reasoning fields, so a
         # thinking_config is harmless there and stays silent.
-        if self.thinking_config is None or "deepseek" in self.model_id.lower():
-            return
+        if config is None or "deepseek" in self.model_id.lower():
+            return {}
         if not self._supports_reasoning_fields():
             logger.warning(
                 f"[BEDROCK] Model '{self.model_id}' does not accept reasoning "
                 f"parameters. Ignoring thinking_config."
             )
-            return
-        budget = self.thinking_config.token_budget
-        if budget is not None and 0 < budget < MIN_THINKING_BUDGET_TOKENS:
+            return {}
+
+        if _is_openai_gpt5_model(self.model_id):
+            # GPT-5 reasons at effort "medium" when the request carries no
+            # reasoning field. A zero budget therefore has to send "none"
+            # explicitly instead of omitting the field like the other families.
+            if config.token_budget == 0:
+                return {"reasoning": {"effort": "none"}}
+            return {"reasoning": {"effort": self._resolve_effort(_EFFORT_LEVELS_ALL)}}
+
+        if config.token_budget == 0:
+            return {}
+
+        if _is_nova_2_lite_model(self.model_id):
+            return {
+                "reasoningConfig": {
+                    "type": "enabled",
+                    "maxReasoningEffort": self._resolve_effort(_EFFORT_LEVELS_BASIC),
+                }
+            }
+
+        version = parse_claude_version(self.model_id)
+        if version.at_least(4, 7):
+            return _adaptive_thinking_fields(self._resolve_effort(_EFFORT_LEVELS_ALL))
+        if version.at_least(4, 6):
+            # Sonnet 4.6 still accepts the enabled-with-budget shape, but
+            # Anthropic deprecated it there, so 4.6 goes adaptive as well.
+            return _adaptive_thinking_fields(
+                self._resolve_effort(_EFFORT_LEVELS_CLAUDE_4_6)
+            )
+        return {
+            "reasoning_config": {
+                "type": "enabled",
+                "budget_tokens": self._resolve_thinking_budget(),
+            }
+        }
+
+    def _resolve_effort(self, accepted_levels: Tuple[str, ...]) -> str:
+        config = self.thinking_config
+        if config.effort is None:
+            effort = effort_for_budget(config.token_budget)
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' takes a reasoning effort level, not "
+                f"a token budget. Coercing token_budget={config.token_budget} to "
+                f"effort='{effort}'. Pass ThinkingConfig(effort='{effort}') "
+                f"directly to silence this warning."
+            )
+            return effort
+        if config.effort not in accepted_levels:
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' accepts effort levels "
+                f"{'/'.join(accepted_levels)} only. Clamping effort="
+                f"'{config.effort}' to 'high'."
+            )
+            return "high"
+        return config.effort
+
+    def _resolve_thinking_budget(self) -> int:
+        config = self.thinking_config
+        if config.effort is not None:
+            return EFFORT_TO_BUDGET[self._resolve_effort(_EFFORT_LEVELS_BASIC)]
+        if config.token_budget < MIN_THINKING_BUDGET_TOKENS:
             logger.warning(
                 f"[BEDROCK] The API requires a thinking budget of at least "
                 f"{MIN_THINKING_BUDGET_TOKENS} tokens. Raising "
-                f"token_budget={budget} to {MIN_THINKING_BUDGET_TOKENS}."
+                f"token_budget={config.token_budget} to {MIN_THINKING_BUDGET_TOKENS}."
             )
+            return MIN_THINKING_BUDGET_TOKENS
+        return config.token_budget
 
     def _get_thinking_params(self) -> dict:
-        if not self.thinking_config:
-            return {}
-
-        additional_fields = {}
-
-        if "deepseek" in self.model_id.lower():
-            return {}
-
-        if not self._supports_reasoning_fields():
-            return {}
-
-        if self.thinking_config.token_budget == 0:
-            return {}
-
-        if self.thinking_config.effort is not None:
-            effort = self.thinking_config.effort
-            # Bedrock's reasoning_effort accepts low/medium/high. xhigh and max are
-            # Anthropic-Opus-4.7-only and not valid here yet — clamp with a warning.
-            if effort not in {"low", "medium", "high"}:
-                logger.warning(
-                    f"[BEDROCK] effort='{effort}' is only supported on Anthropic Opus 4.7+ "
-                    f"via the Messages API. Bedrock's reasoning_effort accepts only "
-                    f"low/medium/high. Clamping to 'high'."
-                )
-                effort = "high"
-            additional_fields["reasoning_effort"] = effort
-
-        if self.thinking_config.token_budget is not None:
-            budget_tokens = max(
-                MIN_THINKING_BUDGET_TOKENS, self.thinking_config.token_budget
-            )
-            additional_fields["reasoning_config"] = {
-                "type": "enabled",
-                "budget_tokens": budget_tokens,
-            }
-
-        return additional_fields
+        return self._thinking_fields
 
     def _convert_content_to_bedrock_format(self, content) -> List[dict]:
         if isinstance(content, str):
@@ -505,15 +565,58 @@ class BedrockModel(Model, ABC):
             sampling_config["topP"] = resolution.top_p
         return sampling_config
 
+    def _build_gpt5_sampling_config(self) -> dict:
+        dropped = []
+        if self.temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={self.temperature}")
+        if self.top_p is not None:
+            dropped.append(f"top_p={self.top_p}")
+        if dropped:
+            logger.warning(
+                f"[BEDROCK] OpenAI GPT-5 models reject sampling parameters. "
+                f"Dropping user-set value(s): {', '.join(dropped)}. "
+                f"Use ThinkingConfig(effort=...) to control output instead."
+            )
+        return {}
+
+    def _build_nova_high_effort_config(self) -> dict:
+        # Nova 2 Lite rejects temperature, topP, topK and maxTokens once
+        # maxReasoningEffort is "high"; the model sizes its own output then.
+        # https://docs.aws.amazon.com/nova/latest/nova2-userguide/extended-thinking.html
+        dropped = []
+        if self.temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={self.temperature}")
+        if self.top_p is not None:
+            dropped.append(f"top_p={self.top_p}")
+        if self.max_tokens:
+            dropped.append(f"max_tokens={self.max_tokens}")
+        if dropped:
+            logger.warning(
+                f"[BEDROCK] Nova 2 rejects sampling parameters and maxTokens at "
+                f"effort='high'. Dropping user-set value(s): {', '.join(dropped)}."
+            )
+        return {}
+
+    def _nova_reasoning_effort(self) -> Optional[str]:
+        return self._thinking_fields.get("reasoningConfig", {}).get(
+            "maxReasoningEffort"
+        )
+
     def _build_inference_config(
         self, structured_output: Optional[object] = None
     ) -> dict:
+        if self._nova_reasoning_effort() == "high":
+            return self._build_nova_high_effort_config()
+
         # Anthropic enforces its sampling rules through Bedrock unchanged, so
-        # Claude ids go through the shared resolver. Other model families
-        # (Llama, Mistral, Nova, Titan, DeepSeek) accept temperature and topP.
+        # Claude ids go through the shared resolver. GPT-5 ids reject sampling
+        # outright. Other model families (Llama, Mistral, Nova, Titan, DeepSeek,
+        # gpt-oss) accept temperature and topP.
         claude_version = parse_claude_version(self.model_id)
         if claude_version is not None:
             inference_config = self._build_claude_sampling_config(claude_version)
+        elif _is_openai_gpt5_model(self.model_id):
+            inference_config = self._build_gpt5_sampling_config()
         else:
             inference_config = {"temperature": self.temperature}
             if self.top_p is not None:
@@ -522,15 +625,16 @@ class BedrockModel(Model, ABC):
         if self.max_tokens:
             inference_config["maxTokens"] = self._capped_max_tokens(claude_version)
 
-        thinking_params = self._get_thinking_params()
-        if thinking_params.get("reasoning_config"):
-            inference_config.pop("topP", None)
-            # Extended thinking requires max_tokens > budget_tokens
-            budget = thinking_params["reasoning_config"].get(
-                "budget_tokens", MIN_THINKING_BUDGET_TOKENS
-            )
-            if not self.max_tokens or self.max_tokens <= budget:
-                inference_config["maxTokens"] = budget + 2000
+        # Anthropic returns a ValidationException when max_tokens is not above
+        # budget_tokens. The 2000-token margin leaves room for the answer and
+        # matches the headroom the direct Anthropic model applies.
+        thinking_budget = self._thinking_fields.get("reasoning_config", {}).get(
+            "budget_tokens"
+        )
+        if thinking_budget is not None and (
+            not self.max_tokens or self.max_tokens <= thinking_budget
+        ):
+            inference_config["maxTokens"] = thinking_budget + 2000
 
         return inference_config
 
