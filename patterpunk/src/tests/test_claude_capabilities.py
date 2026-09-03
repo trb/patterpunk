@@ -132,6 +132,19 @@ def test_normalize_strips_all_bedrock_wrapping():
     assert normalize_claude_model_id("anthropic.claude-v2:1") == "claude-v2"
 
 
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "in.anthropic.claude-fable-5-1",
+        "us-gov.anthropic.claude-fable-5-1",
+        "global.anthropic.claude-fable-5-1",
+    ],
+)
+def test_normalize_strips_every_bedrock_geo_prefix(model_id):
+    assert normalize_claude_model_id(model_id) == "claude-fable-5-1"
+    assert thinking_cannot_be_disabled(model_id) is True
+
+
 def test_normalize_strips_undated_bedrock_release_suffix():
     assert (
         normalize_claude_model_id("us.anthropic.claude-opus-4-6-v1")

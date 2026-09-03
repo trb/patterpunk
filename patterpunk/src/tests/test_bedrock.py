@@ -993,6 +993,18 @@ def test_gpt5_drops_sampling_with_warning(caplog):
     )
 
 
+@pytest.mark.parametrize(
+    "model_id",
+    ["in.openai.gpt-5.6-luna", "global.openai.gpt-5.6-luna", "openai.gpt-5.6-sol"],
+)
+def test_gpt5_detected_under_every_geo_prefix(model_id, caplog):
+    bedrock = BedrockModel(model_id=model_id, temperature=0.25)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {}
+    assert any("temperature=0.25" in m for m in warning_messages(caplog))
+
+
 def test_gpt5_at_defaults_is_silent_and_sends_no_reasoning_field(caplog):
     with caplog.at_level("WARNING", logger="patterpunk"):
         bedrock = BedrockModel(model_id="us.openai.gpt-5.6-luna")

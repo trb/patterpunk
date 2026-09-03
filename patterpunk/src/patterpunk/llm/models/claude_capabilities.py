@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-_BEDROCK_REGION_PREFIX_RE = re.compile(r"^(us|eu|apac|ca|jp|au|global)\.")
+_BEDROCK_REGION_PREFIX_RE = re.compile(r"^(us|us-gov|eu|apac|ca|jp|au|in|global)\.")
 _RELEASE_SUFFIX_RE = re.compile(r"(?<=\d)-v\d+$")
 
 _CLAUDE3_MINOR_RE = re.compile(r"claude-3-(\d+)-(?:opus|sonnet|haiku)")
