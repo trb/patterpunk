@@ -3,7 +3,7 @@ import json
 import re
 import time
 from abc import ABC
-from typing import AsyncIterator, Dict, List, Optional, Set, Union
+from typing import AsyncIterator, Dict, List, Optional, Set, Tuple, Union
 
 # Optional dependency for URL downloads in multimodal content
 try:
@@ -45,6 +45,7 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
 )
 
 if boto3:
@@ -57,7 +58,16 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model, TokenCountingError
-from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
+from patterpunk.llm.output_limits import (
+    learned_output_limit,
+    parse_output_limit,
+    record_output_limit,
+)
+from patterpunk.llm.thinking import (
+    EFFORT_TO_BUDGET,
+    ThinkingConfig as UnifiedThinkingConfig,
+    effort_for_budget,
+)
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
@@ -65,8 +75,9 @@ from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_
 from patterpunk.llm.streaming import StreamChunk, StreamEventType, StreamingError
 from patterpunk.logger import logger, logger_llm
 
-# Timeout for streaming operations (per event, not total)
-BEDROCK_STREAM_TIMEOUT_SECONDS = 300  # 5 minutes
+BEDROCK_STREAM_TIMEOUT_SECONDS = 300
+
+THINKING_ANSWER_HEADROOM = 2000
 
 
 class BedrockMissingCredentialsError(Exception):
@@ -107,6 +118,27 @@ def get_bedrock_conversation_content(message: Message):
     return content_str
 
 
+# A live Converse call to Claude 4.6 rejects "xhigh" with the error
+# "Input should be 'low', 'medium', 'high' or 'max'". Sonnet 5 accepts it.
+# Anthropic documents all five levels for 4.7+ and OpenAI for GPT-5.6+.
+# AWS documents low/medium/high only for Nova 2 Lite.
+_EFFORT_LEVELS_BASIC = ("low", "medium", "high")
+_EFFORT_LEVELS_CLAUDE_4_6 = ("low", "medium", "high", "max")
+_EFFORT_LEVELS_ALL = ("low", "medium", "high", "xhigh", "max")
+
+
+def _is_openai_gpt5_model(model_id: str) -> bool:
+    # normalize_claude_model_id strips the region prefix, ARN wrapper and ":0"
+    # suffix that Bedrock wraps around every vendor's id, not only Anthropic's.
+    # The gpt-oss ids stay outside this family: they are open-weight models
+    # that accept sampling parameters and no reasoning field.
+    return normalize_claude_model_id(model_id).startswith("openai.gpt-5")
+
+
+def _is_nova_2_lite_model(model_id: str) -> bool:
+    return "amazon.nova-2-lite" in model_id.lower()
+
+
 class BedrockModel(Model, ABC):
     # Class-level tokenizer cache to avoid expensive reloads on each count_tokens() call
     # Loading HuggingFace tokenizers involves network calls and file parsing
@@ -133,7 +165,7 @@ class BedrockModel(Model, ABC):
         self.thinking_config = thinking_config
         self.timeout = timeout
         self.retry_config = retry_config
-        self._warn_unusable_thinking_config()
+        self._thinking_fields = self._resolve_thinking_fields()
 
         # When a RetryConfig governs retries, botocore's own retry layer must
         # not stack additional attempts underneath the configured schedule.
@@ -164,66 +196,129 @@ class BedrockModel(Model, ABC):
         return {"tools": bedrock_tools}
 
     def _supports_reasoning_fields(self) -> bool:
+        if _is_openai_gpt5_model(self.model_id) or _is_nova_2_lite_model(self.model_id):
+            return True
         version = parse_claude_version(self.model_id)
         return version is not None and version.at_least(3, 7)
 
-    def _warn_unusable_thinking_config(self) -> None:
+    def _resolve_thinking_fields(self) -> dict:
+        config = self.thinking_config
         # DeepSeek reasons by default and takes no reasoning fields, so a
         # thinking_config is harmless there and stays silent.
-        if self.thinking_config is None or "deepseek" in self.model_id.lower():
-            return
+        if config is None or "deepseek" in self.model_id.lower():
+            return {}
         if not self._supports_reasoning_fields():
             logger.warning(
                 f"[BEDROCK] Model '{self.model_id}' does not accept reasoning "
                 f"parameters. Ignoring thinking_config."
             )
-            return
-        budget = self.thinking_config.token_budget
-        if budget is not None and 0 < budget < MIN_THINKING_BUDGET_TOKENS:
+            return {}
+
+        if _is_openai_gpt5_model(self.model_id):
+            # GPT-5 reasons at effort "medium" when the request carries no
+            # reasoning field. A zero budget therefore has to send "none"
+            # explicitly instead of omitting the field like the other families.
+            if config.token_budget == 0:
+                return {"reasoning": {"effort": "none"}}
+            return {"reasoning": {"effort": self._resolve_effort(_EFFORT_LEVELS_ALL)}}
+
+        if _is_nova_2_lite_model(self.model_id):
+            if config.token_budget == 0:
+                return {}
+            return {
+                "reasoningConfig": {
+                    "type": "enabled",
+                    "maxReasoningEffort": self._resolve_effort(_EFFORT_LEVELS_BASIC),
+                }
+            }
+
+        version = parse_claude_version(self.model_id)
+        if not version.at_least(4, 6):
+            if config.token_budget == 0:
+                return {}
+            return {
+                "reasoning_config": {
+                    "type": "enabled",
+                    "budget_tokens": self._resolve_thinking_budget(),
+                }
+            }
+
+        if config.token_budget == 0:
+            return self._disabled_thinking_fields()
+        # Sonnet 4.6 still accepts the enabled-with-budget shape, but
+        # Anthropic deprecated it there, so 4.6 goes adaptive as well.
+        if version.at_least(4, 7):
+            return self._adaptive_thinking_fields(_EFFORT_LEVELS_ALL)
+        return self._adaptive_thinking_fields(_EFFORT_LEVELS_CLAUDE_4_6)
+
+    def _disabled_thinking_fields(self) -> dict:
+        # Sonnet 5 and Opus 5 think by default, so omitting the field leaves
+        # thinking on. Only an explicit "disabled" turns it off.
+        if thinking_cannot_be_disabled(self.model_id):
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' cannot turn thinking off and "
+                f"rejects thinking type 'disabled'. Ignoring token_budget=0; the "
+                f"model runs adaptive thinking at its default effort. Pass "
+                f"ThinkingConfig(effort='low') to keep thinking short instead."
+            )
+            return {}
+        return {"reasoning_config": {"type": "disabled"}}
+
+    def _adaptive_thinking_fields(self, accepted_levels: Tuple[str, ...]) -> dict:
+        reasoning_config = {"type": "adaptive"}
+        if self.thinking_config.include_thoughts:
+            # Claude 4.7+ defaults display to "omitted" and returns empty
+            # reasoning text unless the request asks for the summary.
+            reasoning_config["display"] = "summarized"
+        return {
+            "reasoning_config": reasoning_config,
+            "output_config": {"effort": self._resolve_effort(accepted_levels)},
+        }
+
+    def _resolve_effort(self, accepted_levels: Tuple[str, ...]) -> str:
+        config = self.thinking_config
+        if config.effort is None:
+            effort = effort_for_budget(config.token_budget)
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' takes a reasoning effort level, not "
+                f"a token budget. Coercing token_budget={config.token_budget} to "
+                f"effort='{effort}'. Pass ThinkingConfig(effort='{effort}') "
+                f"directly to silence this warning."
+            )
+            return effort
+        if config.effort not in accepted_levels:
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' accepts effort levels "
+                f"{'/'.join(accepted_levels)} only. Clamping effort="
+                f"'{config.effort}' to 'high'."
+            )
+            return "high"
+        return config.effort
+
+    def _resolve_thinking_budget(self) -> int:
+        config = self.thinking_config
+        if config.effort is not None:
+            return EFFORT_TO_BUDGET[self._resolve_effort(_EFFORT_LEVELS_BASIC)]
+        if config.token_budget < MIN_THINKING_BUDGET_TOKENS:
             logger.warning(
                 f"[BEDROCK] The API requires a thinking budget of at least "
                 f"{MIN_THINKING_BUDGET_TOKENS} tokens. Raising "
-                f"token_budget={budget} to {MIN_THINKING_BUDGET_TOKENS}."
+                f"token_budget={config.token_budget} to {MIN_THINKING_BUDGET_TOKENS}."
             )
+            return MIN_THINKING_BUDGET_TOKENS
+        cap = self._output_token_cap()
+        if cap is not None and config.token_budget + THINKING_ANSWER_HEADROOM > cap:
+            budget = cap - THINKING_ANSWER_HEADROOM
+            logger.warning(
+                f"[BEDROCK] The thinking budget must stay below maxTokens, and "
+                f"'{self.model_id}' caps output at {cap} tokens. Lowering the "
+                f"thinking budget to {budget}."
+            )
+            return budget
+        return config.token_budget
 
     def _get_thinking_params(self) -> dict:
-        if not self.thinking_config:
-            return {}
-
-        additional_fields = {}
-
-        if "deepseek" in self.model_id.lower():
-            return {}
-
-        if not self._supports_reasoning_fields():
-            return {}
-
-        if self.thinking_config.token_budget == 0:
-            return {}
-
-        if self.thinking_config.effort is not None:
-            effort = self.thinking_config.effort
-            # Bedrock's reasoning_effort accepts low/medium/high. xhigh and max are
-            # Anthropic-Opus-4.7-only and not valid here yet — clamp with a warning.
-            if effort not in {"low", "medium", "high"}:
-                logger.warning(
-                    f"[BEDROCK] effort='{effort}' is only supported on Anthropic Opus 4.7+ "
-                    f"via the Messages API. Bedrock's reasoning_effort accepts only "
-                    f"low/medium/high. Clamping to 'high'."
-                )
-                effort = "high"
-            additional_fields["reasoning_effort"] = effort
-
-        if self.thinking_config.token_budget is not None:
-            budget_tokens = max(
-                MIN_THINKING_BUDGET_TOKENS, self.thinking_config.token_budget
-            )
-            additional_fields["reasoning_config"] = {
-                "type": "enabled",
-                "budget_tokens": budget_tokens,
-            }
-
-        return additional_fields
+        return self._thinking_fields
 
     def _convert_content_to_bedrock_format(self, content) -> List[dict]:
         if isinstance(content, str):
@@ -489,9 +584,10 @@ class BedrockModel(Model, ABC):
                 f"Treating it as a Claude 5 model."
             )
 
+        reasoning_type = self._thinking_fields.get("reasoning_config", {}).get("type")
         resolution = resolve_claude_sampling(
             version,
-            thinking_enabled=bool(self._get_thinking_params()),
+            thinking_enabled=reasoning_type in ("enabled", "adaptive"),
             requested=SamplingParams(temperature=self.temperature, top_p=self.top_p),
             defaults=SamplingParams(temperature=DEFAULT_TEMPERATURE),
         )
@@ -505,48 +601,131 @@ class BedrockModel(Model, ABC):
             sampling_config["topP"] = resolution.top_p
         return sampling_config
 
+    def _build_gpt5_sampling_config(self) -> dict:
+        dropped = []
+        if self.temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={self.temperature}")
+        if self.top_p is not None:
+            dropped.append(f"top_p={self.top_p}")
+        if dropped:
+            logger.warning(
+                f"[BEDROCK] OpenAI GPT-5 models reject sampling parameters. "
+                f"Dropping user-set value(s): {', '.join(dropped)}. "
+                f"Use ThinkingConfig(effort=...) to control output instead."
+            )
+        return {}
+
+    def _build_nova_high_effort_config(self) -> dict:
+        # Nova 2 Lite rejects temperature, topP, topK and maxTokens once
+        # maxReasoningEffort is "high"; the model sizes its own output then.
+        # https://docs.aws.amazon.com/nova/latest/nova2-userguide/extended-thinking.html
+        dropped = []
+        if self.temperature != DEFAULT_TEMPERATURE:
+            dropped.append(f"temperature={self.temperature}")
+        if self.top_p is not None:
+            dropped.append(f"top_p={self.top_p}")
+        if self.max_tokens:
+            dropped.append(f"max_tokens={self.max_tokens}")
+        if dropped:
+            logger.warning(
+                f"[BEDROCK] Nova 2 rejects sampling parameters and maxTokens at "
+                f"effort='high'. Dropping user-set value(s): {', '.join(dropped)}."
+            )
+        return {}
+
+    def _nova_reasoning_effort(self) -> Optional[str]:
+        return self._thinking_fields.get("reasoningConfig", {}).get(
+            "maxReasoningEffort"
+        )
+
     def _build_inference_config(
         self, structured_output: Optional[object] = None
     ) -> dict:
+        if self._nova_reasoning_effort() == "high":
+            return self._build_nova_high_effort_config()
+
         # Anthropic enforces its sampling rules through Bedrock unchanged, so
-        # Claude ids go through the shared resolver. Other model families
-        # (Llama, Mistral, Nova, Titan, DeepSeek) accept temperature and topP.
+        # Claude ids go through the shared resolver. GPT-5 ids reject sampling
+        # outright. Other model families (Llama, Mistral, Nova, Titan, DeepSeek,
+        # gpt-oss) accept temperature and topP.
         claude_version = parse_claude_version(self.model_id)
         if claude_version is not None:
             inference_config = self._build_claude_sampling_config(claude_version)
+        elif _is_openai_gpt5_model(self.model_id):
+            inference_config = self._build_gpt5_sampling_config()
         else:
             inference_config = {"temperature": self.temperature}
             if self.top_p is not None:
                 inference_config["topP"] = self.top_p
 
-        if self.max_tokens:
-            inference_config["maxTokens"] = self._capped_max_tokens(claude_version)
-
-        thinking_params = self._get_thinking_params()
-        if thinking_params.get("reasoning_config"):
-            inference_config.pop("topP", None)
-            # Extended thinking requires max_tokens > budget_tokens
-            budget = thinking_params["reasoning_config"].get(
-                "budget_tokens", MIN_THINKING_BUDGET_TOKENS
-            )
-            if not self.max_tokens or self.max_tokens <= budget:
-                inference_config["maxTokens"] = budget + 2000
+        max_tokens = self._resolve_max_tokens()
+        if max_tokens:
+            inference_config["maxTokens"] = max_tokens
 
         return inference_config
 
-    def _capped_max_tokens(self, version: Optional[ClaudeVersion]) -> int:
-        # Bedrock allows Claude 3.7+ up to 131072 on-demand output tokens.
-        # The direct Messages API caps those same models lower.
-        if version is None or version.at_least(3, 7):
-            return self.max_tokens
-        cap = resolve_max_output_tokens(version, self.model_id)
-        if cap is None or self.max_tokens <= cap:
-            return self.max_tokens
-        logger.warning(
-            f"[BEDROCK] max_tokens={self.max_tokens} exceeds the {cap}-token "
-            f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+    def _output_token_cap(self) -> Optional[int]:
+        # Bedrock answers a maxTokens above the model's ceiling with a
+        # ValidationException naming the limit. Live checks: GPT-5.6 Luna
+        # 131072, Nova 2 Lite 65535, Claude 4.5 64000, Claude 4.6+ 128000.
+        # Claude 3.7 keeps the 131072 ceiling recorded before these checks;
+        # the direct Messages API caps that model at 64000.
+        learned = learned_output_limit(self.model_id)
+        if learned is not None:
+            return learned
+        if _is_openai_gpt5_model(self.model_id):
+            return 131072
+        if _is_nova_2_lite_model(self.model_id):
+            return 65535
+        version = parse_claude_version(self.model_id)
+        if version is None:
+            return None
+        if version.recognized and (version.major, version.minor) == (3, 7):
+            return 131072
+        return resolve_max_output_tokens(version, self.model_id)
+
+    def _resolve_max_tokens(self) -> Optional[int]:
+        max_tokens = self.max_tokens
+        thinking_budget = self._thinking_fields.get("reasoning_config", {}).get(
+            "budget_tokens"
         )
-        return cap
+        # Anthropic returns a ValidationException when max_tokens is not above
+        # budget_tokens. The headroom leaves room for the answer and matches
+        # the margin the direct Anthropic model applies.
+        if thinking_budget is not None and (
+            not max_tokens or max_tokens <= thinking_budget
+        ):
+            max_tokens = thinking_budget + THINKING_ANSWER_HEADROOM
+
+        cap = self._output_token_cap()
+        if max_tokens and cap is not None and max_tokens > cap:
+            logger.warning(
+                f"[BEDROCK] max_tokens={max_tokens} exceeds the {cap}-token "
+                f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+            )
+            return cap
+        return max_tokens
+
+    def _learn_output_limit(self, error: Exception) -> bool:
+        limit = parse_output_limit(str(error))
+        if limit is None:
+            return False
+        record_output_limit(self.model_id, limit)
+        logger.warning(
+            f"[BEDROCK] '{self.model_id}' caps output at {limit} tokens. "
+            f"Lowering maxTokens to {limit} and retrying once; later requests "
+            f"for this model id start from that ceiling."
+        )
+        self._thinking_fields = self._resolve_thinking_fields()
+        return True
+
+    def _call_with_learned_limit(self, call, build_params):
+        try:
+            return call(build_params())
+        except ClientError as error:
+            if not self._learn_output_limit(error):
+                raise
+            return call(build_params())
 
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
@@ -772,55 +951,27 @@ class BedrockModel(Model, ABC):
 
     async def _stream_with_retry(
         self,
-        streaming_client,
-        converse_params: dict,
+        start_stream,
         max_retries: int,
     ) -> AsyncIterator["StreamChunk"]:
-        """
-        Execute streaming request with retry logic for pre-stream API errors.
-
-        Retries on ThrottlingException and ServiceUnavailableException that
-        occur BEFORE streaming begins. Once the EventStream starts yielding
-        events, errors cannot be retried without data loss.
-
-        Uses exponential backoff with jitter (±50%) for consistent behavior
-        across all providers. Minimum delay of 45s respects rate limit windows.
-
-        Note: Mid-stream throttling errors (wrapped in EventStreamError) will
-        propagate to caller as they cannot be safely retried.
-
-        Args:
-            streaming_client: The boto3 bedrock-runtime client for streaming
-            converse_params: Parameters for converse_stream API call
-            max_retries: Maximum number of retry attempts
-
-        Yields:
-            StreamChunk objects from the stream
-
-        Raises:
-            ClientError: If non-retryable error or max retries exceeded
-        """
         retry = 0
 
         while retry <= max_retries:
             try:
-                # Attempt to initiate stream
                 loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: streaming_client.converse_stream(**converse_params),
-                )
+                response = await loop.run_in_executor(None, start_stream)
 
                 stream = response.get("stream")
                 if not stream:
                     raise ValueError("No stream returned from converse_stream")
 
-                # Stream initiated successfully - yield all events
                 async for chunk in self._iterate_stream_events(stream):
                     yield chunk
 
-                return  # Success - exit retry loop
+                return
 
+            # Retries stay confined to stream acquisition. A partially consumed
+            # EventStream cannot be replayed, so a mid-stream error propagates.
             except ClientError as error:
                 error_code = error.response["Error"]["Code"]
 
@@ -887,13 +1038,14 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        converse_params = self._build_converse_params(
-            messages, tools, structured_output
-        )
+        def build_params():
+            return self._build_converse_params(messages, tools, structured_output)
 
         try:
             response = self._execute_with_retry(
-                lambda: self.client.converse(**converse_params),
+                lambda: self._call_with_learned_limit(
+                    lambda params: self.client.converse(**params), build_params
+                ),
                 "AWS Bedrock converse",
             )
             logger.info("AWS Bedrock response received")
@@ -1231,11 +1383,9 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        converse_params = self._build_converse_params(
-            messages, tools, structured_output
-        )
+        def build_params():
+            return self._build_converse_params(messages, tools, structured_output)
 
-        # Get region from existing client for creating streaming client
         region_name = self.client.meta.region_name
 
         # Create a fresh client for this streaming operation
@@ -1247,14 +1397,16 @@ class BedrockModel(Model, ABC):
             sdk_max_attempts=sdk_max_attempts,
         )
 
+        def start_stream():
+            return self._call_with_learned_limit(
+                lambda params: streaming_client.converse_stream(**params), build_params
+            )
+
         if self.retry_config is not None:
 
             async def acquire_stream():
                 loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: streaming_client.converse_stream(**converse_params),
-                )
+                response = await loop.run_in_executor(None, start_stream)
                 stream = response.get("stream")
                 if not stream:
                     raise ValueError("No stream returned from converse_stream")
@@ -1264,12 +1416,7 @@ class BedrockModel(Model, ABC):
                 self.retry_config, acquire_stream, "Bedrock streaming"
             )
         else:
-            # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
-            chunk_stream = self._stream_with_retry(
-                streaming_client,
-                converse_params,
-                MAX_RETRIES,
-            )
+            chunk_stream = self._stream_with_retry(start_stream, MAX_RETRIES)
 
         async for chunk in chunk_stream:
             yield chunk

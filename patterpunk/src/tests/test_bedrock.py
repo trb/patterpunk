@@ -1,11 +1,13 @@
 import json
 import re
+from unittest.mock import Mock
 
 import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from patterpunk.llm.models.bedrock import BedrockModel
+from patterpunk.llm.output_limits import forget_output_limits, learned_output_limit
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.system import SystemMessage
@@ -447,8 +449,9 @@ def test_thinking_mode_parameters():
     )
 
     thinking_params = bedrock_effort._get_thinking_params()
-    assert "reasoning_effort" in thinking_params
-    assert thinking_params["reasoning_effort"] == "high"
+    assert thinking_params == {
+        "reasoning_config": {"type": "enabled", "budget_tokens": 12000}
+    }
 
     thinking_config_budget = ThinkingConfig(token_budget=3000)
     bedrock_budget = BedrockModel(
@@ -724,7 +727,7 @@ def test_claude_45_thinking_effort_also_strips_sampling(caplog):
     )
     with caplog.at_level("WARNING", logger="patterpunk"):
         config = bedrock._build_inference_config()
-    assert config == {"temperature": 1.0}
+    assert config == {"temperature": 1.0, "maxTokens": 14000}
     warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any(
         "Coercing user-set temperature=0.4 to 1.0" in m for m in warning_messages
@@ -822,6 +825,315 @@ def test_thinking_budget_below_minimum_warns_and_clamps(caplog):
     assert any("Raising token_budget=500 to 1024" in r.message for r in caplog.records)
 
 
+def warning_messages(caplog):
+    return [r.message for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_claude_5_effort_sends_adaptive_thinking_with_output_config(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-5",
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "adaptive"},
+        "output_config": {"effort": "low"},
+    }
+    assert warning_messages(caplog) == []
+
+
+def test_claude_5_effort_xhigh_passes_through():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-5",
+        thinking_config=ThinkingConfig(effort="xhigh"),
+    )
+    assert bedrock._get_thinking_params()["output_config"] == {"effort": "xhigh"}
+
+
+def test_claude_5_budget_coerced_to_adaptive_effort(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-5",
+            thinking_config=ThinkingConfig(token_budget=2000),
+        )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }
+    assert any(
+        "Coercing token_budget=2000 to effort='medium'" in m
+        for m in warning_messages(caplog)
+    )
+
+
+def test_claude_5_budget_zero_sends_disabled_thinking_and_no_max_tokens(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-5",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+    assert bedrock._get_thinking_params() == {"reasoning_config": {"type": "disabled"}}
+    assert bedrock._build_inference_config() == {}
+    assert warning_messages(caplog) == []
+
+
+def test_claude_46_budget_zero_sends_disabled_thinking_and_keeps_temperature():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-6",
+        temperature=0.25,
+        thinking_config=ThinkingConfig(token_budget=0),
+    )
+    assert bedrock._get_thinking_params() == {"reasoning_config": {"type": "disabled"}}
+    assert bedrock._build_inference_config() == {"temperature": 0.25}
+
+
+def test_fable_budget_zero_sends_nothing_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-fable-5-1",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+    assert bedrock._get_thinking_params() == {}
+    assert any("cannot turn thinking off" in m for m in warning_messages(caplog))
+
+
+def test_claude_5_include_thoughts_requests_summarized_display():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-opus-5",
+        thinking_config=ThinkingConfig(effort="high", include_thoughts=True),
+    )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": "high"},
+    }
+
+
+def test_opus_46_v1_id_keeps_temperature_and_clamps_xhigh(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-opus-4-6-v1",
+            temperature=0.25,
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params()["output_config"] == {"effort": "high"}
+    assert config == {"temperature": 1.0}
+    assert not any(
+        "Unrecognised Claude model id" in m for m in warning_messages(caplog)
+    )
+
+
+def test_claude_5_adaptive_thinking_does_not_force_max_tokens():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-5",
+        thinking_config=ThinkingConfig(effort="high"),
+    )
+    assert bedrock._build_inference_config() == {}
+
+
+def test_claude_46_uses_adaptive_thinking_and_clamps_xhigh(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-4-6",
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "adaptive"},
+        "output_config": {"effort": "high"},
+    }
+    assert any(
+        "Clamping effort='xhigh' to 'high'" in m for m in warning_messages(caplog)
+    )
+
+
+def test_claude_46_accepts_max_effort(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-4-6",
+            thinking_config=ThinkingConfig(effort="max"),
+        )
+    assert bedrock._get_thinking_params()["output_config"] == {"effort": "max"}
+    assert warning_messages(caplog) == []
+
+
+def test_haiku_45_effort_translated_to_budget(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "enabled", "budget_tokens": 1500}
+    }
+    assert warning_messages(caplog) == []
+
+
+def test_haiku_45_xhigh_effort_clamped_to_high_budget(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+    assert bedrock._get_thinking_params()["reasoning_config"]["budget_tokens"] == 12000
+    assert any(
+        "Clamping effort='xhigh' to 'high'" in m for m in warning_messages(caplog)
+    )
+
+
+def test_gpt5_drops_sampling_with_warning(caplog):
+    bedrock = BedrockModel(
+        model_id="us.openai.gpt-5.6-luna",
+        temperature=0.25,
+        top_p=1.0,
+        max_tokens=500,
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {"maxTokens": 500}
+    assert any(
+        "temperature=0.25" in m and "top_p=1.0" in m for m in warning_messages(caplog)
+    )
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["in.openai.gpt-5.6-luna", "global.openai.gpt-5.6-luna", "openai.gpt-5.6-sol"],
+)
+def test_gpt5_detected_under_every_geo_prefix(model_id, caplog):
+    bedrock = BedrockModel(model_id=model_id, temperature=0.25)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config == {}
+    assert any("temperature=0.25" in m for m in warning_messages(caplog))
+
+
+def test_gpt5_at_defaults_is_silent_and_sends_no_reasoning_field(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(model_id="us.openai.gpt-5.6-luna")
+        converse_params = bedrock._build_converse_params([])
+    assert "inferenceConfig" not in converse_params
+    assert "additionalModelRequestFields" not in converse_params
+    assert warning_messages(caplog) == []
+
+
+def test_gpt5_effort_sends_reasoning_object(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.openai.gpt-5.6-luna",
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+    assert bedrock._get_thinking_params() == {"reasoning": {"effort": "low"}}
+    assert warning_messages(caplog) == []
+
+
+def test_gpt5_budget_zero_sends_effort_none(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.openai.gpt-5.6-luna",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+    assert bedrock._get_thinking_params() == {"reasoning": {"effort": "none"}}
+    assert warning_messages(caplog) == []
+
+
+def test_gpt5_budget_coerced_to_effort(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.openai.gpt-5.6-luna",
+            thinking_config=ThinkingConfig(token_budget=2000),
+        )
+    assert bedrock._get_thinking_params() == {"reasoning": {"effort": "medium"}}
+    assert any(
+        "Coercing token_budget=2000 to effort='medium'" in m
+        for m in warning_messages(caplog)
+    )
+
+
+def test_gpt_oss_keeps_sampling_and_ignores_thinking_config(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="openai.gpt-oss-120b-1:0",
+            temperature=0.3,
+            top_p=0.9,
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+        config = bedrock._build_inference_config()
+    assert config == {"temperature": 0.3, "topP": 0.9}
+    assert bedrock._get_thinking_params() == {}
+    assert any(
+        "does not accept reasoning parameters" in m for m in warning_messages(caplog)
+    )
+
+
+def test_nova_2_lite_effort_sends_reasoning_config_and_keeps_sampling(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.amazon.nova-2-lite-v1:0",
+            temperature=0.25,
+            top_p=1.0,
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params() == {
+        "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "low"}
+    }
+    assert config == {"temperature": 0.25, "topP": 1.0}
+    assert warning_messages(caplog) == []
+
+
+def test_nova_2_lite_budget_maps_to_effort(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.amazon.nova-2-lite-v1:0",
+            thinking_config=ThinkingConfig(token_budget=2000),
+        )
+    assert bedrock._get_thinking_params()["reasoningConfig"] == {
+        "type": "enabled",
+        "maxReasoningEffort": "medium",
+    }
+    assert any("Coercing token_budget=2000" in m for m in warning_messages(caplog))
+
+
+def test_nova_2_lite_budget_zero_sends_nothing():
+    bedrock = BedrockModel(
+        model_id="us.amazon.nova-2-lite-v1:0",
+        thinking_config=ThinkingConfig(token_budget=0),
+    )
+    assert bedrock._get_thinking_params() == {}
+
+
+def test_nova_2_lite_high_effort_drops_sampling_and_max_tokens(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.amazon.nova-2-lite-v1:0",
+            temperature=0.25,
+            top_p=1.0,
+            max_tokens=500,
+            thinking_config=ThinkingConfig(effort="max"),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params()["reasoningConfig"]["maxReasoningEffort"] == (
+        "high"
+    )
+    assert config == {}
+    assert any(
+        "temperature=0.25" in m and "top_p=1.0" in m and "max_tokens=500" in m
+        for m in warning_messages(caplog)
+    )
+
+
+def test_nova_1_ignores_thinking_config_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.amazon.nova-pro-v1:0",
+            thinking_config=ThinkingConfig(effort="low"),
+        )
+    assert bedrock._get_thinking_params() == {}
+    assert any(
+        "does not accept reasoning parameters" in m for m in warning_messages(caplog)
+    )
+
+
 def test_claude_3_max_tokens_capped_to_output_limit(caplog):
     bedrock = BedrockModel(
         model_id="anthropic.claude-3-sonnet-20240229-v1:0",
@@ -844,6 +1156,133 @@ def test_claude_3_7_max_tokens_not_capped(caplog):
         config = bedrock._build_inference_config()
     assert config["maxTokens"] == 100000
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+@pytest.mark.parametrize(
+    "model_id,requested,expected",
+    [
+        ("us.anthropic.claude-sonnet-5", 200000, 128000),
+        ("us.anthropic.claude-opus-4-6-v1", 200000, 128000),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 100000, 64000),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 100000, 64000),
+        ("us.openai.gpt-5.6-luna", 200000, 131072),
+        ("us.amazon.nova-2-lite-v1:0", 100000, 65535),
+    ],
+)
+def test_max_tokens_capped_to_model_output_limit(model_id, requested, expected, caplog):
+    bedrock = BedrockModel(model_id=model_id, max_tokens=requested)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == expected
+    assert any(
+        f"exceeds the {expected}-token output limit" in m
+        for m in warning_messages(caplog)
+    )
+
+
+def test_max_tokens_within_limit_passes_through_silently(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-sonnet-5", max_tokens=128000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == 128000
+    assert warning_messages(caplog) == []
+
+
+def test_max_tokens_unknown_family_is_not_capped():
+    bedrock = BedrockModel(
+        model_id="mistral.mistral-large-2402-v1:0", max_tokens=100000
+    )
+    assert bedrock._build_inference_config()["maxTokens"] == 100000
+
+
+def _validation_error(message):
+    return ClientError(
+        {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+    )
+
+
+def _limit_error(limit):
+    return _validation_error(
+        f"The maximum tokens you requested exceeds the model limit of {limit}. "
+        f"Try again with a maximum tokens value that is lower than {limit}."
+    )
+
+
+def _converse_response(text="ok"):
+    return {
+        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+        "stopReason": "end_turn",
+    }
+
+
+@pytest.fixture
+def fresh_output_limits():
+    forget_output_limits()
+    yield
+    forget_output_limits()
+
+
+def test_unknown_output_limit_is_learned_from_the_error_and_retried(
+    fresh_output_limits, caplog
+):
+    bedrock = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = [_limit_error(2048), _converse_response()]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        message = bedrock.generate_assistant_message([UserMessage("hi")])
+    assert message.content == "ok"
+    sent = [
+        call.kwargs["inferenceConfig"]["maxTokens"]
+        for call in bedrock.client.converse.call_args_list
+    ]
+    assert sent == [100000, 2048]
+    assert any("caps output at 2048 tokens" in m for m in warning_messages(caplog))
+    assert learned_output_limit("meta.llama3-70b-instruct-v1:0") == 2048
+
+    later = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    assert later._build_inference_config()["maxTokens"] == 2048
+
+
+def test_learned_limit_lowers_a_thinking_budget_on_retry(fresh_output_limits):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        thinking_config=ThinkingConfig(token_budget=100000),
+    )
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = [_limit_error(64000), _converse_response()]
+    bedrock.generate_assistant_message([UserMessage("hi")])
+    retried = bedrock.client.converse.call_args_list[1].kwargs
+    assert retried["inferenceConfig"]["maxTokens"] == 64000
+    assert retried["additionalModelRequestFields"]["reasoning_config"] == {
+        "type": "enabled",
+        "budget_tokens": 62000,
+    }
+
+
+def test_other_validation_errors_are_not_retried(fresh_output_limits):
+    bedrock = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = _validation_error(
+        "The provided model identifier is invalid."
+    )
+    with pytest.raises(ClientError):
+        bedrock.generate_assistant_message([UserMessage("hi")])
+    assert bedrock.client.converse.call_count == 1
+    assert learned_output_limit("meta.llama3-70b-instruct-v1:0") is None
+
+
+def test_thinking_budget_lowered_to_fit_under_output_limit(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            thinking_config=ThinkingConfig(token_budget=63000),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params()["reasoning_config"]["budget_tokens"] == 62000
+    assert config["maxTokens"] == 64000
+    assert any(
+        "Lowering the thinking budget to 62000" in m for m in warning_messages(caplog)
+    )
 
 
 def test_cache_point_is_a_separate_block_with_type_field():

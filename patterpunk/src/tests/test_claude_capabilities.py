@@ -7,6 +7,7 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
 )
 
 
@@ -129,6 +130,46 @@ def test_normalize_strips_all_bedrock_wrapping():
         == "claude-sonnet-4-5-20250929"
     )
     assert normalize_claude_model_id("anthropic.claude-v2:1") == "claude-v2"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "in.anthropic.claude-fable-5-1",
+        "us-gov.anthropic.claude-fable-5-1",
+        "global.anthropic.claude-fable-5-1",
+    ],
+)
+def test_normalize_strips_every_bedrock_geo_prefix(model_id):
+    assert normalize_claude_model_id(model_id) == "claude-fable-5-1"
+    assert thinking_cannot_be_disabled(model_id) is True
+
+
+def test_normalize_strips_undated_bedrock_release_suffix():
+    assert (
+        normalize_claude_model_id("us.anthropic.claude-opus-4-6-v1")
+        == "claude-opus-4-6"
+    )
+    assert parse_claude_version("us.anthropic.claude-opus-4-6-v1") == ClaudeVersion(
+        4, 6
+    )
+    assert normalize_claude_model_id("anthropic.claude-instant-v1") == (
+        "claude-instant-v1"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("claude-fable-5-1", True),
+        ("us.anthropic.claude-mythos-5", True),
+        ("us.anthropic.claude-opus-5", False),
+        ("claude-sonnet-5", False),
+        ("claude-opus-4-7", False),
+    ],
+)
+def test_thinking_cannot_be_disabled(model_id, expected):
+    assert thinking_cannot_be_disabled(model_id) is expected
 
 
 ANTHROPIC_DEFAULTS = SamplingParams(temperature=0.7, top_p=1.0, top_k=200)
@@ -330,8 +371,11 @@ def test_resolver_in_range_temperature_not_clamped():
         ("claude-sonnet-4-5-20250929", 64000),
         ("claude-haiku-4-5", 64000),
         ("claude-opus-4-5", 64000),
-        ("claude-opus-4-7", None),
-        ("claude-fable-5", None),
+        ("claude-opus-4-6", 128000),
+        ("claude-sonnet-4-6", 128000),
+        ("claude-opus-4-7", 128000),
+        ("claude-sonnet-5", 128000),
+        ("claude-fable-5", 128000),
         ("us.anthropic.claude-3-sonnet-20240229-v1:0", 4096),
     ],
 )
@@ -340,7 +384,7 @@ def test_resolve_max_output_tokens(model_id, expected):
     assert resolve_max_output_tokens(version, model_id) == expected
 
 
-def test_resolve_max_output_tokens_unrecognized_returns_none():
+def test_resolve_max_output_tokens_unrecognized_gets_newest_cap():
     version = parse_claude_version("claude-turbo-max-ultra")
     assert version is not None and not version.recognized
-    assert resolve_max_output_tokens(version, "claude-turbo-max-ultra") is None
+    assert resolve_max_output_tokens(version, "claude-turbo-max-ultra") == 128000

@@ -15,8 +15,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-_BEDROCK_REGION_PREFIX_RE = re.compile(r"^(us|eu|apac|ca|jp|au|global)\.")
-_DATED_RELEASE_SUFFIX_RE = re.compile(r"(?<=\d{8})-v\d+$")
+_BEDROCK_REGION_PREFIX_RE = re.compile(r"^(us|us-gov|eu|apac|ca|jp|au|in|global)\.")
+_RELEASE_SUFFIX_RE = re.compile(r"(?<=\d)-v\d+$")
 
 _CLAUDE3_MINOR_RE = re.compile(r"claude-3-(\d+)-(?:opus|sonnet|haiku)")
 _CLAUDE3_BASE_RE = re.compile(r"claude-3-(?:opus|sonnet|haiku)[-@]\d{8}")
@@ -58,15 +58,25 @@ class SamplingResolution:
 def normalize_claude_model_id(model_id: str) -> str:
     # Bedrock wraps ids in ARNs ("arn:...:inference-profile/us.anthropic.<id>"),
     # regional routing prefixes, the "anthropic." vendor prefix, and a "-v1:0"
-    # release suffix. Vertex uses "<id>@<date>". Reduce all forms to the bare
-    # Anthropic id. The release-suffix strip requires a preceding date so the
-    # legacy ids "claude-v2" and "claude-instant-v1" keep their version marker.
+    # release suffix. Vertex appends "@<date>", which stays in place for the
+    # version regexes. Bedrock appends "-v1" to dated and undated ids alike,
+    # as in "claude-opus-4-6-v1". The strip therefore keys on a preceding
+    # digit rather than a date. The legacy ids "claude-v2" and
+    # "claude-instant-v1" have a letter before "-v" and keep their marker.
     normalized = model_id.rsplit("/", 1)[-1]
     normalized = _BEDROCK_REGION_PREFIX_RE.sub("", normalized)
     if normalized.startswith("anthropic."):
         normalized = normalized[len("anthropic.") :]
     normalized = normalized.split(":", 1)[0]
-    return _DATED_RELEASE_SUFFIX_RE.sub("", normalized)
+    return _RELEASE_SUFFIX_RE.sub("", normalized)
+
+
+def thinking_cannot_be_disabled(model_id: str) -> bool:
+    # Fable and Mythos models run adaptive thinking permanently. They answer
+    # thinking type "disabled" with a 400, unlike Opus 4.7+ and Sonnet 5.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
+    model = normalize_claude_model_id(model_id)
+    return model.startswith("claude-fable") or model.startswith("claude-mythos")
 
 
 def parse_claude_version(model_id: str) -> Optional[ClaudeVersion]:
@@ -106,14 +116,16 @@ def parse_claude_version(model_id: str) -> Optional[ClaudeVersion]:
     return None
 
 
-def resolve_max_output_tokens(version: ClaudeVersion, model_id: str) -> Optional[int]:
-    # The API rejects a max_tokens above the model's cap with a 400.
+def resolve_max_output_tokens(version: ClaudeVersion, model_id: str) -> int:
+    # The API rejects a max_tokens above the model's cap with a 400, on the
+    # direct API and on Bedrock alike. Live checks: Sonnet 5, Sonnet 4.6 and
+    # Opus 4.6 stop at 128000; Haiku, Sonnet and Opus 4.5 stop at 64000.
     # The 3.7 cap rises to 128000 when the output-128k beta header is sent.
-    if not version.recognized:
-        return None
+    # An unrecognised id gets the newest family's cap, matching the module's
+    # rule that unknown ids follow the strictest current behaviour.
     release = (version.major, version.minor)
-    if release >= (4, 6):
-        return None
+    if release >= (4, 6) or not version.recognized:
+        return 128000
     if release >= (4, 5):
         return 64000
     if release >= (4, 0):

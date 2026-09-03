@@ -1550,12 +1550,90 @@ def test_opus_4_7_adaptive_thinking_shape():
 
 
 def test_opus_4_7_no_thinking_block_when_thinking_config_absent():
-    """If the user did not pass thinking_config, skip the thinking and output_config fields entirely."""
     model = AnthropicModel(model="claude-opus-4-7")
     api_params = model._build_base_api_parameters([], None)
     api_params = model._apply_thinking_configuration(api_params)
     assert "thinking" not in api_params
     assert "output_config" not in api_params
+
+
+def test_unknown_output_limit_is_learned_from_the_error_and_retried(
+    monkeypatch, caplog
+):
+    import anthropic as anthropic_sdk
+    import httpx2
+
+    from patterpunk.llm.models import anthropic as anthropic_mod
+    from patterpunk.llm.output_limits import forget_output_limits, learned_output_limit
+
+    forget_output_limits()
+    monkeypatch.setattr(
+        anthropic_mod, "resolve_max_output_tokens", lambda version, model_id: 10**9
+    )
+    sent = []
+
+    def create(**kwargs):
+        sent.append(kwargs["max_tokens"])
+        if len(sent) == 1:
+            response = httpx2.Response(
+                400,
+                request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"),
+            )
+            raise anthropic_sdk.BadRequestError(
+                "Error code: 400 - {'type': 'error', 'error': {'message': "
+                "'max_tokens: 200000 > 128000, which is the maximum allowed number "
+                "of output tokens for claude-sonnet-5'}}",
+                response=response,
+                body=None,
+            )
+        return _make_fake_anthropic_response("ok")
+
+    monkeypatch.setattr(anthropic_mod.anthropic.messages, "create", create)
+
+    model = AnthropicModel(model="claude-sonnet-5", max_tokens=200000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        result = Chat(model=model).add_message(UserMessage("hi")).complete()
+    assert result.latest_message.content == "ok"
+    assert sent == [200000, 128000]
+    assert any("caps output at 128000 tokens" in r.message for r in caplog.records)
+    assert learned_output_limit("claude-sonnet-5") == 128000
+    forget_output_limits()
+
+
+def test_sonnet_5_max_tokens_capped_to_128000(caplog):
+    model = AnthropicModel(model="claude-sonnet-5", max_tokens=200000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = _build_request_params(model)
+    assert api_params["max_tokens"] == 128000
+    assert any(
+        "exceeds the 128000-token output limit" in r.message for r in caplog.records
+    )
+
+
+def test_opus_4_7_token_budget_zero_sends_disabled_thinking(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+        api_params = model._build_base_api_parameters([], None)
+        api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["thinking"] == {"type": "disabled"}
+    assert "output_config" not in api_params
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_fable_token_budget_zero_omits_thinking_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-fable-5-1",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+        api_params = model._build_base_api_parameters([], None)
+        api_params = model._apply_thinking_configuration(api_params)
+    assert "thinking" not in api_params
+    assert "output_config" not in api_params
+    assert any("cannot turn thinking off" in r.message for r in caplog.records)
 
 
 def test_opus_4_7_display_summarized_when_include_thoughts():

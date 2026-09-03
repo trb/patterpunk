@@ -69,6 +69,61 @@ def _generate(model: GoogleModel):
     return model.generate_assistant_message([UserMessage("hi")])
 
 
+def _output_limit_error(exclusive_bound: int) -> genai_errors.APIError:
+    return genai_errors.APIError(
+        400,
+        {
+            "error": {
+                "code": 400,
+                "message": (
+                    "Unable to submit request because it has a maxOutputTokens "
+                    "value of 200000 but the supported range is from 1 (inclusive) "
+                    f"to {exclusive_bound} (exclusive). Update the value and try again."
+                ),
+                "status": "INVALID_ARGUMENT",
+            }
+        },
+    )
+
+
+def test_unknown_output_limit_is_learned_from_the_error_and_retried(
+    monkeypatch, caplog
+):
+    from patterpunk.llm.models import google as google_mod
+    from patterpunk.llm.output_limits import forget_output_limits, learned_output_limit
+
+    forget_output_limits()
+    monkeypatch.setattr(google_mod, "_gemini_output_token_cap", lambda model: 10**9)
+    model = _make_model(max_tokens=200000)
+    model.client.models.generate_content.side_effect = [
+        _output_limit_error(65537),
+        _good_response(),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        result = _generate(model)
+    assert result.content == "hello world"
+    sent = [
+        call.kwargs["config"].max_output_tokens
+        for call in model.client.models.generate_content.call_args_list
+    ]
+    assert sent == [200000, 65536]
+    assert model.max_tokens == 65536
+    assert any("caps output at 65536 tokens" in r.message for r in caplog.records)
+    assert learned_output_limit("gemini-2.5-pro") == 65536
+    forget_output_limits()
+
+
+def test_other_bad_requests_are_not_retried_as_output_limits():
+    from patterpunk.llm.output_limits import forget_output_limits
+
+    forget_output_limits()
+    model = _make_model(max_tokens=1000)
+    model.client.models.generate_content.side_effect = _api_error(400)
+    with pytest.raises(genai_errors.APIError):
+        _generate(model)
+    assert model.client.models.generate_content.call_count == 1
+
+
 # ---- retry_config path: schedule + classification ----
 
 

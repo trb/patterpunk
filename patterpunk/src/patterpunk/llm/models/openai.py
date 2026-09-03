@@ -5,7 +5,7 @@ import math
 import re
 import time
 from abc import ABC
-from typing import AsyncIterator, List, Literal, Optional, Set, Union
+from typing import AsyncIterator, List, Literal, Optional, Set, Tuple, Union
 
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
@@ -103,6 +103,7 @@ def _build_diagnostics_kwargs(response) -> dict:
 
 
 class OpenAiReasoningEffort(enum.Enum):
+    NONE = enum.auto()
     LOW = enum.auto()
     MEDIUM = enum.auto()
     HIGH = enum.auto()
@@ -112,6 +113,22 @@ class OpenAiReasoningEffort(enum.Enum):
 
 _EXTENDED_EFFORT_LEVELS = {OpenAiReasoningEffort.XHIGH, OpenAiReasoningEffort.MAX}
 _GPT_VERSION_RE = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
+
+
+def _gpt_version(model: str) -> Optional[Tuple[int, int]]:
+    match = _GPT_VERSION_RE.match(model.lower())
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2) or 0))
+
+
+def _supports_effort_none(model: str) -> bool:
+    # GPT-5.1 introduced effort "none" and every later GPT-5.x accepts it.
+    # GPT-5 bottoms out at "minimal" and the o-series rejects "none" with a 400.
+    # A zero budget therefore stays at "low" for those ids.
+    # https://developers.openai.com/api/docs/models/gpt-5.1
+    version = _gpt_version(model)
+    return version is not None and version >= (5, 1)
 
 
 def _strip_reasoning_summary_if_unverified(
@@ -195,8 +212,8 @@ class OpenAiModel(Model, ABC):
             if thinking_config.effort is not None:
                 reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
             else:
-                if thinking_config.token_budget == 0:
-                    reasoning_effort = OpenAiReasoningEffort.LOW
+                if thinking_config.token_budget == 0 and _supports_effort_none(model):
+                    reasoning_effort = OpenAiReasoningEffort.NONE
                 elif thinking_config.token_budget <= 4000:
                     reasoning_effort = OpenAiReasoningEffort.LOW
                 elif thinking_config.token_budget <= 12000:
@@ -582,12 +599,8 @@ class OpenAiModel(Model, ABC):
             )
 
     def _supports_extended_reasoning_effort(self, model: str) -> bool:
-        match = _GPT_VERSION_RE.match(model.lower())
-        if not match:
-            return False
-        major = int(match.group(1))
-        minor = int(match.group(2) or 0)
-        return (major, minor) >= (5, 6)
+        version = _gpt_version(model)
+        return version is not None and version >= (5, 6)
 
     def _clamp_reasoning_effort(
         self, model: str, reasoning_effort: OpenAiReasoningEffort

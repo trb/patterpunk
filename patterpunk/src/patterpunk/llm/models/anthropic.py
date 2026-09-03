@@ -55,6 +55,12 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
+)
+from patterpunk.llm.output_limits import (
+    learned_output_limit,
+    parse_output_limit,
+    record_output_limit,
 )
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
@@ -612,14 +618,30 @@ Please extract the relevant information from this reasoning and format it exactl
                 f"Use prompting to guide model behavior instead."
             )
 
+    def _adaptive_thinking_params(self) -> dict:
+        if self.thinking_config.token_budget == 0:
+            if thinking_cannot_be_disabled(self._capability_model_id()):
+                logger.warning(
+                    f"[ANTHROPIC] '{self.model}' cannot turn thinking off and "
+                    f"rejects thinking type 'disabled'. Ignoring token_budget=0; "
+                    f"the model runs adaptive thinking at its default effort. Pass "
+                    f"ThinkingConfig(effort='low') to keep thinking short instead."
+                )
+                return {}
+            return {"thinking": {"type": "disabled"}}
+
+        thinking_block = {"type": "adaptive"}
+        if self.thinking_config.include_thoughts:
+            thinking_block["display"] = "summarized"
+        return {
+            "thinking": thinking_block,
+            "output_config": {"effort": self._resolve_effort()},
+        }
+
     def _apply_thinking_configuration(self, api_params: dict) -> dict:
         if self._uses_adaptive_thinking_api():
             if self.thinking_config is not None:
-                thinking_block = {"type": "adaptive"}
-                if self.thinking_config.include_thoughts:
-                    thinking_block["display"] = "summarized"
-                api_params["thinking"] = thinking_block
-                api_params["output_config"] = {"effort": self._resolve_effort()}
+                api_params.update(self._adaptive_thinking_params())
             api_params = self._get_compatible_params(api_params)
             return self._adapt_output_token_limits(api_params)
 
@@ -638,10 +660,30 @@ Please extract the relevant information from this reasoning and format it exactl
         api_params = self._get_compatible_params(api_params)
         return self._adapt_output_token_limits(api_params)
 
-    def _adapt_output_token_limits(self, api_params: dict) -> dict:
+    def _output_token_cap(self) -> Optional[int]:
+        learned = learned_output_limit(self.model)
+        if learned is not None:
+            return learned
         model_id = self._capability_model_id()
         version = parse_claude_version(model_id)
-        cap = None if version is None else resolve_max_output_tokens(version, model_id)
+        if version is None:
+            return None
+        return resolve_max_output_tokens(version, model_id)
+
+    def _learn_output_limit(self, error: Exception) -> bool:
+        limit = parse_output_limit(str(error))
+        if limit is None:
+            return False
+        record_output_limit(self.model, limit)
+        logger.warning(
+            f"[ANTHROPIC] '{self.model}' caps output at {limit} tokens. "
+            f"Lowering max_tokens to {limit} and retrying once; later requests "
+            f"for this model start from that ceiling."
+        )
+        return True
+
+    def _adapt_output_token_limits(self, api_params: dict) -> dict:
+        cap = self._output_token_cap()
 
         max_tokens = api_params.get("max_tokens")
         if max_tokens is None:
@@ -978,7 +1020,7 @@ Please extract the relevant information from this reasoning and format it exactl
             client = self._get_sync_client().with_options(max_retries=0)
             return run_with_retry_config(
                 self.retry_config,
-                lambda: self._attempt_completion(
+                lambda: self._attempt_completion_with_learned_limit(
                     messages, tools, structured_output, system_prompt, client
                 ),
                 "Anthropic",
@@ -988,7 +1030,7 @@ Please extract the relevant information from this reasoning and format it exactl
 
         while True:
             try:
-                return self._attempt_completion(
+                return self._attempt_completion_with_learned_limit(
                     messages,
                     tools,
                     structured_output,
@@ -999,6 +1041,25 @@ Please extract the relevant information from this reasoning and format it exactl
                 should_retry, retry_count = self._handle_api_error(e, retry_count)
                 if should_retry:
                     continue
+
+    def _attempt_completion_with_learned_limit(
+        self,
+        messages: List[Message],
+        tools: Optional[ToolDefinition],
+        structured_output: Optional[object],
+        system_prompt,
+        client,
+    ) -> Union[Message, "ToolCallMessage"]:
+        try:
+            return self._attempt_completion(
+                messages, tools, structured_output, system_prompt, client
+            )
+        except APIError as error:
+            if not self._learn_output_limit(error):
+                raise
+            return self._attempt_completion(
+                messages, tools, structured_output, system_prompt, client
+            )
 
     def _attempt_completion(
         self,
@@ -1484,7 +1545,7 @@ Please extract the relevant information from this reasoning and format it exactl
             client = self._get_async_client().with_options(max_retries=0)
 
             async def acquire_stream():
-                return self._stream_events(api_params, client)
+                return self._stream_events_with_learned_limit(api_params, client)
 
             async for chunk in stream_with_retry_config(
                 self.retry_config, acquire_stream, "Anthropic streaming"
@@ -1496,8 +1557,29 @@ Please extract the relevant information from this reasoning and format it exactl
             max_retries=MAX_RETRIES
         )
 
-        async for chunk in self._stream_events(api_params, client_with_retry):
+        async for chunk in self._stream_events_with_learned_limit(
+            api_params, client_with_retry
+        ):
             yield chunk
+
+    async def _stream_events_with_learned_limit(
+        self, api_params: dict, client
+    ) -> AsyncIterator["StreamChunk"]:
+        # A max_tokens rejection arrives before the first event. Retrying after
+        # a chunk was yielded would duplicate output, so the guard stops that.
+        # Other errors and mid-stream failures propagate unchanged.
+        started = False
+        try:
+            async for chunk in self._stream_events(api_params, client):
+                started = True
+                yield chunk
+        except APIError as error:
+            if started or not self._learn_output_limit(error):
+                raise
+            async for chunk in self._stream_events(
+                self._adapt_output_token_limits(api_params), client
+            ):
+                yield chunk
 
     async def _stream_events(
         self, api_params: dict, client

@@ -63,7 +63,16 @@ from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
-from patterpunk.llm.thinking import ThinkingConfig
+from patterpunk.llm.output_limits import (
+    learned_output_limit,
+    parse_output_limit,
+    record_output_limit,
+)
+from patterpunk.llm.thinking import (
+    EFFORT_TO_BUDGET,
+    ThinkingConfig,
+    effort_for_budget,
+)
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
@@ -115,8 +124,6 @@ def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
 
 _GEMINI_VERSION_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
 
-_EFFORT_TO_BUDGET = {"low": 1500, "medium": 4000, "high": 12000}
-
 
 def _parse_gemini_version(model: str) -> Optional[Tuple[int, int]]:
     match = _GEMINI_VERSION_RE.search(model)
@@ -137,7 +144,7 @@ def _clamp_effort_to_gemini_levels(effort: str) -> str:
 
 def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> int:
     if thinking_config.token_budget is None:
-        return _EFFORT_TO_BUDGET[_clamp_effort_to_gemini_levels(thinking_config.effort)]
+        return EFFORT_TO_BUDGET[_clamp_effort_to_gemini_levels(thinking_config.effort)]
 
     budget = min(thinking_config.token_budget, 24576)
     if "flash-lite" in model and 0 < budget < 512:
@@ -155,19 +162,56 @@ def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> 
     return budget
 
 
-def _resolve_gemini_3_level(thinking_config: "ThinkingConfig") -> str:
+def _gemini_output_token_cap(model: str) -> int:
+    # Vertex rejects max_output_tokens above the model's ceiling with a 400
+    # that states the accepted range. Live checks: Gemini 2.5 Flash, 2.5 Pro,
+    # 3.5 Flash-Lite and 3.6 Flash accept up to 65536, 2.5 Flash-Lite only
+    # 65535. Google documents 8192 for the 2.0 and 1.5 generations.
+    version = _parse_gemini_version(model)
+    if version is not None and version < (2, 5):
+        return 8192
+    if "2.5-flash-lite" in model:
+        return 65535
+    return 65536
+
+
+def _resolve_gemini_max_tokens(model: str, max_tokens: Optional[int]) -> Optional[int]:
+    if max_tokens is None:
+        return None
+    cap = learned_output_limit(model)
+    if cap is None:
+        cap = _gemini_output_token_cap(model)
+    if max_tokens <= cap:
+        return max_tokens
+    logger.warning(
+        f"[GOOGLE] max_tokens={max_tokens} exceeds the {cap}-token output "
+        f"limit of '{model}'. Lowering max_output_tokens to {cap}."
+    )
+    return cap
+
+
+def _gemini_3_supports_minimal(model: str) -> bool:
+    # Google documents thinking_level "minimal" as the zero-budget equivalent
+    # on every Flash-Lite model and on Flash up to 3.6. Flash 3.7, Flash 3.8
+    # and all Pro models reject it with "Thinking level is unsupported".
+    # https://ai.google.dev/gemini-api/docs/thinking
+    if "flash-lite" in model:
+        return True
+    version = _parse_gemini_version(model)
+    return "flash" in model and version is not None and version < (3, 7)
+
+
+def _resolve_gemini_3_level(model: str, thinking_config: "ThinkingConfig") -> str:
     # Gemini 3 replaced numeric thinking budgets with thinking_level; a
     # thinking_budget in the request is rejected on 3.x models.
     if thinking_config.effort is not None:
         return _clamp_effort_to_gemini_levels(thinking_config.effort)
 
     budget = thinking_config.token_budget
-    if budget <= _EFFORT_TO_BUDGET["low"]:
-        level = "low"
-    elif budget <= _EFFORT_TO_BUDGET["medium"]:
-        level = "medium"
-    else:
-        level = "high"
+    if budget == 0 and _gemini_3_supports_minimal(model):
+        return "minimal"
+
+    level = effort_for_budget(budget)
     logger.warning(
         f"[GOOGLE] Gemini 3+ replaced numeric thinking budgets with "
         f"thinking_level. Coercing token_budget={budget} to "
@@ -305,7 +349,7 @@ class GoogleModel(Model, ABC):
             elif version is not None and version < (3, 0):
                 thinking_budget = _resolve_gemini_25_budget(model, thinking_config)
             else:
-                thinking_level = _resolve_gemini_3_level(thinking_config)
+                thinking_level = _resolve_gemini_3_level(model, thinking_config)
 
         if client:
             self.client = client
@@ -319,7 +363,7 @@ class GoogleModel(Model, ABC):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.max_tokens = max_tokens
+        self.max_tokens = _resolve_gemini_max_tokens(model, max_tokens)
         self.timeout = timeout
         self.thinking_budget = thinking_budget
         self.thinking_level = thinking_level
@@ -1035,9 +1079,7 @@ class GoogleModel(Model, ABC):
         if self.retry_config is not None:
             response = run_with_retry_config(
                 self.retry_config,
-                lambda: self.client.models.generate_content(
-                    model=self.model, contents=contents, config=config
-                ),
+                lambda: self._generate_content_with_learned_limit(contents, config),
                 "VertexAI",
             )
             result = self._process_generation_response(response, structured_output)
@@ -1048,9 +1090,7 @@ class GoogleModel(Model, ABC):
 
         while retry_count < MAX_RETRIES:
             try:
-                response = self.client.models.generate_content(
-                    model=self.model, contents=contents, config=config
-                )
+                response = self._generate_content_with_learned_limit(contents, config)
 
                 result = self._process_generation_response(response, structured_output)
                 self._log_response(result)
@@ -1089,6 +1129,57 @@ class GoogleModel(Model, ABC):
         raise GoogleAPIError(
             "Unexpected outcome - out of retries, but neither error raised or message returned"
         )
+
+    def _learn_output_limit(self, error: Exception) -> bool:
+        limit = parse_output_limit(str(error))
+        if limit is None:
+            return False
+        record_output_limit(self.model, limit)
+        logger.warning(
+            f"[GOOGLE] '{self.model}' caps output at {limit} tokens. Lowering "
+            f"max_output_tokens to {limit} and retrying once; later requests "
+            f"for this model start from that ceiling."
+        )
+        if self.max_tokens is None or self.max_tokens > limit:
+            self.max_tokens = limit
+        return True
+
+    def _generate_content_with_learned_limit(self, contents, config):
+        try:
+            return self.client.models.generate_content(
+                model=self.model, contents=contents, config=config
+            )
+        except genai_errors.APIError as error:
+            if not self._learn_output_limit(error):
+                raise
+            return self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config.model_copy(update={"max_output_tokens": self.max_tokens}),
+            )
+
+    async def _stream_content_with_learned_limit(self, contents, config):
+        # The SDK raises a max_output_tokens rejection on the first iteration
+        # of the stream, not when the stream is acquired. Retrying after a
+        # chunk was yielded would duplicate output, so the guard stops that.
+        started = False
+        try:
+            stream = await self.client.aio.models.generate_content_stream(
+                model=self.model, contents=contents, config=config
+            )
+            async for chunk in stream:
+                started = True
+                yield chunk
+        except genai_errors.APIError as error:
+            if started or not self._learn_output_limit(error):
+                raise
+            stream = await self.client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=config.model_copy(update={"max_output_tokens": self.max_tokens}),
+            )
+            async for chunk in stream:
+                yield chunk
 
     @staticmethod
     def get_available_models(location: Optional[str] = None) -> List[str]:
@@ -1265,16 +1356,12 @@ class GoogleModel(Model, ABC):
 
         while retry_count < max_retries:
             try:
-                # Create stream and iterate - error surfaces on first iteration if 429
-                stream = await self.client.aio.models.generate_content_stream(
-                    model=self.model, contents=contents, config=config
-                )
-
-                # Yield all events from stream
-                async for chunk in stream:
+                async for chunk in self._stream_content_with_learned_limit(
+                    contents, config
+                ):
                     yield chunk
 
-                return  # Success - exit retry loop
+                return
 
             except genai_errors.APIError as error:
                 if error.code == 429:
@@ -1349,9 +1436,7 @@ class GoogleModel(Model, ABC):
         if self.retry_config is not None:
 
             async def acquire_stream():
-                return await self.client.aio.models.generate_content_stream(
-                    model=self.model, contents=contents, config=config
-                )
+                return self._stream_content_with_learned_limit(contents, config)
 
             chunk_stream = stream_with_retry_config(
                 self.retry_config, acquire_stream, "VertexAI"
