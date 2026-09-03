@@ -616,3 +616,28 @@ def test_gemini_3_pro_budget_zero_sends_low_level_with_warning(caplog):
         "Coercing token_budget=0 to thinking_level='low'" in r.message
         for r in caplog.records
     )
+
+
+def test_gemini_36_flash_budget_zero_sends_minimal_level(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-3.6-flash", thinking_config=ThinkingConfig(token_budget=0)
+        )
+    assert model.thinking_level == "minimal"
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_gemini_37_flash_budget_zero_sends_low_level_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-3.7-flash", thinking_config=ThinkingConfig(token_budget=0)
+        )
+    assert model.thinking_level == "low"
+    assert any("Coercing token_budget=0" in r.message for r in caplog.records)
+
+
+def test_gemini_38_flash_lite_budget_zero_sends_minimal_level():
+    model = make_stub_model(
+        model="gemini-3.8-flash-lite", thinking_config=ThinkingConfig(token_budget=0)
+    )
+    assert model.thinking_level == "minimal"

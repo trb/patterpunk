@@ -157,6 +157,17 @@ def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> 
     return budget
 
 
+def _gemini_3_supports_minimal(model: str) -> bool:
+    # Google documents thinking_level "minimal" as the zero-budget equivalent
+    # on every Flash-Lite model and on Flash up to 3.6. Flash 3.7, Flash 3.8
+    # and all Pro models reject it with "Thinking level is unsupported".
+    # https://ai.google.dev/gemini-api/docs/thinking
+    if "flash-lite" in model:
+        return True
+    version = _parse_gemini_version(model)
+    return "flash" in model and version is not None and version < (3, 7)
+
+
 def _resolve_gemini_3_level(model: str, thinking_config: "ThinkingConfig") -> str:
     # Gemini 3 replaced numeric thinking budgets with thinking_level; a
     # thinking_budget in the request is rejected on 3.x models.
@@ -164,10 +175,7 @@ def _resolve_gemini_3_level(model: str, thinking_config: "ThinkingConfig") -> st
         return _clamp_effort_to_gemini_levels(thinking_config.effort)
 
     budget = thinking_config.token_budget
-    if budget == 0 and "flash" in model:
-        # Google documents thinking_level "minimal" as the Gemini 3 Flash and
-        # Flash-Lite equivalent of a zero budget. Pro models reject "minimal",
-        # so they fall through to "low" with the coercion warning below.
+    if budget == 0 and _gemini_3_supports_minimal(model):
         return "minimal"
 
     level = effort_for_budget(budget)
