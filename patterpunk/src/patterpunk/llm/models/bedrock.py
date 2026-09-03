@@ -43,6 +43,7 @@ from patterpunk.llm.models.claude_capabilities import (
     SamplingParams,
     parse_claude_version,
     resolve_claude_sampling,
+    resolve_max_output_tokens,
 )
 
 if boto3:
@@ -126,11 +127,12 @@ class BedrockModel(Model, ABC):
     ):
         self.model_id = model_id
         self.temperature = temperature
-        self.top_p = top_p  # None means don't specify (some models don't allow both temp and top_p)
+        self.top_p = top_p
         self.max_tokens = max_tokens
         self.thinking_config = thinking_config
         self.timeout = timeout
         self.retry_config = retry_config
+        self._warn_unusable_thinking_config()
 
         # When a RetryConfig governs retries, botocore's own retry layer must
         # not stack additional attempts underneath the configured schedule.
@@ -160,6 +162,29 @@ class BedrockModel(Model, ABC):
 
         return {"tools": bedrock_tools}
 
+    def _supports_reasoning_fields(self) -> bool:
+        version = parse_claude_version(self.model_id)
+        return version is not None and version.at_least(3, 7)
+
+    def _warn_unusable_thinking_config(self) -> None:
+        # DeepSeek reasons by default and takes no reasoning fields, so a
+        # thinking_config is harmless there and stays silent.
+        if self.thinking_config is None or "deepseek" in self.model_id.lower():
+            return
+        if not self._supports_reasoning_fields():
+            logger.warning(
+                f"[BEDROCK] Model '{self.model_id}' does not accept reasoning "
+                f"parameters. Ignoring thinking_config."
+            )
+            return
+        budget = self.thinking_config.token_budget
+        if budget is not None and 0 < budget < MIN_THINKING_BUDGET_TOKENS:
+            logger.warning(
+                f"[BEDROCK] The API requires a thinking budget of at least "
+                f"{MIN_THINKING_BUDGET_TOKENS} tokens. Raising "
+                f"token_budget={budget} to {MIN_THINKING_BUDGET_TOKENS}."
+            )
+
     def _get_thinking_params(self) -> dict:
         if not self.thinking_config:
             return {}
@@ -167,6 +192,12 @@ class BedrockModel(Model, ABC):
         additional_fields = {}
 
         if "deepseek" in self.model_id.lower():
+            return {}
+
+        if not self._supports_reasoning_fields():
+            return {}
+
+        if self.thinking_config.token_budget == 0:
             return {}
 
         if self.thinking_config.effort is not None:
@@ -486,7 +517,7 @@ class BedrockModel(Model, ABC):
                 inference_config["topP"] = self.top_p
 
         if self.max_tokens:
-            inference_config["maxTokens"] = self.max_tokens
+            inference_config["maxTokens"] = self._capped_max_tokens(claude_version)
 
         thinking_params = self._get_thinking_params()
         if thinking_params.get("reasoning_config"):
@@ -499,6 +530,20 @@ class BedrockModel(Model, ABC):
                 inference_config["maxTokens"] = budget + 2000
 
         return inference_config
+
+    def _capped_max_tokens(self, version: Optional[ClaudeVersion]) -> int:
+        # Bedrock allows Claude 3.7+ up to 131072 on-demand output tokens.
+        # The direct Messages API caps those same models lower.
+        if version is None or version.at_least(3, 7):
+            return self.max_tokens
+        cap = resolve_max_output_tokens(version, self.model_id)
+        if cap is None or self.max_tokens <= cap:
+            return self.max_tokens
+        logger.warning(
+            f"[BEDROCK] max_tokens={self.max_tokens} exceeds the {cap}-token "
+            f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+        )
+        return cap
 
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
