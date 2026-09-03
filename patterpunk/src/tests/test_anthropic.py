@@ -2513,3 +2513,59 @@ def test_cache_breakpoint_upgrade_counts_all_earlier_breakpoints(caplog):
         for block in content_blocks
     )
     assert any("Upgraded 2 earlier" in r.message for r in caplog.records)
+
+def test_cache_breakpoints_trimmed_to_api_limit_of_four(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage(
+            [CacheChunk(f"section {i}", cacheable=True) for i in range(6)]
+        ),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    cached = [b for b in content_blocks if "cache_control" in b]
+    assert len(cached) == 4
+    assert [b["text"] for b in cached] == [f"section {i}" for i in range(2, 6)]
+    assert any("at most 4 cache breakpoints" in r.message for r in caplog.records)
+
+
+def test_cache_breakpoints_at_limit_untouched(caplog):
+    model = AnthropicModel(model="claude-haiku-4-5-20251001")
+    messages = [
+        UserMessage(
+            [CacheChunk(f"section {i}", cacheable=True) for i in range(4)]
+        ),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    content_blocks = api_params["messages"][0]["content"]
+    assert all("cache_control" in b for b in content_blocks)
+    assert not any("at most 4" in r.message for r in caplog.records)
+
+
+def test_cache_stripped_on_models_without_prompt_caching(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229")
+    messages = [
+        SystemMessage([CacheChunk("stable part", cacheable=True)]),
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    system_prompt = model._prepare_system_prompt(messages)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, system_prompt)
+    assert "cache_control" not in api_params["system"][0]
+    assert "cache_control" not in api_params["messages"][0]["content"][0]
+    assert any(
+        "does not support prompt caching" in r.message for r in caplog.records
+    )
+
+
+def test_cache_kept_on_claude_3_haiku(caplog):
+    model = AnthropicModel(model="claude-3-haiku-20240307")
+    messages = [
+        UserMessage([CacheChunk("big document", cacheable=True)]),
+    ]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = model._build_base_api_parameters(messages, None)
+    assert "cache_control" in api_params["messages"][0]["content"][0]
+    assert not any("prompt caching" in r.message for r in caplog.records)

@@ -51,6 +51,7 @@ from patterpunk.llm.models.base import Model, TokenCountingError
 from patterpunk.llm.models.claude_capabilities import (
     ClaudeVersion,
     SamplingParams,
+    normalize_claude_model_id,
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
@@ -501,6 +502,46 @@ Please extract the relevant information from this reasoning and format it exactl
 
         if system_prompt is not None:
             api_params["system"] = system_prompt
+
+        return self._enforce_cache_constraints(api_params)
+
+    def _supports_prompt_caching(self) -> bool:
+        # Claude 3 Sonnet never got prompt caching, unlike 3 Opus and 3 Haiku.
+        # Unsupported models reject cache_control blocks with a 400.
+        model_id = self._capability_model_id()
+        version = parse_claude_version(model_id)
+        if version is None or (version.major, version.minor) < (3, 0):
+            return False
+        if (version.major, version.minor) == (3, 0) and "sonnet" in (
+            normalize_claude_model_id(model_id)
+        ):
+            return False
+        return True
+
+    def _enforce_cache_constraints(self, api_params: dict) -> dict:
+        cache_blocks = self._collect_cache_breakpoints(api_params)
+        if not cache_blocks:
+            return api_params
+
+        if not self._supports_prompt_caching():
+            for block in cache_blocks:
+                del block["cache_control"]
+            logger.warning(
+                f"[ANTHROPIC] Model '{self.model}' does not support prompt "
+                f"caching. Removed {len(cache_blocks)} cache breakpoint(s); "
+                f"the content is sent uncached."
+            )
+            return api_params
+
+        if len(cache_blocks) > 4:
+            removed_count = len(cache_blocks) - 4
+            for block in cache_blocks[:-4]:
+                del block["cache_control"]
+            logger.warning(
+                f"[ANTHROPIC] The API allows at most 4 cache breakpoints per "
+                f"request. Removed the first {removed_count}; each remaining "
+                f"breakpoint still caches all content before it."
+            )
 
         return self._enforce_cache_breakpoint_order(api_params)
 
@@ -1366,7 +1407,7 @@ Please extract the relevant information from this reasoning and format it exactl
         if system_prompt:
             params["system"] = system_prompt
 
-        return self._enforce_cache_breakpoint_order(params)
+        return self._enforce_cache_constraints(params)
 
     def count_tokens(self, content: Union[str, Message, List[Message]]) -> int:
         try:

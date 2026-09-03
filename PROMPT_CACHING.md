@@ -80,6 +80,10 @@ system = SystemMessage([
 ])
 ```
 
+The API allows at most 4 cache breakpoints per request. When more chunks are marked cacheable, patterpunk keeps the last 4 breakpoints and removes the earlier ones with a WARNING — each remaining breakpoint still caches all content before it, so coverage is preserved.
+
+Models without prompt caching support (Claude 3 Sonnet and anything older than Claude 3) reject `cache_control` with a 400. Patterpunk strips the breakpoints on those models and logs a WARNING; the content is sent uncached and the request succeeds.
+
 Docs: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 
 ### Google
