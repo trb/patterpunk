@@ -433,7 +433,7 @@ Every provider rejects a `max_tokens` above the model's output ceiling with a 40
 | Gemini 2.5 and 3.x (all others) | 65536 |
 | Gemini 2.0 and 1.5 | 8192 |
 
-Families without an entry (Llama, Mistral, DeepSeek, gpt-oss, Nova 1 on Bedrock) are sent as-is; the provider error names the limit if one is exceeded. The direct OpenAI and Azure models do not send an output limit at all.
+Families without an entry (Llama, Mistral, DeepSeek, gpt-oss, Nova 1 on Bedrock) start with the value as given. Anthropic, Bedrock and Vertex all name the exact ceiling in their 400, so patterpunk reads it out of the error, lowers `max_tokens` (and a thinking budget that no longer fits), retries once, and remembers the ceiling for that model id for the rest of the process. The failed round trip therefore happens at most once per model id, and a ceiling that a provider raises or lowers later corrects itself the same way. The direct OpenAI and Azure models do not send an output limit at all.
 
 ### Interleaved Thinking (Anthropic)
 

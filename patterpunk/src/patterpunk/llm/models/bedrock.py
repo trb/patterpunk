@@ -58,6 +58,11 @@ from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.messages.roles import ROLE_SYSTEM, ROLE_ASSISTANT, ROLE_USER
 from patterpunk.llm.models.base import Model, TokenCountingError
+from patterpunk.llm.output_limits import (
+    learned_output_limit,
+    parse_output_limit,
+    record_output_limit,
+)
 from patterpunk.llm.thinking import (
     EFFORT_TO_BUDGET,
     ThinkingConfig as UnifiedThinkingConfig,
@@ -665,6 +670,9 @@ class BedrockModel(Model, ABC):
         # 131072, Nova 2 Lite 65535, Claude 4.5 64000, Claude 4.6+ 128000.
         # Claude 3.7 keeps the 131072 ceiling recorded before these checks;
         # the direct Messages API caps that model at 64000.
+        learned = learned_output_limit(self.model_id)
+        if learned is not None:
+            return learned
         if _is_openai_gpt5_model(self.model_id):
             return 131072
         if _is_nova_2_lite_model(self.model_id):
@@ -697,6 +705,27 @@ class BedrockModel(Model, ABC):
             )
             return cap
         return max_tokens
+
+    def _learn_output_limit(self, error: Exception) -> bool:
+        limit = parse_output_limit(str(error))
+        if limit is None:
+            return False
+        record_output_limit(self.model_id, limit)
+        logger.warning(
+            f"[BEDROCK] '{self.model_id}' caps output at {limit} tokens. "
+            f"Lowering maxTokens to {limit} and retrying once; later requests "
+            f"for this model id start from that ceiling."
+        )
+        self._thinking_fields = self._resolve_thinking_fields()
+        return True
+
+    def _call_with_learned_limit(self, call, build_params):
+        try:
+            return call(build_params())
+        except ClientError as error:
+            if not self._learn_output_limit(error):
+                raise
+            return call(build_params())
 
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
@@ -922,55 +951,27 @@ class BedrockModel(Model, ABC):
 
     async def _stream_with_retry(
         self,
-        streaming_client,
-        converse_params: dict,
+        start_stream,
         max_retries: int,
     ) -> AsyncIterator["StreamChunk"]:
-        """
-        Execute streaming request with retry logic for pre-stream API errors.
-
-        Retries on ThrottlingException and ServiceUnavailableException that
-        occur BEFORE streaming begins. Once the EventStream starts yielding
-        events, errors cannot be retried without data loss.
-
-        Uses exponential backoff with jitter (±50%) for consistent behavior
-        across all providers. Minimum delay of 45s respects rate limit windows.
-
-        Note: Mid-stream throttling errors (wrapped in EventStreamError) will
-        propagate to caller as they cannot be safely retried.
-
-        Args:
-            streaming_client: The boto3 bedrock-runtime client for streaming
-            converse_params: Parameters for converse_stream API call
-            max_retries: Maximum number of retry attempts
-
-        Yields:
-            StreamChunk objects from the stream
-
-        Raises:
-            ClientError: If non-retryable error or max retries exceeded
-        """
         retry = 0
 
         while retry <= max_retries:
             try:
-                # Attempt to initiate stream
                 loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: streaming_client.converse_stream(**converse_params),
-                )
+                response = await loop.run_in_executor(None, start_stream)
 
                 stream = response.get("stream")
                 if not stream:
                     raise ValueError("No stream returned from converse_stream")
 
-                # Stream initiated successfully - yield all events
                 async for chunk in self._iterate_stream_events(stream):
                     yield chunk
 
-                return  # Success - exit retry loop
+                return
 
+            # Retries stay confined to stream acquisition. A partially consumed
+            # EventStream cannot be replayed, so a mid-stream error propagates.
             except ClientError as error:
                 error_code = error.response["Error"]["Code"]
 
@@ -1037,13 +1038,14 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        converse_params = self._build_converse_params(
-            messages, tools, structured_output
-        )
+        def build_params():
+            return self._build_converse_params(messages, tools, structured_output)
 
         try:
             response = self._execute_with_retry(
-                lambda: self.client.converse(**converse_params),
+                lambda: self._call_with_learned_limit(
+                    lambda params: self.client.converse(**params), build_params
+                ),
                 "AWS Bedrock converse",
             )
             logger.info("AWS Bedrock response received")
@@ -1381,11 +1383,9 @@ class BedrockModel(Model, ABC):
             f"Model params: {self.model_id}, temp: {self.temperature}, top_p: {self.top_p}, tools: {tools}"
         )
 
-        converse_params = self._build_converse_params(
-            messages, tools, structured_output
-        )
+        def build_params():
+            return self._build_converse_params(messages, tools, structured_output)
 
-        # Get region from existing client for creating streaming client
         region_name = self.client.meta.region_name
 
         # Create a fresh client for this streaming operation
@@ -1397,14 +1397,16 @@ class BedrockModel(Model, ABC):
             sdk_max_attempts=sdk_max_attempts,
         )
 
+        def start_stream():
+            return self._call_with_learned_limit(
+                lambda params: streaming_client.converse_stream(**params), build_params
+            )
+
         if self.retry_config is not None:
 
             async def acquire_stream():
                 loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: streaming_client.converse_stream(**converse_params),
-                )
+                response = await loop.run_in_executor(None, start_stream)
                 stream = response.get("stream")
                 if not stream:
                     raise ValueError("No stream returned from converse_stream")
@@ -1414,12 +1416,7 @@ class BedrockModel(Model, ABC):
                 self.retry_config, acquire_stream, "Bedrock streaming"
             )
         else:
-            # Use retry wrapper for pre-stream errors (ThrottlingException, etc.)
-            chunk_stream = self._stream_with_retry(
-                streaming_client,
-                converse_params,
-                MAX_RETRIES,
-            )
+            chunk_stream = self._stream_with_retry(start_stream, MAX_RETRIES)
 
         async for chunk in chunk_stream:
             yield chunk

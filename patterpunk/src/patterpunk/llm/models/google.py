@@ -63,6 +63,11 @@ from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
+from patterpunk.llm.output_limits import (
+    learned_output_limit,
+    parse_output_limit,
+    record_output_limit,
+)
 from patterpunk.llm.thinking import (
     EFFORT_TO_BUDGET,
     ThinkingConfig,
@@ -173,7 +178,9 @@ def _gemini_output_token_cap(model: str) -> int:
 def _resolve_gemini_max_tokens(model: str, max_tokens: Optional[int]) -> Optional[int]:
     if max_tokens is None:
         return None
-    cap = _gemini_output_token_cap(model)
+    cap = learned_output_limit(model)
+    if cap is None:
+        cap = _gemini_output_token_cap(model)
     if max_tokens <= cap:
         return max_tokens
     logger.warning(
@@ -1072,9 +1079,7 @@ class GoogleModel(Model, ABC):
         if self.retry_config is not None:
             response = run_with_retry_config(
                 self.retry_config,
-                lambda: self.client.models.generate_content(
-                    model=self.model, contents=contents, config=config
-                ),
+                lambda: self._generate_content_with_learned_limit(contents, config),
                 "VertexAI",
             )
             result = self._process_generation_response(response, structured_output)
@@ -1085,9 +1090,7 @@ class GoogleModel(Model, ABC):
 
         while retry_count < MAX_RETRIES:
             try:
-                response = self.client.models.generate_content(
-                    model=self.model, contents=contents, config=config
-                )
+                response = self._generate_content_with_learned_limit(contents, config)
 
                 result = self._process_generation_response(response, structured_output)
                 self._log_response(result)
@@ -1126,6 +1129,57 @@ class GoogleModel(Model, ABC):
         raise GoogleAPIError(
             "Unexpected outcome - out of retries, but neither error raised or message returned"
         )
+
+    def _learn_output_limit(self, error: Exception) -> bool:
+        limit = parse_output_limit(str(error))
+        if limit is None:
+            return False
+        record_output_limit(self.model, limit)
+        logger.warning(
+            f"[GOOGLE] '{self.model}' caps output at {limit} tokens. Lowering "
+            f"max_output_tokens to {limit} and retrying once; later requests "
+            f"for this model start from that ceiling."
+        )
+        if self.max_tokens is None or self.max_tokens > limit:
+            self.max_tokens = limit
+        return True
+
+    def _generate_content_with_learned_limit(self, contents, config):
+        try:
+            return self.client.models.generate_content(
+                model=self.model, contents=contents, config=config
+            )
+        except genai_errors.APIError as error:
+            if not self._learn_output_limit(error):
+                raise
+            return self.client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config.model_copy(update={"max_output_tokens": self.max_tokens}),
+            )
+
+    async def _stream_content_with_learned_limit(self, contents, config):
+        # The SDK raises a max_output_tokens rejection on the first iteration
+        # of the stream, not when the stream is acquired. Retrying after a
+        # chunk was yielded would duplicate output, so the guard stops that.
+        started = False
+        try:
+            stream = await self.client.aio.models.generate_content_stream(
+                model=self.model, contents=contents, config=config
+            )
+            async for chunk in stream:
+                started = True
+                yield chunk
+        except genai_errors.APIError as error:
+            if started or not self._learn_output_limit(error):
+                raise
+            stream = await self.client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=config.model_copy(update={"max_output_tokens": self.max_tokens}),
+            )
+            async for chunk in stream:
+                yield chunk
 
     @staticmethod
     def get_available_models(location: Optional[str] = None) -> List[str]:
@@ -1302,16 +1356,12 @@ class GoogleModel(Model, ABC):
 
         while retry_count < max_retries:
             try:
-                # Create stream and iterate - error surfaces on first iteration if 429
-                stream = await self.client.aio.models.generate_content_stream(
-                    model=self.model, contents=contents, config=config
-                )
-
-                # Yield all events from stream
-                async for chunk in stream:
+                async for chunk in self._stream_content_with_learned_limit(
+                    contents, config
+                ):
                     yield chunk
 
-                return  # Success - exit retry loop
+                return
 
             except genai_errors.APIError as error:
                 if error.code == 429:
@@ -1386,9 +1436,7 @@ class GoogleModel(Model, ABC):
         if self.retry_config is not None:
 
             async def acquire_stream():
-                return await self.client.aio.models.generate_content_stream(
-                    model=self.model, contents=contents, config=config
-                )
+                return self._stream_content_with_learned_limit(contents, config)
 
             chunk_stream = stream_with_retry_config(
                 self.retry_config, acquire_stream, "VertexAI"

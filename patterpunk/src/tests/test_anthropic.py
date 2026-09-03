@@ -1557,6 +1557,49 @@ def test_opus_4_7_no_thinking_block_when_thinking_config_absent():
     assert "output_config" not in api_params
 
 
+def test_unknown_output_limit_is_learned_from_the_error_and_retried(
+    monkeypatch, caplog
+):
+    import anthropic as anthropic_sdk
+    import httpx2
+
+    from patterpunk.llm.models import anthropic as anthropic_mod
+    from patterpunk.llm.output_limits import forget_output_limits, learned_output_limit
+
+    forget_output_limits()
+    monkeypatch.setattr(
+        anthropic_mod, "resolve_max_output_tokens", lambda version, model_id: 10**9
+    )
+    sent = []
+
+    def create(**kwargs):
+        sent.append(kwargs["max_tokens"])
+        if len(sent) == 1:
+            response = httpx2.Response(
+                400,
+                request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"),
+            )
+            raise anthropic_sdk.BadRequestError(
+                "Error code: 400 - {'type': 'error', 'error': {'message': "
+                "'max_tokens: 200000 > 128000, which is the maximum allowed number "
+                "of output tokens for claude-sonnet-5'}}",
+                response=response,
+                body=None,
+            )
+        return _make_fake_anthropic_response("ok")
+
+    monkeypatch.setattr(anthropic_mod.anthropic.messages, "create", create)
+
+    model = AnthropicModel(model="claude-sonnet-5", max_tokens=200000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        result = Chat(model=model).add_message(UserMessage("hi")).complete()
+    assert result.latest_message.content == "ok"
+    assert sent == [200000, 128000]
+    assert any("caps output at 128000 tokens" in r.message for r in caplog.records)
+    assert learned_output_limit("claude-sonnet-5") == 128000
+    forget_output_limits()
+
+
 def test_sonnet_5_max_tokens_capped_to_128000(caplog):
     model = AnthropicModel(model="claude-sonnet-5", max_tokens=200000)
     with caplog.at_level("WARNING", logger="patterpunk"):

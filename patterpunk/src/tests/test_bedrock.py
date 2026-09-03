@@ -1,11 +1,13 @@
 import json
 import re
+from unittest.mock import Mock
 
 import pytest
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
 from patterpunk.llm.models.bedrock import BedrockModel
+from patterpunk.llm.output_limits import forget_output_limits, learned_output_limit
 from patterpunk.llm.chat.core import Chat
 from patterpunk.llm.finish_reason import FinishReason
 from patterpunk.llm.messages.system import SystemMessage
@@ -1191,6 +1193,82 @@ def test_max_tokens_unknown_family_is_not_capped():
         model_id="mistral.mistral-large-2402-v1:0", max_tokens=100000
     )
     assert bedrock._build_inference_config()["maxTokens"] == 100000
+
+
+def _validation_error(message):
+    return ClientError(
+        {"Error": {"Code": "ValidationException", "Message": message}}, "Converse"
+    )
+
+
+def _limit_error(limit):
+    return _validation_error(
+        f"The maximum tokens you requested exceeds the model limit of {limit}. "
+        f"Try again with a maximum tokens value that is lower than {limit}."
+    )
+
+
+def _converse_response(text="ok"):
+    return {
+        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+        "stopReason": "end_turn",
+    }
+
+
+@pytest.fixture
+def fresh_output_limits():
+    forget_output_limits()
+    yield
+    forget_output_limits()
+
+
+def test_unknown_output_limit_is_learned_from_the_error_and_retried(
+    fresh_output_limits, caplog
+):
+    bedrock = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = [_limit_error(2048), _converse_response()]
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        message = bedrock.generate_assistant_message([UserMessage("hi")])
+    assert message.content == "ok"
+    sent = [
+        call.kwargs["inferenceConfig"]["maxTokens"]
+        for call in bedrock.client.converse.call_args_list
+    ]
+    assert sent == [100000, 2048]
+    assert any("caps output at 2048 tokens" in m for m in warning_messages(caplog))
+    assert learned_output_limit("meta.llama3-70b-instruct-v1:0") == 2048
+
+    later = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    assert later._build_inference_config()["maxTokens"] == 2048
+
+
+def test_learned_limit_lowers_a_thinking_budget_on_retry(fresh_output_limits):
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        thinking_config=ThinkingConfig(token_budget=100000),
+    )
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = [_limit_error(64000), _converse_response()]
+    bedrock.generate_assistant_message([UserMessage("hi")])
+    retried = bedrock.client.converse.call_args_list[1].kwargs
+    assert retried["inferenceConfig"]["maxTokens"] == 64000
+    assert retried["additionalModelRequestFields"]["reasoning_config"] == {
+        "type": "enabled",
+        "budget_tokens": 62000,
+    }
+
+
+def test_other_validation_errors_are_not_retried(fresh_output_limits):
+    bedrock = BedrockModel(model_id="meta.llama3-70b-instruct-v1:0", max_tokens=100000)
+    bedrock.client = Mock()
+    bedrock.client.converse.side_effect = _validation_error(
+        "The provided model identifier is invalid."
+    )
+    with pytest.raises(ClientError):
+        bedrock.generate_assistant_message([UserMessage("hi")])
+    assert bedrock.client.converse.call_count == 1
+    assert learned_output_limit("meta.llama3-70b-instruct-v1:0") is None
 
 
 def test_thinking_budget_lowered_to_fit_under_output_limit(caplog):
