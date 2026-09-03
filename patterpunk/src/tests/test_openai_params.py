@@ -117,3 +117,18 @@ def test_reasoning_effort_clamped_per_model(
     assert params["reasoning"]["effort"] == expected
     clamp_warnings = [r for r in caplog.records if "Clamping to 'high'" in r.message]
     assert bool(clamp_warnings) is should_warn
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("gpt-5.6-luna", "none"),
+        ("gpt-5.1", "none"),
+        ("gpt-5", "low"),
+        ("o3-mini", "low"),
+    ],
+)
+def test_token_budget_zero_maps_to_none_where_supported(model_id, expected):
+    model = make_model(model=model_id, thinking_config=ThinkingConfig(token_budget=0))
+    params = setup_params(model)
+    assert params["reasoning"]["effort"] == expected
