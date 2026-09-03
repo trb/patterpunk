@@ -2313,9 +2313,7 @@ def test_token_budget_below_api_minimum_raised_to_1024(caplog):
             thinking_config=ThinkingConfig(token_budget=500),
         )
     assert model.thinking.budget_tokens == 1024
-    assert any(
-        "Raising token_budget=500 to 1024" in r.message for r in caplog.records
-    )
+    assert any("Raising token_budget=500 to 1024" in r.message for r in caplog.records)
 
 
 def test_legacy_thinking_budget_below_max_tokens_untouched():
@@ -2514,12 +2512,11 @@ def test_cache_breakpoint_upgrade_counts_all_earlier_breakpoints(caplog):
     )
     assert any("Upgraded 2 earlier" in r.message for r in caplog.records)
 
+
 def test_cache_breakpoints_trimmed_to_api_limit_of_four(caplog):
     model = AnthropicModel(model="claude-haiku-4-5-20251001")
     messages = [
-        UserMessage(
-            [CacheChunk(f"section {i}", cacheable=True) for i in range(6)]
-        ),
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(6)]),
     ]
     with caplog.at_level("WARNING", logger="patterpunk"):
         api_params = model._build_base_api_parameters(messages, None)
@@ -2533,9 +2530,7 @@ def test_cache_breakpoints_trimmed_to_api_limit_of_four(caplog):
 def test_cache_breakpoints_at_limit_untouched(caplog):
     model = AnthropicModel(model="claude-haiku-4-5-20251001")
     messages = [
-        UserMessage(
-            [CacheChunk(f"section {i}", cacheable=True) for i in range(4)]
-        ),
+        UserMessage([CacheChunk(f"section {i}", cacheable=True) for i in range(4)]),
     ]
     with caplog.at_level("WARNING", logger="patterpunk"):
         api_params = model._build_base_api_parameters(messages, None)
@@ -2555,9 +2550,7 @@ def test_cache_stripped_on_models_without_prompt_caching(caplog):
         api_params = model._build_base_api_parameters(messages, system_prompt)
     assert "cache_control" not in api_params["system"][0]
     assert "cache_control" not in api_params["messages"][0]["content"][0]
-    assert any(
-        "does not support prompt caching" in r.message for r in caplog.records
-    )
+    assert any("does not support prompt caching" in r.message for r in caplog.records)
 
 
 def test_cache_kept_on_claude_3_haiku(caplog):

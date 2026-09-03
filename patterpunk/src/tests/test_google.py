@@ -554,9 +554,7 @@ def test_gemini_3_coerces_token_budget_to_level(caplog):
         )
     assert model.thinking_level == "high"
     assert model.thinking_budget is None
-    assert any(
-        "Coercing token_budget=8000" in r.message for r in caplog.records
-    )
+    assert any("Coercing token_budget=8000" in r.message for r in caplog.records)
 
 
 def test_unknown_gemini_id_gets_thinking_level():
@@ -579,7 +577,8 @@ def test_gemini_25_pro_budget_floor(caplog):
 def test_gemini_25_flash_lite_budget_floor(caplog):
     with caplog.at_level("WARNING", logger="patterpunk"):
         model = make_stub_model(
-            model="gemini-2.5-flash-lite", thinking_config=ThinkingConfig(token_budget=100)
+            model="gemini-2.5-flash-lite",
+            thinking_config=ThinkingConfig(token_budget=100),
         )
     assert model.thinking_budget == 512
     assert any("Raising token_budget=100 to 512" in r.message for r in caplog.records)

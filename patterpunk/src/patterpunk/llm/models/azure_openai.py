@@ -127,9 +127,7 @@ class AzureOpenAiModel(OpenAiModel, ABC):
                 logger.info("Azure OpenAI Responses API response received")
                 done = True
             except APIError as error:
-                if _strip_reasoning_summary_if_unverified(
-                    error, responses_parameters
-                ):
+                if _strip_reasoning_summary_if_unverified(error, responses_parameters):
                     retry_count += 1
                     continue
 
