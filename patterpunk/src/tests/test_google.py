@@ -8,6 +8,7 @@ from patterpunk.llm.messages.system import SystemMessage
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.user import UserMessage
 from patterpunk.llm.models.google import GoogleModel
+from patterpunk.llm.thinking import ThinkingConfig
 from patterpunk.llm.chunks import CacheChunk, MultimodalChunk, TextChunk
 from tests.test_utils import get_resource
 
@@ -167,8 +168,6 @@ def test_simple_tool_calling():
 
 
 def test_thinking_mode_fixed_budget():
-    from patterpunk.llm.thinking import ThinkingConfig
-
     model = GoogleModel(
         model="gemini-2.5-flash",
         location="us-central1",
@@ -520,3 +519,76 @@ def test_unknown_gemini_id_gets_newest_family_rules(caplog):
         config = model._build_generation_config(None, None, None, None)
     assert config.temperature is None
     assert any("temperature=0.3" in r.message for r in caplog.records)
+
+
+def test_thinking_config_dropped_below_gemini_25(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-2.0-flash",
+            thinking_config=ThinkingConfig(token_budget=4000, include_thoughts=True),
+        )
+    assert model.thinking_budget is None
+    assert model.thinking_level is None
+    config = model._build_generation_config(None, None, None, None)
+    assert config.thinking_config is None
+    assert any("does not support thinking" in r.message for r in caplog.records)
+
+
+def test_gemini_3_gets_thinking_level_from_effort(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-3.8-flash", thinking_config=ThinkingConfig(effort="medium")
+        )
+    assert model.thinking_level == "medium"
+    assert model.thinking_budget is None
+    config = model._build_generation_config(None, None, None, None)
+    assert config.thinking_config.thinking_level.value == "MEDIUM"
+    assert config.thinking_config.thinking_budget is None
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_gemini_3_coerces_token_budget_to_level(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-3.8-pro", thinking_config=ThinkingConfig(token_budget=8000)
+        )
+    assert model.thinking_level == "high"
+    assert model.thinking_budget is None
+    assert any(
+        "Coercing token_budget=8000" in r.message for r in caplog.records
+    )
+
+
+def test_unknown_gemini_id_gets_thinking_level():
+    model = make_stub_model(
+        model="gemini-next", thinking_config=ThinkingConfig(effort="low")
+    )
+    assert model.thinking_level == "low"
+    assert model.thinking_budget is None
+
+
+def test_gemini_25_pro_budget_floor(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-2.5-pro", thinking_config=ThinkingConfig(token_budget=0)
+        )
+    assert model.thinking_budget == 128
+    assert any("at least 128" in r.message for r in caplog.records)
+
+
+def test_gemini_25_flash_lite_budget_floor(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-2.5-flash-lite", thinking_config=ThinkingConfig(token_budget=100)
+        )
+    assert model.thinking_budget == 512
+    assert any("Raising token_budget=100 to 512" in r.message for r in caplog.records)
+
+
+def test_gemini_25_flash_budget_zero_disables_thinking(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(
+            model="gemini-2.5-flash", thinking_config=ThinkingConfig(token_budget=0)
+        )
+    assert model.thinking_budget == 0
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
