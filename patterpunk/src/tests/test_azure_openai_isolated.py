@@ -310,3 +310,53 @@ def test_azure_reasoning_model_classification():
         assert (
             AzureOpenAiModel._is_reasoning_model(None, deployment_name) is expected
         ), deployment_name
+
+
+def test_azure_reasoning_summary_fallback_keeps_reasoning_effort():
+    """The org-not-verified retry must not re-add temperature/top_p: reasoning
+    models reject sampling params with a 400, which is never retried."""
+    import httpx
+    from openai import APIError
+
+    model = object.__new__(AzureOpenAiModel)
+    model.model = "o3-mini"
+    model.retry_config = None
+    model.temperature = 0.7
+    model.top_p = 0.9
+
+    request = httpx.Request("POST", "https://example.invalid/responses")
+    error = APIError(
+        "Organization must be verified to use reasoning.summary",
+        request,
+        body=None,
+    )
+
+    class StubResponses:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **params):
+            self.calls.append(dict(params))
+            if len(self.calls) == 1:
+                raise error
+            return "ok"
+
+    class StubClient:
+        def __init__(self):
+            self.responses = StubResponses()
+
+    stub = StubClient()
+    model._azure_reasoning_client = stub
+
+    params = {
+        "model": "o3-mini",
+        "input": [],
+        "reasoning": {"effort": "high", "summary": "auto"},
+    }
+    result = model._execute_with_retry(params)
+
+    assert result == "ok"
+    second_call = stub.responses.calls[1]
+    assert second_call["reasoning"] == {"effort": "high"}
+    assert "temperature" not in second_call
+    assert "top_p" not in second_call
