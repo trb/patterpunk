@@ -135,14 +135,10 @@ async def test_parallel_tool_calls_close_on_index_switch():
         model,
         [
             delta_chunk(
-                tool_calls=[
-                    tool_frame(0, call_id="call_1", name="a", arguments="{}")
-                ]
+                tool_calls=[tool_frame(0, call_id="call_1", name="a", arguments="{}")]
             ),
             delta_chunk(
-                tool_calls=[
-                    tool_frame(1, call_id="call_2", name="b", arguments="{}")
-                ]
+                tool_calls=[tool_frame(1, call_id="call_2", name="b", arguments="{}")]
             ),
             delta_chunk(finish_reason="tool_calls"),
         ],

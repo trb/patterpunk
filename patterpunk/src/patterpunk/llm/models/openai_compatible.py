@@ -314,7 +314,9 @@ class OpenAiCompatibleModel(Model, ABC):
             f"'{self.model}'; retrying with prompt-based structured output."
         )
         schema = params["response_format"]["json_schema"]["schema"]
-        fallback = {key: value for key, value in params.items() if key != "response_format"}
+        fallback = {
+            key: value for key, value in params.items() if key != "response_format"
+        }
         instruction = f"{GENERATE_STRUCTURED_OUTPUT_PROMPT}{schema}"
         fallback_messages = list(fallback["messages"])
         last = fallback_messages[-1] if fallback_messages else None
@@ -519,8 +521,7 @@ class OpenAiCompatibleModel(Model, ABC):
             if chunk_usage is not None:
                 usage = {
                     "input_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
-                    "output_tokens": getattr(chunk_usage, "completion_tokens", 0)
-                    or 0,
+                    "output_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
                 }
 
             if not chunk.choices:
@@ -546,9 +547,7 @@ class OpenAiCompatibleModel(Model, ABC):
 
                 if delta.content:
                     if thinking_block_open:
-                        yield StreamChunk(
-                            event_type=StreamEventType.CONTENT_BLOCK_STOP
-                        )
+                        yield StreamChunk(event_type=StreamEventType.CONTENT_BLOCK_STOP)
                         thinking_block_open = False
                     if not text_block_open:
                         yield StreamChunk(

@@ -14,9 +14,7 @@ def test_vertex_at_date_id_parses_to_45_capabilities():
 
 
 def test_vertex_bare_opus_5_uses_adaptive_request_shape():
-    model = make_model(
-        "claude-opus-5", thinking_config=ThinkingConfig(effort="high")
-    )
+    model = make_model("claude-opus-5", thinking_config=ThinkingConfig(effort="high"))
     assert model._parse_model_version() == (5, 0)
     api_params = model._build_base_api_parameters([], None)
     api_params = model._apply_thinking_configuration(api_params)

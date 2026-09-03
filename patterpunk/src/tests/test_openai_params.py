@@ -95,6 +95,4 @@ def test_chat_variant_with_thinking_config_warns_ignored(caplog):
     with caplog.at_level("WARNING", logger="patterpunk"):
         params = setup_params(model)
     assert "reasoning" not in params
-    assert any(
-        "ignoring thinking_config" in r.message for r in caplog.records
-    )
+    assert any("ignoring thinking_config" in r.message for r in caplog.records)

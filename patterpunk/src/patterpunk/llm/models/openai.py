@@ -594,7 +594,12 @@ class OpenAiModel(Model, ABC):
 
         if self._is_reasoning_model(model):
             self._warn_dropped_sampling_params(
-                model, temperature, top_p, frequency_penalty, presence_penalty, logit_bias
+                model,
+                temperature,
+                top_p,
+                frequency_penalty,
+                presence_penalty,
+                logit_bias,
             )
             model_params["reasoning"] = {
                 "effort": reasoning_effort.name.lower(),

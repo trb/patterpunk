@@ -240,9 +240,7 @@ def test_reasoning_content_becomes_thinking_block():
         content="the answer", tool_calls=None, reasoning_content="let me think"
     )
     result = model._process_response(fake_response(message), None)
-    assert result.thinking_blocks == [
-        {"type": "thinking", "thinking": "let me think"}
-    ]
+    assert result.thinking_blocks == [{"type": "thinking", "thinking": "let me think"}]
 
 
 def test_deepcopy_round_trip():

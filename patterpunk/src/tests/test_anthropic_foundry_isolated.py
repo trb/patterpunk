@@ -124,9 +124,7 @@ def test_unparseable_deployment_name_gets_newest_family_rules(foundry_env, caplo
         assert model._parse_model_version() == (5, 0)
         api_params = model._build_base_api_parameters([], None)
     assert "temperature" not in api_params
-    assert any(
-        "Cannot detect a Claude version" in r.message for r in caplog.records
-    )
+    assert any("Cannot detect a Claude version" in r.message for r in caplog.records)
 
 
 def test_structured_output_formatter_reuses_deployment(foundry_env):
