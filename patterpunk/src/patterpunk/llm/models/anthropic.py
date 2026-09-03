@@ -55,6 +55,7 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
 )
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
@@ -612,14 +613,30 @@ Please extract the relevant information from this reasoning and format it exactl
                 f"Use prompting to guide model behavior instead."
             )
 
+    def _adaptive_thinking_params(self) -> dict:
+        if self.thinking_config.token_budget == 0:
+            if thinking_cannot_be_disabled(self._capability_model_id()):
+                logger.warning(
+                    f"[ANTHROPIC] '{self.model}' cannot turn thinking off and "
+                    f"rejects thinking type 'disabled'. Ignoring token_budget=0; "
+                    f"the model runs adaptive thinking at its default effort. Pass "
+                    f"ThinkingConfig(effort='low') to keep thinking short instead."
+                )
+                return {}
+            return {"thinking": {"type": "disabled"}}
+
+        thinking_block = {"type": "adaptive"}
+        if self.thinking_config.include_thoughts:
+            thinking_block["display"] = "summarized"
+        return {
+            "thinking": thinking_block,
+            "output_config": {"effort": self._resolve_effort()},
+        }
+
     def _apply_thinking_configuration(self, api_params: dict) -> dict:
         if self._uses_adaptive_thinking_api():
             if self.thinking_config is not None:
-                thinking_block = {"type": "adaptive"}
-                if self.thinking_config.include_thoughts:
-                    thinking_block["display"] = "summarized"
-                api_params["thinking"] = thinking_block
-                api_params["output_config"] = {"effort": self._resolve_effort()}
+                api_params.update(self._adaptive_thinking_params())
             api_params = self._get_compatible_params(api_params)
             return self._adapt_output_token_limits(api_params)
 

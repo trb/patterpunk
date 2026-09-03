@@ -864,13 +864,61 @@ def test_claude_5_budget_coerced_to_adaptive_effort(caplog):
     )
 
 
-def test_claude_5_budget_zero_sends_no_thinking_fields_and_no_max_tokens():
+def test_claude_5_budget_zero_sends_disabled_thinking_and_no_max_tokens(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-sonnet-5",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+    assert bedrock._get_thinking_params() == {"reasoning_config": {"type": "disabled"}}
+    assert bedrock._build_inference_config() == {}
+    assert warning_messages(caplog) == []
+
+
+def test_claude_46_budget_zero_sends_disabled_thinking_and_keeps_temperature():
     bedrock = BedrockModel(
-        model_id="us.anthropic.claude-sonnet-5",
+        model_id="us.anthropic.claude-sonnet-4-6",
+        temperature=0.25,
         thinking_config=ThinkingConfig(token_budget=0),
     )
+    assert bedrock._get_thinking_params() == {"reasoning_config": {"type": "disabled"}}
+    assert bedrock._build_inference_config() == {"temperature": 0.25}
+
+
+def test_fable_budget_zero_sends_nothing_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-fable-5-1",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
     assert bedrock._get_thinking_params() == {}
-    assert bedrock._build_inference_config() == {}
+    assert any("cannot turn thinking off" in m for m in warning_messages(caplog))
+
+
+def test_claude_5_include_thoughts_requests_summarized_display():
+    bedrock = BedrockModel(
+        model_id="us.anthropic.claude-opus-5",
+        thinking_config=ThinkingConfig(effort="high", include_thoughts=True),
+    )
+    assert bedrock._get_thinking_params() == {
+        "reasoning_config": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": "high"},
+    }
+
+
+def test_opus_46_v1_id_keeps_temperature_and_clamps_xhigh(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-opus-4-6-v1",
+            temperature=0.25,
+            thinking_config=ThinkingConfig(effort="xhigh"),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params()["output_config"] == {"effort": "high"}
+    assert config == {"temperature": 1.0}
+    assert not any(
+        "Unrecognised Claude model id" in m for m in warning_messages(caplog)
+    )
 
 
 def test_claude_5_adaptive_thinking_does_not_force_max_tokens():

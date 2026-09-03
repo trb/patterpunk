@@ -45,6 +45,7 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
 )
 
 if boto3:
@@ -132,13 +133,6 @@ def _is_nova_2_lite_model(model_id: str) -> bool:
     return "amazon.nova-2-lite" in model_id.lower()
 
 
-def _adaptive_thinking_fields(effort: str) -> dict:
-    return {
-        "reasoning_config": {"type": "adaptive"},
-        "output_config": {"effort": effort},
-    }
-
-
 class BedrockModel(Model, ABC):
     # Class-level tokenizer cache to avoid expensive reloads on each count_tokens() call
     # Loading HuggingFace tokenizers involves network calls and file parsing
@@ -222,10 +216,9 @@ class BedrockModel(Model, ABC):
                 return {"reasoning": {"effort": "none"}}
             return {"reasoning": {"effort": self._resolve_effort(_EFFORT_LEVELS_ALL)}}
 
-        if config.token_budget == 0:
-            return {}
-
         if _is_nova_2_lite_model(self.model_id):
+            if config.token_budget == 0:
+                return {}
             return {
                 "reasoningConfig": {
                     "type": "enabled",
@@ -234,19 +227,46 @@ class BedrockModel(Model, ABC):
             }
 
         version = parse_claude_version(self.model_id)
-        if version.at_least(4, 7):
-            return _adaptive_thinking_fields(self._resolve_effort(_EFFORT_LEVELS_ALL))
-        if version.at_least(4, 6):
-            # Sonnet 4.6 still accepts the enabled-with-budget shape, but
-            # Anthropic deprecated it there, so 4.6 goes adaptive as well.
-            return _adaptive_thinking_fields(
-                self._resolve_effort(_EFFORT_LEVELS_CLAUDE_4_6)
-            )
-        return {
-            "reasoning_config": {
-                "type": "enabled",
-                "budget_tokens": self._resolve_thinking_budget(),
+        if not version.at_least(4, 6):
+            if config.token_budget == 0:
+                return {}
+            return {
+                "reasoning_config": {
+                    "type": "enabled",
+                    "budget_tokens": self._resolve_thinking_budget(),
+                }
             }
+
+        if config.token_budget == 0:
+            return self._disabled_thinking_fields()
+        # Sonnet 4.6 still accepts the enabled-with-budget shape, but
+        # Anthropic deprecated it there, so 4.6 goes adaptive as well.
+        if version.at_least(4, 7):
+            return self._adaptive_thinking_fields(_EFFORT_LEVELS_ALL)
+        return self._adaptive_thinking_fields(_EFFORT_LEVELS_CLAUDE_4_6)
+
+    def _disabled_thinking_fields(self) -> dict:
+        # Sonnet 5 and Opus 5 think by default, so omitting the field leaves
+        # thinking on. Only an explicit "disabled" turns it off.
+        if thinking_cannot_be_disabled(self.model_id):
+            logger.warning(
+                f"[BEDROCK] '{self.model_id}' cannot turn thinking off and "
+                f"rejects thinking type 'disabled'. Ignoring token_budget=0; the "
+                f"model runs adaptive thinking at its default effort. Pass "
+                f"ThinkingConfig(effort='low') to keep thinking short instead."
+            )
+            return {}
+        return {"reasoning_config": {"type": "disabled"}}
+
+    def _adaptive_thinking_fields(self, accepted_levels: Tuple[str, ...]) -> dict:
+        reasoning_config = {"type": "adaptive"}
+        if self.thinking_config.include_thoughts:
+            # Claude 4.7+ defaults display to "omitted" and returns empty
+            # reasoning text unless the request asks for the summary.
+            reasoning_config["display"] = "summarized"
+        return {
+            "reasoning_config": reasoning_config,
+            "output_config": {"effort": self._resolve_effort(accepted_levels)},
         }
 
     def _resolve_effort(self, accepted_levels: Tuple[str, ...]) -> str:
@@ -549,9 +569,10 @@ class BedrockModel(Model, ABC):
                 f"Treating it as a Claude 5 model."
             )
 
+        reasoning_type = self._thinking_fields.get("reasoning_config", {}).get("type")
         resolution = resolve_claude_sampling(
             version,
-            thinking_enabled=bool(self._get_thinking_params()),
+            thinking_enabled=reasoning_type in ("enabled", "adaptive"),
             requested=SamplingParams(temperature=self.temperature, top_p=self.top_p),
             defaults=SamplingParams(temperature=DEFAULT_TEMPERATURE),
         )

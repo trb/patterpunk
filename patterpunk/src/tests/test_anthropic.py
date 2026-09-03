@@ -1550,12 +1550,37 @@ def test_opus_4_7_adaptive_thinking_shape():
 
 
 def test_opus_4_7_no_thinking_block_when_thinking_config_absent():
-    """If the user did not pass thinking_config, skip the thinking and output_config fields entirely."""
     model = AnthropicModel(model="claude-opus-4-7")
     api_params = model._build_base_api_parameters([], None)
     api_params = model._apply_thinking_configuration(api_params)
     assert "thinking" not in api_params
     assert "output_config" not in api_params
+
+
+def test_opus_4_7_token_budget_zero_sends_disabled_thinking(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-opus-4-7",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+        api_params = model._build_base_api_parameters([], None)
+        api_params = model._apply_thinking_configuration(api_params)
+    assert api_params["thinking"] == {"type": "disabled"}
+    assert "output_config" not in api_params
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_fable_token_budget_zero_omits_thinking_with_warning(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-fable-5-1",
+            thinking_config=ThinkingConfig(token_budget=0),
+        )
+        api_params = model._build_base_api_parameters([], None)
+        api_params = model._apply_thinking_configuration(api_params)
+    assert "thinking" not in api_params
+    assert "output_config" not in api_params
+    assert any("cannot turn thinking off" in r.message for r in caplog.records)
 
 
 def test_opus_4_7_display_summarized_when_include_thoughts():
