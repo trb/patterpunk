@@ -94,7 +94,6 @@ def test_anthropic_opus_4_7_accepts_max():
 
 
 def test_openai_passes_xhigh_through(caplog):
-    """GPT-5.x accepts xhigh/max; patterpunk no longer clamps them to high."""
     config = ThinkingConfig(effort="xhigh")
     with caplog.at_level("WARNING", logger="patterpunk"):
         model = OpenAiModel(model="gpt-5.6-terra", thinking_config=config)

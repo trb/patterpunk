@@ -96,3 +96,24 @@ def test_chat_variant_with_thinking_config_warns_ignored(caplog):
         params = setup_params(model)
     assert "reasoning" not in params
     assert any("ignoring thinking_config" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "model_id,requested,expected,should_warn",
+    [
+        ("gpt-5.6-terra", "xhigh", "xhigh", False),
+        ("gpt-5.6", "max", "max", False),
+        ("gpt-5.2", "xhigh", "high", True),
+        ("gpt-5", "max", "high", True),
+        ("o3-mini", "xhigh", "high", True),
+    ],
+)
+def test_reasoning_effort_clamped_per_model(
+    model_id, requested, expected, should_warn, caplog
+):
+    model = make_model(model=model_id, thinking_config=ThinkingConfig(effort=requested))
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = setup_params(model)
+    assert params["reasoning"]["effort"] == expected
+    clamp_warnings = [r for r in caplog.records if "Clamping to 'high'" in r.message]
+    assert bool(clamp_warnings) is should_warn

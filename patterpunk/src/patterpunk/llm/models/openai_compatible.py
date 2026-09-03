@@ -1,4 +1,5 @@
 import random
+import re
 import time
 from abc import ABC
 from typing import AsyncIterator, Callable, Dict, List, Optional, Set, Union
@@ -67,6 +68,9 @@ def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
 
 def _generate_call_id(name: Optional[str]) -> str:
     return f"call_{name or 'tool'}_{random.randint(1000, 9999)}"
+
+
+_GPT_VERSION_RE = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
 
 
 class OpenAiCompatibleModel(Model, ABC):
@@ -159,15 +163,38 @@ class OpenAiCompatibleModel(Model, ABC):
             return False
         return model.startswith(("o1", "o3", "o4", "gpt-5"))
 
+    def _supports_extended_reasoning_effort(self) -> bool:
+        match = _GPT_VERSION_RE.match(self.model.lower())
+        if not match:
+            return False
+        major = int(match.group(1))
+        minor = int(match.group(2) or 0)
+        return (major, minor) >= (5, 6)
+
     def _resolve_reasoning_effort(self) -> str:
         if self.thinking_config.effort is not None:
-            return self.thinking_config.effort
-        budget = self.thinking_config.token_budget or 0
-        if budget <= 4000:
-            return "low"
-        if budget <= 12000:
-            return "medium"
-        return "high"
+            effort = self.thinking_config.effort
+        else:
+            budget = self.thinking_config.token_budget or 0
+            if budget <= 4000:
+                effort = "low"
+            elif budget <= 12000:
+                effort = "medium"
+            else:
+                effort = "high"
+
+        # GPT-5.6+ accepts xhigh/max; older reasoning models reject them
+        # with a 400. Clamping with a warning keeps model switching working.
+        if (
+            effort in ("xhigh", "max")
+            and not self._supports_extended_reasoning_effort()
+        ):
+            logger.warning(
+                f"[OPENAI_COMPATIBLE] effort='{effort}' requires GPT-5.6+; "
+                f"'{self.model}' accepts only low/medium/high. Clamping to 'high'."
+            )
+            effort = "high"
+        return effort
 
     def _convert_content(self, content) -> Union[str, List[dict]]:
         if isinstance(content, str):

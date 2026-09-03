@@ -256,3 +256,21 @@ def test_deepcopy_round_trip():
     assert clone.base_url == model.base_url
     assert clone.temperature == 0.3
     assert clone.api_key_provider is provider
+
+
+def test_compat_reasoning_effort_clamped_below_gpt_56(caplog):
+    model = make_model(model="gpt-5.2", thinking_config=ThinkingConfig(effort="xhigh"))
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = model._build_request_params([UserMessage("hi")], None, None)
+    assert params["reasoning_effort"] == "high"
+    assert any("Clamping to 'high'" in r.message for r in caplog.records)
+
+
+def test_compat_reasoning_effort_passes_through_on_gpt_56(caplog):
+    model = make_model(
+        model="gpt-5.6-terra", thinking_config=ThinkingConfig(effort="xhigh")
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = model._build_request_params([UserMessage("hi")], None, None)
+    assert params["reasoning_effort"] == "xhigh"
+    assert not any("Clamping to 'high'" in r.message for r in caplog.records)

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import enum
 import math
+import re
 import time
 from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Union
@@ -109,6 +110,10 @@ class OpenAiReasoningEffort(enum.Enum):
     MAX = enum.auto()
 
 
+_EXTENDED_EFFORT_LEVELS = {OpenAiReasoningEffort.XHIGH, OpenAiReasoningEffort.MAX}
+_GPT_VERSION_RE = re.compile(r"gpt-(\d+)(?:\.(\d+))?")
+
+
 def _strip_reasoning_summary_if_unverified(
     error: Exception, responses_parameters: dict
 ) -> bool:
@@ -188,10 +193,6 @@ class OpenAiModel(Model, ABC):
         reasoning_effort = OpenAiReasoningEffort.LOW
         if thinking_config is not None:
             if thinking_config.effort is not None:
-                # GPT-5.6 accepts none/low/medium/high/xhigh/max. Older reasoning models
-                # reject the upper levels with a 400, which is preferable to silently
-                # downgrading the caller's request.
-                # https://developers.openai.com/api/docs/guides/reasoning
                 reasoning_effort = OpenAiReasoningEffort[thinking_config.effort.upper()]
             else:
                 if thinking_config.token_budget == 0:
@@ -580,6 +581,34 @@ class OpenAiModel(Model, ABC):
                 f"Use ThinkingConfig(effort=...) to control output instead."
             )
 
+    def _supports_extended_reasoning_effort(self, model: str) -> bool:
+        match = _GPT_VERSION_RE.match(model.lower())
+        if not match:
+            return False
+        major = int(match.group(1))
+        minor = int(match.group(2) or 0)
+        return (major, minor) >= (5, 6)
+
+    def _clamp_reasoning_effort(
+        self, model: str, reasoning_effort: OpenAiReasoningEffort
+    ) -> str:
+        # GPT-5.6+ accepts none/low/medium/high/xhigh/max; older reasoning
+        # models reject the upper two levels with a 400. Clamping with a
+        # warning keeps transparent model switching from failing requests.
+        # https://developers.openai.com/api/docs/guides/reasoning
+        needs_clamp = (
+            reasoning_effort in _EXTENDED_EFFORT_LEVELS
+            and not self._supports_extended_reasoning_effort(model)
+        )
+        if needs_clamp:
+            logger.warning(
+                f"[{self.get_name().upper()}] effort='{reasoning_effort.name.lower()}' "
+                f"requires GPT-5.6+; '{model}' accepts only low/medium/high. "
+                f"Clamping to 'high'."
+            )
+            return OpenAiReasoningEffort.HIGH.name.lower()
+        return reasoning_effort.name.lower()
+
     def _setup_model_parameters(
         self,
         model: str,
@@ -602,7 +631,7 @@ class OpenAiModel(Model, ABC):
                 logit_bias,
             )
             model_params["reasoning"] = {
-                "effort": reasoning_effort.name.lower(),
+                "effort": self._clamp_reasoning_effort(model, reasoning_effort),
                 "summary": "auto",
             }
         else:
