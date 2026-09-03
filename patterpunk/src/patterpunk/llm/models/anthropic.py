@@ -53,6 +53,7 @@ from patterpunk.llm.models.claude_capabilities import (
     SamplingParams,
     parse_claude_version,
     resolve_claude_sampling,
+    resolve_max_output_tokens,
 )
 from patterpunk.llm.thinking import ThinkingConfig as UnifiedThinkingConfig
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
@@ -188,35 +189,32 @@ class AnthropicModel(Model, ABC):
         self.thinking_config = thinking_config
         self.retry_config = retry_config
 
-        # self.thinking is the legacy {type, budget_tokens} payload sent to pre-Opus-4.7
-        # models. None means "not applicable" — either because the user didn't enable
-        # thinking, or because the model uses the adaptive API (Opus 4.7+) which reads
-        # self.thinking_config directly via _resolve_effort().
         self.thinking = None
         if thinking_config is not None and not self._uses_adaptive_thinking_api():
-            self.thinking = self._build_legacy_thinking(thinking_config)
-            self._validate_legacy_thinking_budget()
-
-    def _validate_legacy_thinking_budget(self) -> None:
-        # The API requires budget_tokens < max_tokens and answers 400 otherwise.
-        # Failing at construction surfaces the misconfiguration instead of letting
-        # callers' retry loops swallow the error on every request.
-        budget = self.thinking.budget_tokens
-        if budget >= self.max_tokens:
-            raise ValueError(
-                f"[ANTHROPIC] thinking budget {budget} must be below max_tokens "
-                f"{self.max_tokens} for model '{self.model}'. Raise max_tokens or "
-                f"lower the thinking effort/token_budget."
-            )
+            if self._is_reasoning_model():
+                self.thinking = self._build_legacy_thinking(thinking_config)
+            else:
+                logger.warning(
+                    f"[ANTHROPIC] Model '{self.model}' predates extended thinking "
+                    f"(introduced with Claude 3.7). Ignoring thinking_config."
+                )
 
     def _build_legacy_thinking(
         self, thinking_config: UnifiedThinkingConfig
-    ) -> "ThinkingConfig":
-        """Convert a unified ThinkingConfig into the legacy budget-tokens payload."""
+    ) -> Optional["ThinkingConfig"]:
         if thinking_config.token_budget is not None:
+            budget = thinking_config.token_budget
+            if budget == 0:
+                return None
+            if budget < 1024:
+                logger.warning(
+                    f"[ANTHROPIC] The API requires a thinking budget of at least "
+                    f"1024 tokens. Raising token_budget={budget} to 1024."
+                )
+                budget = 1024
             return ThinkingConfig(
                 type="enabled",
-                budget_tokens=min(thinking_config.token_budget, 128000),
+                budget_tokens=min(budget, 128000),
             )
 
         effort_to_tokens = {"low": 2000, "medium": 8000, "high": 24000}
@@ -581,7 +579,8 @@ Please extract the relevant information from this reasoning and format it exactl
                     thinking_block["display"] = "summarized"
                 api_params["thinking"] = thinking_block
                 api_params["output_config"] = {"effort": self._resolve_effort()}
-            return self._get_compatible_params(api_params)
+            api_params = self._get_compatible_params(api_params)
+            return self._adapt_output_token_limits(api_params)
 
         if self.thinking and self._is_reasoning_model():
             api_params["thinking"] = {
@@ -595,9 +594,44 @@ Please extract the relevant information from this reasoning and format it exactl
                 api_params["extra_headers"] = {
                     "anthropic-beta": "interleaved-thinking-2025-05-14"
                 }
-        # Always apply parameter compatibility checks for Claude 4+ models
-        # to handle temperature/top_p conflicts and thinking mode requirements
         api_params = self._get_compatible_params(api_params)
+        return self._adapt_output_token_limits(api_params)
+
+    def _adapt_output_token_limits(self, api_params: dict) -> dict:
+        model_id = self._capability_model_id()
+        version = parse_claude_version(model_id)
+        cap = None if version is None else resolve_max_output_tokens(version, model_id)
+
+        max_tokens = api_params.get("max_tokens")
+        if max_tokens is None:
+            return api_params
+        if cap is not None and max_tokens > cap:
+            logger.warning(
+                f"[ANTHROPIC] max_tokens={max_tokens} exceeds the {cap}-token "
+                f"output limit of '{self.model}'. Lowering max_tokens to {cap}."
+            )
+            max_tokens = cap
+
+        thinking = api_params.get("thinking") or {}
+        budget = thinking.get("budget_tokens")
+        if budget is not None and budget >= max_tokens:
+            if cap is not None and budget + 2000 > cap:
+                budget = cap - 2000
+                thinking["budget_tokens"] = budget
+                max_tokens = cap
+                logger.warning(
+                    f"[ANTHROPIC] The thinking budget must stay below max_tokens, "
+                    f"and '{self.model}' caps output at {cap} tokens. Lowering "
+                    f"the thinking budget to {budget}."
+                )
+            else:
+                max_tokens = budget + 2000
+                logger.warning(
+                    f"[ANTHROPIC] The API requires max_tokens above the thinking "
+                    f"budget ({budget}). Raising max_tokens to {max_tokens}."
+                )
+
+        api_params["max_tokens"] = max_tokens
         return api_params
 
     def _resolve_effort(self) -> str:

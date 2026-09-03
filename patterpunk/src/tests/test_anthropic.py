@@ -2230,33 +2230,103 @@ def test_one_hour_cache_ttl_live():
 
 
 # =============================================================================
-# Legacy thinking budgets must stay below max_tokens (API rejects otherwise)
+# Output-token limits adapt instead of erroring (max_tokens caps, budgets)
 # =============================================================================
 
 
-def test_legacy_thinking_budget_above_max_tokens_fails_at_construction():
-    with pytest.raises(ValueError, match="must be below max_tokens"):
-        AnthropicModel(
-            model="claude-haiku-4-5-20251001",
-            thinking_config=ThinkingConfig(effort="high"),  # 24000 > default 8192
-        )
-    with pytest.raises(ValueError, match="must be below max_tokens"):
-        AnthropicModel(
-            model="claude-haiku-4-5-20251001",
-            thinking_config=ThinkingConfig(token_budget=4000),
-            max_tokens=4000,
-        )
+def _build_request_params(model):
+    messages = [UserMessage("Reply with the single word OK.")]
+    api_params = model._build_base_api_parameters(
+        messages, model._prepare_system_prompt(messages)
+    )
+    return model._apply_thinking_configuration(api_params)
 
 
-def test_legacy_thinking_budget_below_max_tokens_constructs():
+def test_thinking_budget_above_max_tokens_raises_max_tokens(caplog):
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(effort="high"),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["thinking"]["budget_tokens"] == 24000
+    assert params["max_tokens"] == 26000
+    assert any("Raising max_tokens to 26000" in r.message for r in caplog.records)
+
+
+def test_thinking_budget_lowered_to_fit_model_output_cap(caplog):
+    model = AnthropicModel(
+        model="claude-3-7-sonnet-20250219",
+        thinking_config=ThinkingConfig(token_budget=128000),
+    )
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 64000
+    assert params["thinking"]["budget_tokens"] == 62000
+    assert any(
+        "Lowering the thinking budget to 62000" in r.message for r in caplog.records
+    )
+
+
+def test_max_tokens_capped_to_model_output_limit(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229")
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 4096
+    assert any(
+        "exceeds the 4096-token output limit" in r.message for r in caplog.records
+    )
+
+
+def test_max_tokens_within_limit_untouched(caplog):
+    model = AnthropicModel(model="claude-3-sonnet-20240229", max_tokens=2000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        params = _build_request_params(model)
+    assert params["max_tokens"] == 2000
+    assert not any("output limit" in r.message for r in caplog.records)
+
+
+def test_thinking_config_ignored_below_claude_3_7(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-3-sonnet-20240229",
+            thinking_config=ThinkingConfig(effort="high"),
+        )
+    assert model.thinking is None
+    assert any("predates extended thinking" in r.message for r in caplog.records)
+    assert "thinking" not in _build_request_params(model)
+
+
+def test_token_budget_zero_disables_thinking():
+    model = AnthropicModel(
+        model="claude-haiku-4-5-20251001",
+        thinking_config=ThinkingConfig(token_budget=0),
+    )
+    assert model.thinking is None
+    assert "thinking" not in _build_request_params(model)
+
+
+def test_token_budget_below_api_minimum_raised_to_1024(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = AnthropicModel(
+            model="claude-haiku-4-5-20251001",
+            thinking_config=ThinkingConfig(token_budget=500),
+        )
+    assert model.thinking.budget_tokens == 1024
+    assert any(
+        "Raising token_budget=500 to 1024" in r.message for r in caplog.records
+    )
+
+
+def test_legacy_thinking_budget_below_max_tokens_untouched():
     model = AnthropicModel(
         model="claude-haiku-4-5-20251001",
         thinking_config=ThinkingConfig(effort="high"),
         max_tokens=30000,
     )
     assert model.thinking.budget_tokens == 24000
+    assert _build_request_params(model)["max_tokens"] == 30000
 
-    # Adaptive models have no budget, so the guard never applies to them.
     AnthropicModel(model="claude-fable-5", thinking_config=ThinkingConfig(effort="max"))
 
 
