@@ -7,6 +7,7 @@ from patterpunk.llm.models.claude_capabilities import (
     parse_claude_version,
     resolve_claude_sampling,
     resolve_max_output_tokens,
+    thinking_cannot_be_disabled,
 )
 
 
@@ -129,6 +130,33 @@ def test_normalize_strips_all_bedrock_wrapping():
         == "claude-sonnet-4-5-20250929"
     )
     assert normalize_claude_model_id("anthropic.claude-v2:1") == "claude-v2"
+
+
+def test_normalize_strips_undated_bedrock_release_suffix():
+    assert (
+        normalize_claude_model_id("us.anthropic.claude-opus-4-6-v1")
+        == "claude-opus-4-6"
+    )
+    assert parse_claude_version("us.anthropic.claude-opus-4-6-v1") == ClaudeVersion(
+        4, 6
+    )
+    assert normalize_claude_model_id("anthropic.claude-instant-v1") == (
+        "claude-instant-v1"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("claude-fable-5-1", True),
+        ("us.anthropic.claude-mythos-5", True),
+        ("us.anthropic.claude-opus-5", False),
+        ("claude-sonnet-5", False),
+        ("claude-opus-4-7", False),
+    ],
+)
+def test_thinking_cannot_be_disabled(model_id, expected):
+    assert thinking_cannot_be_disabled(model_id) is expected
 
 
 ANTHROPIC_DEFAULTS = SamplingParams(temperature=0.7, top_p=1.0, top_k=200)
