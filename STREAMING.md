@@ -415,6 +415,26 @@ Family-specific rules:
 | Google Gemini 3 Flash-Lite, Flash 3.6 and older | `thinking_level="minimal"` |
 | Google Gemini 3 Flash 3.7+, all Pro | `thinking_level="low"` with a WARNING (`minimal` is rejected) |
 
+### Output Token Ceilings — `max_tokens` per Model
+
+Every provider rejects a `max_tokens` above the model's output ceiling with a 400, so a value tuned for a 128K model would break a runtime switch to a 64K model. patterpunk lowers `max_tokens` to the ceiling it knows for the model and logs a WARNING, so the switch goes through and only the ceiling changes. Thinking budgets are lowered with it where the budget plus answer headroom would exceed the ceiling.
+
+| Model | Ceiling |
+|---|---|
+| Claude 4.6 and newer (Anthropic, Bedrock) | 128000 |
+| Claude 4.5 (Haiku, Sonnet, Opus) | 64000 |
+| Claude 4.0 / 4.1 | 32000 Opus, 64000 Sonnet |
+| Claude 3.7 | 64000 on Anthropic, 131072 on Bedrock |
+| Claude 3.5 | 8192 |
+| Claude 3 and older | 4096 |
+| OpenAI GPT-5.x on Bedrock | 131072 |
+| Nova 2 Lite | 65535 |
+| Gemini 2.5 Flash-Lite | 65535 |
+| Gemini 2.5 and 3.x (all others) | 65536 |
+| Gemini 2.0 and 1.5 | 8192 |
+
+Families without an entry (Llama, Mistral, DeepSeek, gpt-oss, Nova 1 on Bedrock) are sent as-is; the provider error names the limit if one is exceeded. The direct OpenAI and Azure models do not send an output limit at all.
+
 ### Interleaved Thinking (Anthropic)
 
 Anthropic's Claude 4.5+ models support interleaved thinking with tool calling - the model can think before calling tools and again after receiving results:

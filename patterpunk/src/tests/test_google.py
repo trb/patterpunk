@@ -1,5 +1,6 @@
 from typing import Optional, List
 
+import pytest
 from pydantic import BaseModel, Field
 
 from patterpunk.llm.chat.core import Chat
@@ -634,6 +635,40 @@ def test_gemini_37_flash_budget_zero_sends_low_level_with_warning(caplog):
         )
     assert model.thinking_level == "low"
     assert any("Coercing token_budget=0" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "model_id,requested,expected",
+    [
+        ("gemini-2.5-flash", 200000, 65536),
+        ("gemini-2.5-pro", 200000, 65536),
+        ("gemini-2.5-flash-lite", 200000, 65535),
+        ("gemini-3.6-flash", 200000, 65536),
+        ("gemini-2.0-flash", 20000, 8192),
+    ],
+)
+def test_max_tokens_capped_to_model_output_limit(model_id, requested, expected, caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(model=model_id, max_tokens=requested)
+    assert model.max_tokens == expected
+    config = model._build_generation_config(None, None, None, None)
+    assert config.max_output_tokens == expected
+    assert any(
+        f"exceeds the {expected}-token output limit" in r.message
+        for r in caplog.records
+    )
+
+
+def test_max_tokens_within_limit_passes_through_silently(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        model = make_stub_model(model="gemini-3.6-flash", max_tokens=65536)
+    assert model.max_tokens == 65536
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_max_tokens_unset_stays_unset():
+    model = make_stub_model(model="gemini-3.6-flash")
+    assert model.max_tokens is None
 
 
 def test_gemini_38_flash_lite_budget_zero_sends_minimal_level():

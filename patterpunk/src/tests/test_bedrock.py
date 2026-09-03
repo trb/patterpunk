@@ -1156,6 +1156,57 @@ def test_claude_3_7_max_tokens_not_capped(caplog):
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
+@pytest.mark.parametrize(
+    "model_id,requested,expected",
+    [
+        ("us.anthropic.claude-sonnet-5", 200000, 128000),
+        ("us.anthropic.claude-opus-4-6-v1", 200000, 128000),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 100000, 64000),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 100000, 64000),
+        ("us.openai.gpt-5.6-luna", 200000, 131072),
+        ("us.amazon.nova-2-lite-v1:0", 100000, 65535),
+    ],
+)
+def test_max_tokens_capped_to_model_output_limit(model_id, requested, expected, caplog):
+    bedrock = BedrockModel(model_id=model_id, max_tokens=requested)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == expected
+    assert any(
+        f"exceeds the {expected}-token output limit" in m
+        for m in warning_messages(caplog)
+    )
+
+
+def test_max_tokens_within_limit_passes_through_silently(caplog):
+    bedrock = BedrockModel(model_id="us.anthropic.claude-sonnet-5", max_tokens=128000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        config = bedrock._build_inference_config()
+    assert config["maxTokens"] == 128000
+    assert warning_messages(caplog) == []
+
+
+def test_max_tokens_unknown_family_is_not_capped():
+    bedrock = BedrockModel(
+        model_id="mistral.mistral-large-2402-v1:0", max_tokens=100000
+    )
+    assert bedrock._build_inference_config()["maxTokens"] == 100000
+
+
+def test_thinking_budget_lowered_to_fit_under_output_limit(caplog):
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        bedrock = BedrockModel(
+            model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            thinking_config=ThinkingConfig(token_budget=63000),
+        )
+        config = bedrock._build_inference_config()
+    assert bedrock._get_thinking_params()["reasoning_config"]["budget_tokens"] == 62000
+    assert config["maxTokens"] == 64000
+    assert any(
+        "Lowering the thinking budget to 62000" in m for m in warning_messages(caplog)
+    )
+
+
 def test_cache_point_is_a_separate_block_with_type_field():
     bedrock = BedrockModel(model_id="us.anthropic.claude-3-7-sonnet-20250219-v1:0")
     content = bedrock._convert_content_to_bedrock_format(

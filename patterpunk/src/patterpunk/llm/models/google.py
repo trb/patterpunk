@@ -157,6 +157,32 @@ def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> 
     return budget
 
 
+def _gemini_output_token_cap(model: str) -> int:
+    # Vertex rejects max_output_tokens above the model's ceiling with a 400
+    # that states the accepted range. Live checks: Gemini 2.5 Flash, 2.5 Pro,
+    # 3.5 Flash-Lite and 3.6 Flash accept up to 65536, 2.5 Flash-Lite only
+    # 65535. Google documents 8192 for the 2.0 and 1.5 generations.
+    version = _parse_gemini_version(model)
+    if version is not None and version < (2, 5):
+        return 8192
+    if "2.5-flash-lite" in model:
+        return 65535
+    return 65536
+
+
+def _resolve_gemini_max_tokens(model: str, max_tokens: Optional[int]) -> Optional[int]:
+    if max_tokens is None:
+        return None
+    cap = _gemini_output_token_cap(model)
+    if max_tokens <= cap:
+        return max_tokens
+    logger.warning(
+        f"[GOOGLE] max_tokens={max_tokens} exceeds the {cap}-token output "
+        f"limit of '{model}'. Lowering max_output_tokens to {cap}."
+    )
+    return cap
+
+
 def _gemini_3_supports_minimal(model: str) -> bool:
     # Google documents thinking_level "minimal" as the zero-budget equivalent
     # on every Flash-Lite model and on Flash up to 3.6. Flash 3.7, Flash 3.8
@@ -330,7 +356,7 @@ class GoogleModel(Model, ABC):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.max_tokens = max_tokens
+        self.max_tokens = _resolve_gemini_max_tokens(model, max_tokens)
         self.timeout = timeout
         self.thinking_budget = thinking_budget
         self.thinking_level = thinking_level

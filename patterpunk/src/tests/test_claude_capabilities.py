@@ -371,8 +371,11 @@ def test_resolver_in_range_temperature_not_clamped():
         ("claude-sonnet-4-5-20250929", 64000),
         ("claude-haiku-4-5", 64000),
         ("claude-opus-4-5", 64000),
-        ("claude-opus-4-7", None),
-        ("claude-fable-5", None),
+        ("claude-opus-4-6", 128000),
+        ("claude-sonnet-4-6", 128000),
+        ("claude-opus-4-7", 128000),
+        ("claude-sonnet-5", 128000),
+        ("claude-fable-5", 128000),
         ("us.anthropic.claude-3-sonnet-20240229-v1:0", 4096),
     ],
 )
@@ -381,7 +384,7 @@ def test_resolve_max_output_tokens(model_id, expected):
     assert resolve_max_output_tokens(version, model_id) == expected
 
 
-def test_resolve_max_output_tokens_unrecognized_returns_none():
+def test_resolve_max_output_tokens_unrecognized_gets_newest_cap():
     version = parse_claude_version("claude-turbo-max-ultra")
     assert version is not None and not version.recognized
-    assert resolve_max_output_tokens(version, "claude-turbo-max-ultra") is None
+    assert resolve_max_output_tokens(version, "claude-turbo-max-ultra") == 128000

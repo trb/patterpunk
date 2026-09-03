@@ -1557,6 +1557,16 @@ def test_opus_4_7_no_thinking_block_when_thinking_config_absent():
     assert "output_config" not in api_params
 
 
+def test_sonnet_5_max_tokens_capped_to_128000(caplog):
+    model = AnthropicModel(model="claude-sonnet-5", max_tokens=200000)
+    with caplog.at_level("WARNING", logger="patterpunk"):
+        api_params = _build_request_params(model)
+    assert api_params["max_tokens"] == 128000
+    assert any(
+        "exceeds the 128000-token output limit" in r.message for r in caplog.records
+    )
+
+
 def test_opus_4_7_token_budget_zero_sends_disabled_thinking(caplog):
     with caplog.at_level("WARNING", logger="patterpunk"):
         model = AnthropicModel(

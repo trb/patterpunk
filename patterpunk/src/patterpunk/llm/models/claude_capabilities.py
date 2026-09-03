@@ -116,14 +116,16 @@ def parse_claude_version(model_id: str) -> Optional[ClaudeVersion]:
     return None
 
 
-def resolve_max_output_tokens(version: ClaudeVersion, model_id: str) -> Optional[int]:
-    # The API rejects a max_tokens above the model's cap with a 400.
+def resolve_max_output_tokens(version: ClaudeVersion, model_id: str) -> int:
+    # The API rejects a max_tokens above the model's cap with a 400, on the
+    # direct API and on Bedrock alike. Live checks: Sonnet 5, Sonnet 4.6 and
+    # Opus 4.6 stop at 128000; Haiku, Sonnet and Opus 4.5 stop at 64000.
     # The 3.7 cap rises to 128000 when the output-128k beta header is sent.
-    if not version.recognized:
-        return None
+    # An unrecognised id gets the newest family's cap, matching the module's
+    # rule that unknown ids follow the strictest current behaviour.
     release = (version.major, version.minor)
-    if release >= (4, 6):
-        return None
+    if release >= (4, 6) or not version.recognized:
+        return 128000
     if release >= (4, 5):
         return 64000
     if release >= (4, 0):

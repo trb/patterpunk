@@ -70,8 +70,9 @@ from patterpunk.llm.messages.cache import get_multimodal_chunks, has_multimodal_
 from patterpunk.llm.streaming import StreamChunk, StreamEventType, StreamingError
 from patterpunk.logger import logger, logger_llm
 
-# Timeout for streaming operations (per event, not total)
-BEDROCK_STREAM_TIMEOUT_SECONDS = 300  # 5 minutes
+BEDROCK_STREAM_TIMEOUT_SECONDS = 300
+
+THINKING_ANSWER_HEADROOM = 2000
 
 
 class BedrockMissingCredentialsError(Exception):
@@ -300,6 +301,15 @@ class BedrockModel(Model, ABC):
                 f"token_budget={config.token_budget} to {MIN_THINKING_BUDGET_TOKENS}."
             )
             return MIN_THINKING_BUDGET_TOKENS
+        cap = self._output_token_cap()
+        if cap is not None and config.token_budget + THINKING_ANSWER_HEADROOM > cap:
+            budget = cap - THINKING_ANSWER_HEADROOM
+            logger.warning(
+                f"[BEDROCK] The thinking budget must stay below maxTokens, and "
+                f"'{self.model_id}' caps output at {cap} tokens. Lowering the "
+                f"thinking budget to {budget}."
+            )
+            return budget
         return config.token_budget
 
     def _get_thinking_params(self) -> dict:
@@ -643,35 +653,50 @@ class BedrockModel(Model, ABC):
             if self.top_p is not None:
                 inference_config["topP"] = self.top_p
 
-        if self.max_tokens:
-            inference_config["maxTokens"] = self._capped_max_tokens(claude_version)
-
-        # Anthropic returns a ValidationException when max_tokens is not above
-        # budget_tokens. The 2000-token margin leaves room for the answer and
-        # matches the headroom the direct Anthropic model applies.
-        thinking_budget = self._thinking_fields.get("reasoning_config", {}).get(
-            "budget_tokens"
-        )
-        if thinking_budget is not None and (
-            not self.max_tokens or self.max_tokens <= thinking_budget
-        ):
-            inference_config["maxTokens"] = thinking_budget + 2000
+        max_tokens = self._resolve_max_tokens()
+        if max_tokens:
+            inference_config["maxTokens"] = max_tokens
 
         return inference_config
 
-    def _capped_max_tokens(self, version: Optional[ClaudeVersion]) -> int:
-        # Bedrock allows Claude 3.7+ up to 131072 on-demand output tokens.
-        # The direct Messages API caps those same models lower.
-        if version is None or version.at_least(3, 7):
-            return self.max_tokens
-        cap = resolve_max_output_tokens(version, self.model_id)
-        if cap is None or self.max_tokens <= cap:
-            return self.max_tokens
-        logger.warning(
-            f"[BEDROCK] max_tokens={self.max_tokens} exceeds the {cap}-token "
-            f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+    def _output_token_cap(self) -> Optional[int]:
+        # Bedrock answers a maxTokens above the model's ceiling with a
+        # ValidationException naming the limit. Live checks: GPT-5.6 Luna
+        # 131072, Nova 2 Lite 65535, Claude 4.5 64000, Claude 4.6+ 128000.
+        # Claude 3.7 keeps the 131072 ceiling recorded before these checks;
+        # the direct Messages API caps that model at 64000.
+        if _is_openai_gpt5_model(self.model_id):
+            return 131072
+        if _is_nova_2_lite_model(self.model_id):
+            return 65535
+        version = parse_claude_version(self.model_id)
+        if version is None:
+            return None
+        if version.recognized and (version.major, version.minor) == (3, 7):
+            return 131072
+        return resolve_max_output_tokens(version, self.model_id)
+
+    def _resolve_max_tokens(self) -> Optional[int]:
+        max_tokens = self.max_tokens
+        thinking_budget = self._thinking_fields.get("reasoning_config", {}).get(
+            "budget_tokens"
         )
-        return cap
+        # Anthropic returns a ValidationException when max_tokens is not above
+        # budget_tokens. The headroom leaves room for the answer and matches
+        # the margin the direct Anthropic model applies.
+        if thinking_budget is not None and (
+            not max_tokens or max_tokens <= thinking_budget
+        ):
+            max_tokens = thinking_budget + THINKING_ANSWER_HEADROOM
+
+        cap = self._output_token_cap()
+        if max_tokens and cap is not None and max_tokens > cap:
+            logger.warning(
+                f"[BEDROCK] max_tokens={max_tokens} exceeds the {cap}-token "
+                f"output limit of '{self.model_id}'. Lowering maxTokens to {cap}."
+            )
+            return cap
+        return max_tokens
 
     def _prepare_tool_config(self, tools: Optional[ToolDefinition]) -> Optional[dict]:
         if not tools:
