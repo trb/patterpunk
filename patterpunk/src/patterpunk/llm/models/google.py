@@ -63,7 +63,11 @@ from patterpunk.llm.messages.provider_data import ProviderData
 from patterpunk.llm.messages.tool_call import ToolCallMessage
 from patterpunk.llm.messages.tool_result import ToolResultMessage
 from patterpunk.llm.models.base import Model, TokenCountingError
-from patterpunk.llm.thinking import ThinkingConfig
+from patterpunk.llm.thinking import (
+    EFFORT_TO_BUDGET,
+    ThinkingConfig,
+    effort_for_budget,
+)
 from patterpunk.llm.types import ToolDefinition, CacheChunk, ToolCall
 from patterpunk.llm.output_types import OutputType
 from patterpunk.llm.chunks import MultimodalChunk, TextChunk
@@ -115,8 +119,6 @@ def _normalize_finish_reason(raw: Optional[str]) -> Optional[FinishReason]:
 
 _GEMINI_VERSION_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?")
 
-_EFFORT_TO_BUDGET = {"low": 1500, "medium": 4000, "high": 12000}
-
 
 def _parse_gemini_version(model: str) -> Optional[Tuple[int, int]]:
     match = _GEMINI_VERSION_RE.search(model)
@@ -137,7 +139,7 @@ def _clamp_effort_to_gemini_levels(effort: str) -> str:
 
 def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> int:
     if thinking_config.token_budget is None:
-        return _EFFORT_TO_BUDGET[_clamp_effort_to_gemini_levels(thinking_config.effort)]
+        return EFFORT_TO_BUDGET[_clamp_effort_to_gemini_levels(thinking_config.effort)]
 
     budget = min(thinking_config.token_budget, 24576)
     if "flash-lite" in model and 0 < budget < 512:
@@ -155,19 +157,20 @@ def _resolve_gemini_25_budget(model: str, thinking_config: "ThinkingConfig") -> 
     return budget
 
 
-def _resolve_gemini_3_level(thinking_config: "ThinkingConfig") -> str:
+def _resolve_gemini_3_level(model: str, thinking_config: "ThinkingConfig") -> str:
     # Gemini 3 replaced numeric thinking budgets with thinking_level; a
     # thinking_budget in the request is rejected on 3.x models.
     if thinking_config.effort is not None:
         return _clamp_effort_to_gemini_levels(thinking_config.effort)
 
     budget = thinking_config.token_budget
-    if budget <= _EFFORT_TO_BUDGET["low"]:
-        level = "low"
-    elif budget <= _EFFORT_TO_BUDGET["medium"]:
-        level = "medium"
-    else:
-        level = "high"
+    if budget == 0 and "flash" in model:
+        # Google documents thinking_level "minimal" as the Gemini 3 Flash and
+        # Flash-Lite equivalent of a zero budget. Pro models reject "minimal",
+        # so they fall through to "low" with the coercion warning below.
+        return "minimal"
+
+    level = effort_for_budget(budget)
     logger.warning(
         f"[GOOGLE] Gemini 3+ replaced numeric thinking budgets with "
         f"thinking_level. Coercing token_budget={budget} to "
@@ -305,7 +308,7 @@ class GoogleModel(Model, ABC):
             elif version is not None and version < (3, 0):
                 thinking_budget = _resolve_gemini_25_budget(model, thinking_config)
             else:
-                thinking_level = _resolve_gemini_3_level(thinking_config)
+                thinking_level = _resolve_gemini_3_level(model, thinking_config)
 
         if client:
             self.client = client
