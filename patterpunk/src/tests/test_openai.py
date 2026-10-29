@@ -231,17 +231,9 @@ nager, WAMITAB
 
 
 def test_o1():
-    # TODO: This test fails due to a fallback bug in _execute_with_retry.
-    # The reasoning.summary error triggers a fallback that adds temperature,
-    # but o3-mini rejects temperature. Once the fallback is fixed (remove only
-    # summary from reasoning dict), this test should work and we should add:
-    #   assert chat.latest_message.thinking_token_count is not None
-    #   assert chat.latest_message.thinking_token_count > 0
-    # OpenAI reasoning models are now accessible without org verification
-    # (confirmed Feb 2026).
     chat = Chat(
         model=OpenAiModel(
-            model="o3-mini",
+            model="gpt-5-mini",
             thinking_config=ThinkingConfig(effort="medium"),
         )
     )
@@ -253,9 +245,11 @@ def test_o1():
     )
 
     print(chat.latest_message.content)
+    assert chat.latest_message.thinking_token_count is not None
+    assert chat.latest_message.thinking_token_count > 0
 
 
-@pytest.mark.parametrize("model_name", ["gpt-4o", "o3-mini", "gpt-3.5-turbo"])
+@pytest.mark.parametrize("model_name", ["gpt-4o", "gpt-5-mini", "gpt-4o-mini"])
 def test_structured_output(model_name):
     class BookInfo(BaseModel):
         title: str
@@ -319,7 +313,7 @@ def test_structured_output(model_name):
 def test_multimodal_image():
     chat = Chat(
         model=OpenAiModel(
-            model="gpt-4.1-nano",
+            model="gpt-4.1-mini",
             temperature=0.1,
         )
     )
@@ -367,7 +361,7 @@ def test_multimodal_image():
 
 
 def test_multimodal_pdf():
-    chat = Chat(model=OpenAiModel(model="gpt-4.1-nano", temperature=0.0))
+    chat = Chat(model=OpenAiModel(model="gpt-4.1-mini", temperature=0.0))
 
     title = (
         chat.add_message(
