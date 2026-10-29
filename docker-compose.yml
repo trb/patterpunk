@@ -1,7 +1,7 @@
 services:
   patterpunk:
     build: patterpunk
-    restart: unless-stopped
+    restart: no
     volumes:
       - /home/thomas/Code/patterpunk/patterpunk/src:/app
     environment:
@@ -24,7 +24,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    restart: unless-stopped
+    restart: no
     ports:
       - "11435:11434"
     environment:
