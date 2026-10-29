@@ -94,23 +94,25 @@ def test_chat_sends_the_request_fields_of_a_model_subclass(shared_bedrock_client
 
 MODEL_SHARED_ATTRIBUTES = [
     ("patterpunk.llm.models.bedrock", "BedrockModel", ["client"]),
-    ("patterpunk.llm.models.google", "GoogleModel", ["client"]),
-    ("patterpunk.llm.models.openai", "OpenAiModel", ["_client", "_async_client"]),
+    ("patterpunk.llm.models.google", "GoogleModel", ["client", "_async_clients"]),
+    ("patterpunk.llm.models.openai", "OpenAiModel", ["_client", "_async_clients"]),
     (
         "patterpunk.llm.models.azure_openai",
         "AzureOpenAiModel",
         [
+            "_client",
+            "_async_clients",
             "_azure_client",
-            "_azure_async_client",
+            "_azure_async_clients",
             "_azure_reasoning_client",
-            "_azure_reasoning_async_client",
+            "_azure_reasoning_async_clients",
         ],
     ),
     ("patterpunk.llm.models.ollama", "OllamaModel", ["_client"]),
     (
         "patterpunk.llm.models.openai_compatible",
         "OpenAiCompatibleModel",
-        ["_client", "_async_client", "api_key_provider"],
+        ["_client", "_async_clients", "api_key_provider"],
     ),
     (
         "patterpunk.llm.models.anthropic_foundry",
