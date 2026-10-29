@@ -21,6 +21,7 @@ from typing import (
 if TYPE_CHECKING:
     from patterpunk.llm.streaming import StreamChunk
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.providers.google import (
     GOOGLE_APPLICATION_CREDENTIALS,
     GOOGLE_DEFAULT_MAX_TOKENS,
@@ -1308,22 +1309,7 @@ class GoogleModel(Model, ABC):
         return contents
 
     def __deepcopy__(self, memo_dict):
-        new_model = GoogleModel(
-            model=self.model,
-            location=self.location,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            max_tokens=self.max_tokens,
-            client=self.client,
-            thinking_config=self.thinking_config,
-            safety_settings=self.safety_settings,
-            allow_empty_response=self.allow_empty_response,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
-        )
-        new_model._logged_message_ids = self._logged_message_ids.copy()
-        return new_model
+        return deepcopy_sharing_clients(self, memo_dict, ["client"])
 
     async def _stream_with_retry(
         self,

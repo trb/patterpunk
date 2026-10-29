@@ -6,6 +6,7 @@ from typing import List, Optional, Callable, Set, Union
 
 import tiktoken
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.providers.ollama import (
     get_ollama_client,
     OLLAMA_MAX_RETRIES,
@@ -96,20 +97,9 @@ class OllamaModel(Model, ABC):
         self._client = get_ollama_client(timeout=timeout)
 
     def __deepcopy__(self, memo_dict):
-        # Skip the SDK client; its httpx connection pool holds an RLock that
-        # cannot be pickled. A fresh client is rebuilt in __init__.
-        return OllamaModel(
-            model=self.model,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            presence_penalty=self.presence_penalty,
-            seed=self.seed,
-            num_ctx=self.num_ctx,
-            max_tokens=self.max_tokens,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
-        )
+        copied_model = deepcopy_sharing_clients(self, memo_dict, ["_client"])
+        copied_model.__dict__.pop("_temp_files", None)
+        return copied_model
 
     def _prepare_tools(self, tools: ToolDefinition) -> List[dict]:
         ollama_tools = []

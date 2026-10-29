@@ -2,6 +2,7 @@ import time
 from abc import ABC
 from typing import AsyncIterator, List, Optional, Set, Union
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.defaults import (
     RETRY_BASE_DELAY,
     RETRY_MAX_DELAY,
@@ -82,19 +83,17 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         )
 
     def __deepcopy__(self, memo_dict):
-        # Skip the four SDK clients; their httpx connection pools hold
-        # _thread.RLock objects that cannot be pickled. The new instance
-        # rebuilds them in __init__.
-        return AzureOpenAiModel(
-            deployment_name=self.model,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            frequency_penalty=self.frequency_penalty,
-            presence_penalty=self.presence_penalty,
-            logit_bias=self.logit_bias,
-            thinking_config=self.thinking_config,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
+        return deepcopy_sharing_clients(
+            self,
+            memo_dict,
+            [
+                "_client",
+                "_async_client",
+                "_azure_client",
+                "_azure_async_client",
+                "_azure_reasoning_client",
+                "_azure_reasoning_async_client",
+            ],
         )
 
     def _execute_with_retry(self, responses_parameters: dict) -> object:

@@ -6,6 +6,7 @@ from typing import AsyncIterator, Callable, Dict, List, Optional, Set, Union
 
 import tiktoken
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.defaults import (
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
     MAX_RETRIES,
@@ -133,23 +134,8 @@ class OpenAiCompatibleModel(Model, ABC):
         self._async_client = AsyncOpenAI(**client_kwargs)
 
     def __deepcopy__(self, memo_dict):
-        # Skip the SDK clients; their httpx connection pools hold RLocks that
-        # cannot be pickled. The new instance rebuilds them in __init__.
-        return OpenAiCompatibleModel(
-            model=self.model,
-            base_url=self.base_url,
-            api_key=self.api_key,
-            api_key_provider=self.api_key_provider,
-            default_headers=self.default_headers,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            frequency_penalty=self.frequency_penalty,
-            presence_penalty=self.presence_penalty,
-            max_tokens=self.max_tokens,
-            thinking_config=self.thinking_config,
-            include_stream_usage=self.include_stream_usage,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
+        return deepcopy_sharing_clients(
+            self, memo_dict, ["_client", "_async_client", "api_key_provider"]
         )
 
     def _request_headers(self) -> Optional[Dict[str, str]]:

@@ -1,5 +1,6 @@
 from typing import Callable, List, Optional
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.providers.anthropic import (
     ANTHROPIC_DEFAULT_TEMPERATURE,
     ANTHROPIC_DEFAULT_TOP_P,
@@ -69,20 +70,7 @@ class AnthropicFoundryModel(AnthropicModel):
         )
 
     def __deepcopy__(self, memo_dict):
-        # A token provider may close over unpicklable credential objects, so
-        # the copy shares the provider reference instead of deep-copying it.
-        return AnthropicFoundryModel(
-            deployment_name=self.model,
-            model_id=self.model_id,
-            azure_ad_token_provider=self.azure_ad_token_provider,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            max_tokens=self.max_tokens,
-            timeout=self.timeout,
-            thinking_config=self.thinking_config,
-            retry_config=self.retry_config,
-        )
+        return deepcopy_sharing_clients(self, memo_dict, ["azure_ad_token_provider"])
 
     def _parse_model_version(self) -> tuple[int, int]:
         # Every Foundry deployment serves a Claude model. An unrecognisable

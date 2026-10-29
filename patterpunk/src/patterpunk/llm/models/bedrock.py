@@ -31,6 +31,7 @@ from patterpunk.lib.retry import (
     stream_with_retry_config,
 )
 from patterpunk.llm.retry_config import RetryConfig
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.providers.bedrock import (
     boto3,
     get_bedrock_client_by_region,
@@ -1637,13 +1638,4 @@ class BedrockModel(Model, ABC):
         return None
 
     def __deepcopy__(self, memo_dict):
-        return BedrockModel(
-            model_id=self.model_id,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_tokens=self.max_tokens,
-            region_name=self.client.meta.region_name,
-            thinking_config=self.thinking_config,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
-        )
+        return deepcopy_sharing_clients(self, memo_dict, ["client"])

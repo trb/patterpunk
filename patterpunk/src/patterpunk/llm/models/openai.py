@@ -7,6 +7,7 @@ import time
 from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Tuple, Union
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
@@ -233,19 +234,7 @@ class OpenAiModel(Model, ABC):
         self.retry_config = retry_config
 
     def __deepcopy__(self, memo_dict):
-        # Skip the SDK client; it contains an httpx connection pool whose
-        # internal RLock cannot be pickled. A fresh client is rebuilt in __init__.
-        return self.__class__(
-            model=self.model,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            frequency_penalty=self.frequency_penalty,
-            presence_penalty=self.presence_penalty,
-            logit_bias=self.logit_bias,
-            thinking_config=self.thinking_config,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
-        )
+        return deepcopy_sharing_clients(self, memo_dict, ["_client", "_async_client"])
 
     def _process_cache_chunks_for_openai(
         self, chunks: List[Union[TextChunk, CacheChunk]]
