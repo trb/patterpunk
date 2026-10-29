@@ -7,6 +7,7 @@ from typing import AsyncIterator, Callable, Dict, List, Optional, Set, Union
 import tiktoken
 
 from patterpunk.llm.models.copying import deepcopy_sharing_clients
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
 from patterpunk.config.defaults import (
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
     MAX_RETRIES,
@@ -131,11 +132,13 @@ class OpenAiCompatibleModel(Model, ABC):
             "timeout": timeout,
         }
         self._client = OpenAI(**client_kwargs)
-        self._async_client = AsyncOpenAI(**client_kwargs)
+        self._async_clients = AsyncClientPerEventLoop(
+            lambda: AsyncOpenAI(**client_kwargs)
+        )
 
     def __deepcopy__(self, memo_dict):
         return deepcopy_sharing_clients(
-            self, memo_dict, ["_client", "_async_client", "api_key_provider"]
+            self, memo_dict, ["_client", "_async_clients", "api_key_provider"]
         )
 
     def _request_headers(self) -> Optional[Dict[str, str]]:
@@ -486,8 +489,9 @@ class OpenAiCompatibleModel(Model, ABC):
             messages, tools, structured_output, stream=True
         )
 
+        async_client = self._async_clients.for_running_loop()
         if self.retry_config is not None:
-            client = self._async_client.with_options(max_retries=0)
+            client = async_client.with_options(max_retries=0)
 
             async def acquire_stream():
                 return self._stream_events(params, client)
@@ -498,7 +502,7 @@ class OpenAiCompatibleModel(Model, ABC):
                 yield chunk
             return
 
-        client = self._async_client.with_options(max_retries=MAX_RETRIES)
+        client = async_client.with_options(max_retries=MAX_RETRIES)
         async for chunk in self._stream_events(params, client):
             yield chunk
 

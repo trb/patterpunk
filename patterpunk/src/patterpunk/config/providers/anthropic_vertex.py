@@ -13,6 +13,8 @@ try:
 except ImportError:
     service_account = None
 
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
+
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("PP_GOOGLE_APPLICATION_CREDENTIALS", None)
 ANTHROPIC_VERTEX_PROJECT = os.getenv("PP_ANTHROPIC_VERTEX_PROJECT", None)
 # us-east5 is the region with the widest Claude model availability on Vertex.
@@ -73,12 +75,13 @@ def get_anthropic_vertex_client(project_id: str, region: str):
 def get_anthropic_vertex_async_client(project_id: str, region: str):
     cache_key = (project_id, region)
     if cache_key not in _vertex_async_clients:
-        _vertex_async_clients[cache_key] = AsyncAnthropicVertex(
-            project_id=project_id,
-            region=region,
-            credentials=_build_google_credentials(),
+        credentials = _build_google_credentials()
+        _vertex_async_clients[cache_key] = AsyncClientPerEventLoop(
+            lambda: AsyncAnthropicVertex(
+                project_id=project_id, region=region, credentials=credentials
+            )
         )
-    return _vertex_async_clients[cache_key]
+    return _vertex_async_clients[cache_key].for_running_loop()
 
 
 def is_anthropic_vertex_available() -> bool:

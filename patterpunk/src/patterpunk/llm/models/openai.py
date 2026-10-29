@@ -8,6 +8,7 @@ from abc import ABC
 from typing import AsyncIterator, List, Literal, Optional, Set, Tuple, Union
 
 from patterpunk.llm.models.copying import deepcopy_sharing_clients
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
 from patterpunk.config.defaults import (
     DEFAULT_TEMPERATURE,
     GENERATE_STRUCTURED_OUTPUT_PROMPT,
@@ -170,7 +171,9 @@ class OpenAiModel(Model, ABC):
     ):
         self.timeout = timeout
         self._client = get_openai_client(timeout=timeout)
-        self._async_client = get_openai_async_client(timeout=timeout)
+        self._async_clients = AsyncClientPerEventLoop(
+            lambda: get_openai_async_client(timeout=timeout)
+        )
 
         if not _INTERNAL__skip_client_validation and not self._client:
             raise OpenAiMissingConfigurationError(
@@ -234,7 +237,7 @@ class OpenAiModel(Model, ABC):
         self.retry_config = retry_config
 
     def __deepcopy__(self, memo_dict):
-        return deepcopy_sharing_clients(self, memo_dict, ["_client", "_async_client"])
+        return deepcopy_sharing_clients(self, memo_dict, ["_client", "_async_clients"])
 
     def _process_cache_chunks_for_openai(
         self, chunks: List[Union[TextChunk, CacheChunk]]
@@ -1220,13 +1223,14 @@ class OpenAiModel(Model, ABC):
         current_tool_id = None
         current_tool_name = None
 
+        async_client = self._async_clients.for_running_loop()
         if self.retry_config is not None:
             event_stream = self._stream_with_retry_config(
-                responses_parameters, self._async_client
+                responses_parameters, async_client
             )
         else:
             event_stream = self._stream_with_retry(
-                self._async_client,
+                async_client,
                 responses_parameters,
                 OPENAI_MAX_RETRIES,
             )

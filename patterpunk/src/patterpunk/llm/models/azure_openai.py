@@ -3,6 +3,7 @@ from abc import ABC
 from typing import AsyncIterator, List, Optional, Set, Union
 
 from patterpunk.llm.models.copying import deepcopy_sharing_clients
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
 from patterpunk.config.defaults import (
     RETRY_BASE_DELAY,
     RETRY_MAX_DELAY,
@@ -55,12 +56,14 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         retry_config: Optional[RetryConfig] = None,
     ):
         self._azure_client = get_azure_openai_client(timeout=timeout)
-        self._azure_async_client = get_azure_openai_async_client(timeout=timeout)
+        self._azure_async_clients = AsyncClientPerEventLoop(
+            lambda: get_azure_openai_async_client(timeout=timeout)
+        )
         self._azure_reasoning_client = get_azure_openai_reasoning_client(
             timeout=timeout
         )
-        self._azure_reasoning_async_client = get_azure_openai_reasoning_async_client(
-            timeout=timeout
+        self._azure_reasoning_async_clients = AsyncClientPerEventLoop(
+            lambda: get_azure_openai_reasoning_async_client(timeout=timeout)
         )
 
         if not self._azure_client:
@@ -88,11 +91,11 @@ class AzureOpenAiModel(OpenAiModel, ABC):
             memo_dict,
             [
                 "_client",
-                "_async_client",
+                "_async_clients",
                 "_azure_client",
-                "_azure_async_client",
+                "_azure_async_clients",
                 "_azure_reasoning_client",
-                "_azure_reasoning_async_client",
+                "_azure_reasoning_async_clients",
             ],
         )
 
@@ -258,19 +261,19 @@ class AzureOpenAiModel(OpenAiModel, ABC):
         """
         # Use reasoning client for reasoning models, regular client otherwise
         if self._is_reasoning_model(self.model):
-            if not self._azure_reasoning_async_client:
+            client = self._azure_reasoning_async_clients.for_running_loop()
+            if not client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI reasoning async client was not initialized. "
                     "Check that PP_AZURE_OPENAI_API_KEY is set."
                 )
-            client = self._azure_reasoning_async_client
         else:
-            if not self._azure_async_client:
+            client = self._azure_async_clients.for_running_loop()
+            if not client:
                 raise AzureOpenAiMissingConfigurationError(
                     "Azure OpenAI async client was not initialized. "
                     "Check that PP_AZURE_OPENAI_ENDPOINT and PP_AZURE_OPENAI_API_KEY are set."
                 )
-            client = self._azure_async_client
 
         self._log_request_start(messages)
 
