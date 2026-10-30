@@ -19,7 +19,7 @@ from typing import (
 
 from patterpunk.config.providers.anthropic import (
     anthropic,
-    anthropic_async,
+    get_anthropic_async_client,
     ANTHROPIC_DEFAULT_TEMPERATURE,
     ANTHROPIC_DEFAULT_TOP_P,
     ANTHROPIC_DEFAULT_TOP_K,
@@ -242,7 +242,7 @@ class AnthropicModel(Model, ABC):
         return anthropic
 
     def _get_async_client(self):
-        return anthropic_async
+        return get_anthropic_async_client()
 
     def _capability_model_id(self) -> str:
         return self.model

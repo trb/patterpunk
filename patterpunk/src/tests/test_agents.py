@@ -29,7 +29,7 @@ class SummaryOutput(BaseModel):
 
 class StringOutputAgent(Agent[SimpleInput, str]):
     def __init__(self):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.1)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.1)
 
     @property
     def model(self):
@@ -46,7 +46,7 @@ class StringOutputAgent(Agent[SimpleInput, str]):
 
 class StructuredOutputAgent(Agent[SimpleInput, SummaryOutput]):
     def __init__(self):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.1)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.1)
 
     @property
     def model(self):
@@ -63,7 +63,7 @@ class StructuredOutputAgent(Agent[SimpleInput, SummaryOutput]):
 
 class CustomExecuteAgent(Agent[SimpleInput, str]):
     def __init__(self):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.1)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.1)
 
     @property
     def model(self):
@@ -83,7 +83,7 @@ class CustomExecuteAgent(Agent[SimpleInput, str]):
 
 class SimpleUppercaseAgent(Agent[str, str]):
     def __init__(self):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.0)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.0)
 
     @property
     def model(self):
@@ -100,7 +100,7 @@ class SimpleUppercaseAgent(Agent[str, str]):
 
 class SimpleLowercaseAgent(Agent[str, str]):
     def __init__(self):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.0)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.0)
 
     @property
     def model(self):
@@ -117,7 +117,7 @@ class SimpleLowercaseAgent(Agent[str, str]):
 
 class SimplePrefixAgent(Agent[str, str]):
     def __init__(self, prefix: str):
-        self._model = OpenAiModel(model="gpt-3.5-turbo", temperature=0.0)
+        self._model = OpenAiModel(model="gpt-4o-mini", temperature=0.0)
         self.prefix = prefix
 
     @property

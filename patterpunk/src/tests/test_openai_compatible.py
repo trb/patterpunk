@@ -252,7 +252,7 @@ def test_deepcopy_round_trip():
     )
     clone = copy.deepcopy(model)
     assert clone is not model
-    assert clone._client is not model._client
+    assert clone._client is model._client
     assert clone.base_url == model.base_url
     assert clone.temperature == 0.3
     assert clone.api_key_provider is provider

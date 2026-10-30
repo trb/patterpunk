@@ -21,6 +21,8 @@ from typing import (
 if TYPE_CHECKING:
     from patterpunk.llm.streaming import StreamChunk
 
+from patterpunk.llm.models.copying import deepcopy_sharing_clients
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
 from patterpunk.config.providers.google import (
     GOOGLE_APPLICATION_CREDENTIALS,
     GOOGLE_DEFAULT_MAX_TOKENS,
@@ -279,6 +281,15 @@ class GoogleModel(Model, ABC):
         google_account_credentials: Optional[str] = None,
         timeout: int = GOOGLE_DEFAULT_TIMEOUT,
     ):
+        credentials, project_id = GoogleModel._load_service_account_credentials(
+            google_account_credentials
+        )
+        return GoogleModel._build_client(location, credentials, project_id, timeout)
+
+    @staticmethod
+    def _load_service_account_credentials(
+        google_account_credentials: Optional[str],
+    ):
         if google_account_credentials is None:
             google_account_credentials = GOOGLE_APPLICATION_CREDENTIALS
         if not google_account_credentials:
@@ -298,8 +309,10 @@ class GoogleModel(Model, ABC):
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
         credentials.refresh(Request())
-        project_id = credentials_info["project_id"]
+        return credentials, credentials_info["project_id"]
 
+    @staticmethod
+    def _build_client(location: str, credentials, project_id: str, timeout: int):
         return genai.Client(
             vertexai=True,
             project=project_id,
@@ -352,10 +365,21 @@ class GoogleModel(Model, ABC):
                 thinking_level = _resolve_gemini_3_level(model, thinking_config)
 
         if client:
+            # patterpunk cannot rebuild a caller-supplied client, so it serves every event loop.
+            # Its pooled async connections go stale when one model spans several event loops.
             self.client = client
+            self._async_clients = AsyncClientPerEventLoop(lambda: client)
         else:
-            self.client = GoogleModel.get_client(
-                location, google_account_credentials, timeout=timeout
+            credentials, project_id = GoogleModel._load_service_account_credentials(
+                google_account_credentials
+            )
+            self.client = GoogleModel._build_client(
+                location, credentials, project_id, timeout
+            )
+            self._async_clients = AsyncClientPerEventLoop(
+                lambda: GoogleModel._build_client(
+                    location, credentials, project_id, timeout
+                )
             )
 
         self.model = model
@@ -1163,8 +1187,9 @@ class GoogleModel(Model, ABC):
         # of the stream, not when the stream is acquired. Retrying after a
         # chunk was yielded would duplicate output, so the guard stops that.
         started = False
+        async_models = self._async_clients.for_running_loop().aio.models
         try:
-            stream = await self.client.aio.models.generate_content_stream(
+            stream = await async_models.generate_content_stream(
                 model=self.model, contents=contents, config=config
             )
             async for chunk in stream:
@@ -1173,7 +1198,7 @@ class GoogleModel(Model, ABC):
         except genai_errors.APIError as error:
             if started or not self._learn_output_limit(error):
                 raise
-            stream = await self.client.aio.models.generate_content_stream(
+            stream = await async_models.generate_content_stream(
                 model=self.model,
                 contents=contents,
                 config=config.model_copy(update={"max_output_tokens": self.max_tokens}),
@@ -1285,7 +1310,8 @@ class GoogleModel(Model, ABC):
         """
         try:
             contents = self._prepare_count_tokens_contents(content)
-            response = await self.client.aio.models.count_tokens(
+            async_models = self._async_clients.for_running_loop().aio.models
+            response = await async_models.count_tokens(
                 model=self.model,
                 contents=contents,
             )
@@ -1308,22 +1334,7 @@ class GoogleModel(Model, ABC):
         return contents
 
     def __deepcopy__(self, memo_dict):
-        new_model = GoogleModel(
-            model=self.model,
-            location=self.location,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            max_tokens=self.max_tokens,
-            client=self.client,
-            thinking_config=self.thinking_config,
-            safety_settings=self.safety_settings,
-            allow_empty_response=self.allow_empty_response,
-            timeout=self.timeout,
-            retry_config=self.retry_config,
-        )
-        new_model._logged_message_ids = self._logged_message_ids.copy()
-        return new_model
+        return deepcopy_sharing_clients(self, memo_dict, ["client", "_async_clients"])
 
     async def _stream_with_retry(
         self,

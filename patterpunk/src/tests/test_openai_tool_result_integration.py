@@ -250,7 +250,7 @@ class TestMessageHistorySerialization:
     @pytest.mark.parametrize(
         "model_class,model_name",
         [
-            (OpenAiModel, "gpt-4.1-nano"),
+            (OpenAiModel, "gpt-4.1-mini"),
             (AzureOpenAiModel, "gpt-4"),
         ],
     )

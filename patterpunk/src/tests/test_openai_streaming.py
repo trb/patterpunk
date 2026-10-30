@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 from patterpunk.llm.thinking import ThinkingConfig
 
 # OpenAI reasoning model for thinking/reasoning tests
-OPENAI_REASONING_MODEL = "o3-mini"
+OPENAI_REASONING_MODEL = "gpt-5-mini"
 
 
 @pytest.mark.asyncio

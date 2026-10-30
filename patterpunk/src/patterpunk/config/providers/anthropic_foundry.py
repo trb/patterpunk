@@ -6,6 +6,8 @@ except ImportError:
     AnthropicFoundry = None
     AsyncAnthropicFoundry = None
 
+from patterpunk.lib.async_client_per_event_loop import AsyncClientPerEventLoop
+
 ANTHROPIC_FOUNDRY_API_KEY = os.getenv("PP_ANTHROPIC_FOUNDRY_API_KEY", None)
 ANTHROPIC_FOUNDRY_RESOURCE = os.getenv("PP_ANTHROPIC_FOUNDRY_RESOURCE", None)
 ANTHROPIC_FOUNDRY_BASE_URL = os.getenv("PP_ANTHROPIC_FOUNDRY_BASE_URL", None)
@@ -39,10 +41,11 @@ def get_anthropic_foundry_client(azure_ad_token_provider=None):
 
 def get_anthropic_foundry_async_client(azure_ad_token_provider=None):
     if azure_ad_token_provider not in _foundry_async_clients:
-        _foundry_async_clients[azure_ad_token_provider] = AsyncAnthropicFoundry(
-            **_client_kwargs(azure_ad_token_provider)
+        client_kwargs = _client_kwargs(azure_ad_token_provider)
+        _foundry_async_clients[azure_ad_token_provider] = AsyncClientPerEventLoop(
+            lambda: AsyncAnthropicFoundry(**client_kwargs)
         )
-    return _foundry_async_clients[azure_ad_token_provider]
+    return _foundry_async_clients[azure_ad_token_provider].for_running_loop()
 
 
 def has_foundry_endpoint() -> bool:
