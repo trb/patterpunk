@@ -168,6 +168,35 @@ def test_simple_tool_calling():
         assert "paris" in content
 
 
+def test_tool_calling_with_list_argument():
+    executed_fact_uuids = []
+
+    def get_fact_details(fact_uuids: list[str]) -> str:
+        executed_fact_uuids.append(fact_uuids)
+        return " ".join(
+            f"Fact {fact_uuid}: the harbour froze in 1923." for fact_uuid in fact_uuids
+        )
+
+    model = GoogleModel(
+        model="gemini-2.5-flash", location="us-central1", temperature=0.0
+    )
+    chat = (
+        Chat(model=model)
+        .with_tools([get_fact_details])
+        .add_message(
+            UserMessage(
+                "Call get_fact_details once with the fact UUIDs f-1 and f-2, "
+                "then tell me what the facts say."
+            )
+        )
+        .complete()
+    )
+
+    assert executed_fact_uuids, "Gemini never called get_fact_details"
+    assert sorted(executed_fact_uuids[0]) == ["f-1", "f-2"]
+    assert "1923" in chat.latest_message.content
+
+
 def test_thinking_mode_fixed_budget():
     model = GoogleModel(
         model="gemini-2.5-flash",
