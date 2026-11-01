@@ -544,39 +544,18 @@ class GoogleModel(Model, ABC):
         if not google_genai_available:
             return []
 
-        type_mapping = {
-            "string": "STRING",
-            "number": "NUMBER",
-            "integer": "INTEGER",
-            "boolean": "BOOLEAN",
-            "array": "ARRAY",
-            "object": "OBJECT",
-        }
-
         function_declarations = []
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
                 func = tool["function"]
-
-                properties = {}
-                for prop_name, prop_def in (
-                    func["parameters"].get("properties", {}).items()
-                ):
-                    json_type = prop_def.get("type", "string")
-                    google_type = type_mapping.get(json_type.lower(), "STRING")
-
-                    properties[prop_name] = types.Schema(
-                        type=google_type, description=prop_def.get("description", "")
-                    )
-
+                # Vertex AI answers HTTP 400 when an ARRAY schema has no items.
+                # us-central1 and global enforce this on every request as of 2026-10-31.
+                # parameters_json_schema forwards the JSON schema with $defs, $ref, anyOf and enum intact.
+                # A types.Schema rebuild must copy each keyword by hand and silently loses the rest.
                 function_declaration = types.FunctionDeclaration(
                     name=func["name"],
                     description=func["description"],
-                    parameters=types.Schema(
-                        type="OBJECT",
-                        properties=properties,
-                        required=func["parameters"].get("required", []),
-                    ),
+                    parameters_json_schema=func["parameters"],
                 )
                 function_declarations.append(function_declaration)
 

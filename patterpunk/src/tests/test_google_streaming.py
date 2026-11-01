@@ -293,6 +293,37 @@ async def test_stream_with_function_tool_call():
 
 
 @pytest.mark.asyncio
+async def test_stream_tool_call_with_list_argument():
+    executed_fact_uuids = []
+
+    async def get_fact_details(fact_uuids: list[str]) -> str:
+        executed_fact_uuids.append(fact_uuids)
+        return " ".join(
+            f"Fact {fact_uuid}: the harbour froze in 1923." for fact_uuid in fact_uuids
+        )
+
+    chat = (
+        Chat(model=get_test_model(max_tokens=1024))
+        .with_tools([get_fact_details])
+        .add_message(
+            UserMessage(
+                "Call get_fact_details once with the fact UUIDs f-1 and f-2, "
+                "then tell me what the facts say."
+            )
+        )
+    )
+
+    async with chat.complete_stream() as stream:
+        async for _ in stream.content_delta:
+            pass
+
+    final_chat = await stream.chat
+    assert executed_fact_uuids, "Gemini never called get_fact_details"
+    assert sorted(executed_fact_uuids[0]) == ["f-1", "f-2"]
+    assert "1923" in final_chat.latest_message.content
+
+
+@pytest.mark.asyncio
 async def test_stream_tool_error_continues():
     """
     Test that normal tool exceptions are sent to the model as errors.
