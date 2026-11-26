@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -132,6 +133,19 @@ def _parse_gemini_version(model: str) -> Optional[Tuple[int, int]]:
     if match is None:
         return None
     return (int(match.group(1)), int(match.group(2) or 0))
+
+
+# Google documents this placeholder for function calls that carry no signature of their own.
+# Examples are calls made by another provider and calls stored before signatures were kept.
+# https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures
+_SKIP_THOUGHT_SIGNATURE_VALIDATION = b"skip_thought_signature_validator"
+
+
+def _encode_thought_signature(part) -> Optional[str]:
+    signature = getattr(part, "thought_signature", None)
+    if not signature:
+        return None
+    return base64.b64encode(signature).decode("ascii")
 
 
 def _clamp_effort_to_gemini_levels(effort: str) -> str:
@@ -714,6 +728,42 @@ class GoogleModel(Model, ABC):
 
         return result
 
+    # Vertex answers HTTP 400 from Gemini 3.0 on when a step's first functionCall part is unsigned.
+    # Gemini 2.5 returns signatures without enforcing them. Unknown model ids get the newest rules.
+    def _requires_thought_signatures(self) -> bool:
+        version = _parse_gemini_version(self.model)
+        return version is None or version >= (3, 0)
+
+    def _convert_tool_calls_to_parts(
+        self, tool_calls: List[ToolCall]
+    ) -> List["types.Part"]:
+        parts = []
+        for index, tool_call in enumerate(tool_calls):
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except (json.JSONDecodeError, KeyError):
+                arguments = {}
+
+            signature = None
+            if tool_call.thought_signature:
+                signature = base64.b64decode(tool_call.thought_signature)
+
+            # A parallel batch carries one signature, on its first call.
+            # Google says to leave the later calls of the batch unsigned.
+            is_unsigned_first_call = index == 0 and signature is None
+            if is_unsigned_first_call and self._requires_thought_signatures():
+                signature = _SKIP_THOUGHT_SIGNATURE_VALIDATION
+
+            parts.append(
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name=tool_call.name, args=arguments
+                    ),
+                    thought_signature=signature,
+                )
+            )
+        return parts
+
     def _convert_messages_for_google_with_cache(
         self, messages: List[Message]
     ) -> tuple[List[types.Content], dict[str, str]]:
@@ -729,22 +779,7 @@ class GoogleModel(Model, ABC):
                 continue
 
             if message.role == "tool_call":
-                # Serialize ToolCallMessage as model role with functionCall parts
-                parts = []
-                for tool_call in message.tool_calls:
-                    # Parse arguments from JSON string
-                    try:
-                        arguments = json.loads(tool_call.arguments)
-                    except (json.JSONDecodeError, KeyError):
-                        arguments = {}
-
-                    # Google uses FunctionCall for tool requests
-                    parts.append(
-                        types.Part.from_function_call(
-                            name=tool_call.name, args=arguments
-                        )
-                    )
-
+                parts = self._convert_tool_calls_to_parts(message.tool_calls)
                 contents.append(types.Content(role="model", parts=parts))
                 continue
 
@@ -983,7 +1018,10 @@ class GoogleModel(Model, ABC):
                             ToolCall(
                                 id=f"call_{part.function_call.name}_{uuid.uuid4().hex[:8]}",
                                 name=part.function_call.name,
-                                arguments=json.dumps(dict(part.function_call.args)),
+                                arguments=json.dumps(
+                                    dict(part.function_call.args or {})
+                                ),
+                                thought_signature=_encode_thought_signature(part),
                             )
                         )
 
@@ -1188,23 +1226,17 @@ class GoogleModel(Model, ABC):
     @staticmethod
     def get_available_models(location: Optional[str] = None) -> List[str]:
         default_models = [
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
         ]
 
         if not google_genai_available:
             return default_models
 
         try:
-            if not GoogleModel.client:
-                GoogleModel.client = GoogleModel.get_client(location=GEMINI_REGION)
-
-            client = (
-                GoogleModel.get_client(location=location)
-                if location
-                else GoogleModel.client
-            )
+            client = GoogleModel.get_client(location=location or GEMINI_REGION)
 
             gemini_models = []
             for model in client.models.list(config={"page_size": 100}):
@@ -1546,6 +1578,7 @@ class GoogleModel(Model, ABC):
                         event_type=StreamEventType.TOOL_USE_START,
                         tool_call_id=tool_call_id,
                         tool_name=func_call.name,
+                        tool_thought_signature=_encode_thought_signature(part),
                     )
                 )
 

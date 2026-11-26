@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, TypedDict, Dict, Optional, Literal, Union
 
 # =============================================================================
@@ -47,23 +47,13 @@ class ToolCallDict(TypedDict):
 
 @dataclass
 class ToolCall:
-    """
-    Represents a tool call made by the model.
-
-    This is the internal representation used throughout patterpunk.
-    Use to_openai_format() when serializing for provider APIs.
-
-    Attributes:
-        id: Unique identifier for this tool call (used to match with results)
-        name: Name of the function/tool being called
-        arguments: JSON string containing the function arguments
-        type: Type of tool call (always "function" for now)
-    """
-
     id: str
     name: str
     arguments: str
     type: str = "function"
+    # Gemini 3 and later answer HTTP 400 when a tool call returns without its thought signature.
+    # The field holds the signature bytes as base64, so the value survives JSON storage.
+    thought_signature: Optional[str] = None
 
     def to_openai_format(self) -> ToolCallDict:
         """
@@ -93,6 +83,19 @@ class ToolCall:
             name=d["function"]["name"],
             arguments=d["function"]["arguments"],
             type=d.get("type", "function"),
+        )
+
+    def serialize(self) -> dict:
+        result = dict(self.to_openai_format())
+        if self.thought_signature is not None:
+            result["thought_signature"] = self.thought_signature
+        return result
+
+    @classmethod
+    def deserialize(cls, data: dict) -> "ToolCall":
+        return replace(
+            cls.from_openai_format(data),
+            thought_signature=data.get("thought_signature"),
         )
 
 

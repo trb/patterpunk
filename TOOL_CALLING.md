@@ -158,6 +158,15 @@ for tool_call in tool_message.tool_calls:
         arguments = {}
 ```
 
+### Gemini Thought Signatures
+
+Gemini 3 and later attach an opaque thought signature to the first function call of each step. Vertex AI answers HTTP 400 when the next request returns that call without its signature.
+
+- `ToolCall.thought_signature` holds the signature as a base64 string. Only the Google model reads and writes it.
+- `complete()` and `complete_stream()` return the signature automatically. Code that builds its own `ToolCallMessage` from a Gemini response must copy the field.
+- A tool call without a signature, for example one made by another provider earlier in the same turn, is sent with Google's documented placeholder `skip_thought_signature_validator`. Google states that the placeholder can reduce answer quality.
+- `to_openai_format()` omits the signature, because Ollama and OpenAI-compatible endpoints receive that dictionary unchanged.
+
 ## Integration Patterns
 
 ### Agent Integration

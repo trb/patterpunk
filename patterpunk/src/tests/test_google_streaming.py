@@ -26,19 +26,6 @@ GOOGLE_TEST_LOCATION = (
 )
 
 
-@pytest.fixture(autouse=True)
-def reset_google_client():
-    """Reset the shared GoogleModel client before each test.
-
-    The GoogleModel uses a class-level shared client. When running multiple async
-    tests, the event loop closes between tests but the httpx client inside the
-    Google genai client becomes stale. Resetting forces a fresh client per test.
-    """
-    GoogleModel.client = None
-    yield
-    GoogleModel.client = None
-
-
 def get_test_model(
     max_tokens: int = 256,
     temperature: float = 0.0,
