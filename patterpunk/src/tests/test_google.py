@@ -83,19 +83,23 @@ def test_structured_output():
 
     assert parsed_output.book_info.author == "Harper Lee"
     assert parsed_output.book_info.title == "To Kill a Mockingbird"
-    # Note: Gemini 2.5 may infer genres from context, so we don't assert None
+    # Gemini 2.5 fills genres from the surrounding text even though the system message forbids inference.
+    # An `is None` assertion on that field therefore fails intermittently.
     assert parsed_output.book_info.publication_year == 1960
 
 
-def test_available_models():
-    us_models = GoogleModel.get_available_models(location="us-central1")
-    assert "gemini-2.5-flash" in us_models
-    assert "gemini-2.5-pro" in us_models
-    assert "gemini-2.0-flash" in us_models
+@pytest.mark.parametrize("location", ["us-central1", "global"])
+def test_available_models(location):
+    # get_available_models returns a hard-coded fallback list when the Vertex listing call fails.
+    # This model appears only in the live listing, so its presence proves the call reached Vertex.
+    model_absent_from_fallback_list = "gemini-3.1-flash-lite"
 
-    # Test a different US region
-    us_east_models = GoogleModel.get_available_models(location="us-east4")
-    assert len(us_east_models) > 0
+    models = GoogleModel.get_available_models(location=location)
+
+    assert "gemini-4-argon" in models
+    assert "gemini-3.8-flash" in models
+    assert "gemini-3.5-flash" in models
+    assert model_absent_from_fallback_list in models
 
 
 def test_tool_calling():

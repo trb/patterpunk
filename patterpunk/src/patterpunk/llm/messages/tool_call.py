@@ -66,7 +66,7 @@ class ToolCallMessage(Message):
         result = {
             "type": "tool_call",
             "id": self.id,
-            "tool_calls": [tc.to_openai_format() for tc in self.tool_calls],
+            "tool_calls": [tc.serialize() for tc in self.tool_calls],
         }
         if self.thinking_blocks:
             result["thinking_blocks"] = self.thinking_blocks
@@ -76,8 +76,7 @@ class ToolCallMessage(Message):
 
     @classmethod
     def deserialize(cls, data: dict) -> "ToolCallMessage":
-        """Deserialize from dict."""
-        tool_calls = [ToolCall.from_openai_format(tc) for tc in data["tool_calls"]]
+        tool_calls = [ToolCall.deserialize(tc) for tc in data["tool_calls"]]
         return cls(
             tool_calls=tool_calls,
             thinking_blocks=data.get("thinking_blocks"),

@@ -98,6 +98,7 @@ class StreamChunk:
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
     tool_arguments_delta: Optional[str] = None
+    tool_thought_signature: Optional[str] = None
 
     # For MESSAGE_END event - usage statistics
     usage: Optional[Dict[str, int]] = None
@@ -135,6 +136,7 @@ class StreamAccumulator:
     _current_tool_id: Optional[str] = None
     _current_tool_name: Optional[str] = None
     _current_tool_arguments: str = ""
+    _current_tool_thought_signature: Optional[str] = None
 
     def append_thinking(self, text: str) -> None:
         """Append text to the thinking accumulator."""
@@ -144,11 +146,13 @@ class StreamAccumulator:
         """Append text to the content accumulator."""
         self.content_text += text
 
-    def start_tool_call(self, tool_id: str, tool_name: str) -> None:
-        """Start accumulating a new tool call."""
+    def start_tool_call(
+        self, tool_id: str, tool_name: str, thought_signature: Optional[str] = None
+    ) -> None:
         self._current_tool_id = tool_id
         self._current_tool_name = tool_name
         self._current_tool_arguments = ""
+        self._current_tool_thought_signature = thought_signature
 
     def append_tool_arguments(self, delta: str) -> None:
         """Append to the current tool call's arguments."""
@@ -162,11 +166,13 @@ class StreamAccumulator:
                     id=self._current_tool_id,
                     name=self._current_tool_name,
                     arguments=self._current_tool_arguments,
+                    thought_signature=self._current_tool_thought_signature,
                 )
             )
         self._current_tool_id = None
         self._current_tool_name = None
         self._current_tool_arguments = ""
+        self._current_tool_thought_signature = None
 
     def has_tool_calls(self) -> bool:
         """Check if any tool calls were accumulated."""
@@ -308,6 +314,7 @@ class ChatStream:
             self._accumulator.start_tool_call(
                 chunk.tool_call_id or "",
                 chunk.tool_name or "",
+                chunk.tool_thought_signature,
             )
         elif chunk.event_type == StreamEventType.TOOL_USE_DELTA:
             if chunk.tool_arguments_delta:

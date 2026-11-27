@@ -288,6 +288,12 @@ for tc in restored.tool_calls:
     print(f"{tc.function_name}: {tc.arguments}")
 ```
 
+A tool call made by Gemini 3 or later also carries `thought_signature`, a base64 string. Store it unchanged: Vertex AI rejects a conversation resumed between a tool call and the model's answer when the signature is missing.
+
+```python
+# {'id': 'call_123', 'type': 'function', 'function': {...}, 'thought_signature': 'CiQB...'}
+```
+
 Tool results also round-trip correctly:
 
 ```python
